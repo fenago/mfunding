@@ -26,6 +26,7 @@ import {
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 import { mergeMerchantDoc, sha256Hex } from "../_shared/merchantDocMerge.ts";
+import { recordMerchantContacts } from "../_shared/merchantIdentity.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -61,7 +62,7 @@ Deno.serve(async (req) => {
   // Load the deal + its customer first (needed for both authz and the merge).
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, deal_type, amount_requested, use_of_funds")
+    .select("id, customer_id, deal_type, amount_requested, use_of_funds, ghl_contact_id")
     .eq("id", dealId)
     .maybeSingle();
   if (dErr || !deal) return json({ error: "deal not found" }, 404);
@@ -221,6 +222,17 @@ Deno.serve(async (req) => {
         source: "Merchant Portal",
       });
       const contactId = cr.data?.contact?.id ?? null;
+      // WHERE DID THIS ACTUALLY LAND? This upserts by customers.email and takes
+      // whatever contact GHL hands back — it never consulted the deal's stored
+      // ghl_contact_id and never wrote the resolved one back, so a merchant with
+      // two addresses got notified on a contact no reader would ever search.
+      // Append-only (the primary pointer is left alone); reads union across the
+      // set, so the notification is attributable either way.
+      const { error: aliasErr } = await recordMerchantContacts(
+        db, customer.id as string,
+        [(deal.ghl_contact_id as string | null) ?? null, contactId],
+      );
+      if (aliasErr) console.warn("[send-merchant-document] alias record failed:", aliasErr);
       if (contactId) {
         const firstName = (customer.first_name as string) ?? "there";
         const portalUrl = `${APP_URL}/portal`;

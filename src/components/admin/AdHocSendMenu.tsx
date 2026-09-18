@@ -13,6 +13,7 @@ import supabase from "../../supabase";
 import { getSetting } from "../../services/platformService";
 import { parseEdgeError } from "../../lib/edgeError";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
+import { readDocsStatus, duplicateContactNote, type GhlDocsStatus } from "../../lib/ghlDocs";
 
 interface AdhocDocDef {
   key: string;
@@ -99,10 +100,19 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
   // THIS merchant's signing links — fetched when the menu opens, so "copy the
   // link and text it to them" is one click away from where sends happen.
   const [sentLinks, setSentLinks] = useState<SentDocLink[] | null>(null);
+  // Why the list is empty, when it is. An UNREADABLE answer must never be
+  // rendered as "nothing sent" — see readDocsStatus in src/lib/ghlDocs.ts.
+  const [linksUnreadable, setLinksUnreadable] = useState<string | null>(null);
+  const [linkContactCount, setLinkContactCount] = useState(1);
+  // Only one contact could be searched (it couldn't be tied to exactly one
+  // merchant) — so "nothing sent yet" would again be a claim we didn't earn.
+  const [linkCaveat, setLinkCaveat] = useState<string | null>(null);
   useEffect(() => {
     if (!open || !ghlContactId) return;
     let cancelled = false;
     setSentLinks(null);
+    setLinksUnreadable(null);
+    setLinkCaveat(null);
     // refresh: true (the rule for when: see the "adding a caller of
     // ghl-docs-status" note in src/lib/ghlDocs.ts). This menu is where a
     // closer SENDS a document and then
@@ -111,12 +121,29 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     // document was never sent, and the obvious response is to send it a second
     // time. A deliberate menu-open is a cheap place to spend a fresh crawl; the
     // cache exists to absorb mount-time and polling reads, not this one.
-    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId, refresh: true } })
-      .then(({ data }) => {
-        if (cancelled || data?.error) { if (!cancelled) setSentLinks([]); return; }
-        setSentLinks(((data?.documents ?? []) as SentDocLink[]).filter((d) => d.url));
+    // discover: true — this menu is about to tell a closer whether a document
+    // was sent, so it is worth one bounded GHL lookup to find a duplicate
+    // contact the merchant's documents may have landed on.
+    supabase.functions.invoke("ghl-docs-status", {
+      body: { ghl_contact_id: ghlContactId, refresh: true, discover: true },
+    })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        const state = readDocsStatus(data as GhlDocsStatus, error);
+        if (state.kind === "unreadable") {
+          // Do NOT fall back to []. An empty list here reads as an accusation
+          // ("you never sent it") and gets the document sent twice.
+          setSentLinks(null);
+          setLinksUnreadable(state.why);
+          return;
+        }
+        setLinkContactCount(state.contactCount);
+        setLinkCaveat(state.caveat);
+        setSentLinks((state.docs as SentDocLink[]).filter((d) => d.url));
       })
-      .catch(() => { if (!cancelled) setSentLinks([]); });
+      .catch((e: unknown) => {
+        if (!cancelled) setLinksUnreadable(e instanceof Error ? e.message : String(e));
+      });
     return () => { cancelled = true; };
   }, [open, ghlContactId]);
 
@@ -344,10 +371,29 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
               <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">
                 Their signing links
               </p>
-              {sentLinks === null ? (
+              {linkContactCount > 1 && (
+                <p className="px-3 py-1 text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                  {duplicateContactNote(linkContactCount)}
+                </p>
+              )}
+              {linksUnreadable ? (
+                // UNREADABLE ≠ NOTHING SENT. Saying "nothing sent yet" here about
+                // a merchant who has signed is what put a furious customer on the
+                // owner's phone on 2026-09-18.
+                <p className="px-3 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                  Couldn't check VibeReach — {linksUnreadable}. This does <strong>not</strong> mean nothing was
+                  sent. Check in VibeReach before sending again.
+                </p>
+              ) : sentLinks === null ? (
                 <p className="px-3 py-1.5 text-[11px] text-gray-400">Checking…</p>
               ) : sentLinks.length === 0 ? (
-                <p className="px-3 py-1.5 text-[11px] text-gray-400">Nothing sent yet — send a document above and its link appears here.</p>
+                linkCaveat ? (
+                  <p className="px-3 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                    Nothing on the contact we could search ({linkCaveat}) — that is not proof nothing was sent.
+                  </p>
+                ) : (
+                  <p className="px-3 py-1.5 text-[11px] text-gray-400">Nothing sent yet — send a document above and its link appears here.</p>
+                )
               ) : (
                 sentLinks.map((l, i) => (
                   <button

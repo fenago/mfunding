@@ -19,6 +19,7 @@ import {
   lastEmailFailure, bounceMessage, recordEmailOutcome, type LastEmailOutcome,
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
+import { recordMerchantContacts } from "../_shared/merchantIdentity.ts";
 
 /** "We didn't look" — used when the failure clearly isn't about the address. */
 const NO_OUTCOME: LastEmailOutcome = {
@@ -138,6 +139,32 @@ Deno.serve(async (req) => {
   }
   // Additive tag: ADDS `merchant` without clobbering lead-source/campaign tags.
   await addContactTags(cfg, contactId, ["merchant"]); // best-effort
+  // RECORD BEFORE RE-POINTING. ensureContactEmail() "heals" by upserting
+  // CUSTOMERS.EMAIL, while push-application-to-ghl upserts the APPLICATION's
+  // business_email — so when a merchant has two addresses these two functions
+  // take turns overwriting the single stored pointer, and whichever moved last
+  // decides what the document readers can see. Miami Concierge Network
+  // (2026-09-18) signed two disclosures that every surface reported as unsent for
+  // exactly this reason. Appending both ids costs nothing and makes the send
+  // findable whichever pointer wins.
+  const { error: aliasErr } = await recordMerchantContacts(
+    db, customer.id as string, [linkedId, contactId],
+  );
+  if (aliasErr) console.warn("[send-merchant-email] alias record failed:", aliasErr);
+  if (pre.healed && linkedId && linkedId !== contactId) {
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal", entity_id: dealId, interaction_type: "note",
+        subject: "ghl:contact-divergence",
+        content:
+          `This email went to GHL contact ${contactId} (${merchantEmail}); the deal was linked to ${linkedId}` +
+          (pre.previousEmail ? ` (${pre.previousEmail})` : "") +
+          `. VibeReach holds more than one contact for this merchant. Both ids are recorded and document reads ` +
+          `search all of them; the duplicate contacts were NOT merged — that is a judgement call for a human.`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+  }
   // Persist whatever contact actually owns this email so later comms reuse it.
   if ((customer.ghl_contact_id ?? null) !== contactId) {
     const { error: cuErr } = await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);

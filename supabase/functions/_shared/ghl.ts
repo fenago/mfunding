@@ -396,9 +396,28 @@ export async function listContactFileUploads(
   cfg: GhlConfig,
   contactId: string,
 ): Promise<GhlUploadField[]> {
+  return (await listContactFileUploadsResult(cfg, contactId)).fields;
+}
+
+/**
+ * The same read, but it TELLS YOU WHEN IT COULDN'T READ.
+ *
+ * listContactFileUploads returns [] both for "this contact uploaded nothing" and
+ * for "GHL would not answer" — indistinguishable to the caller, and rendering the
+ * second as the first is how a merchant who sent their statements gets chased for
+ * them. Any surface that makes a claim about what the merchant did or did not
+ * upload should use this and honour `error`.
+ */
+export async function listContactFileUploadsResult(
+  cfg: GhlConfig,
+  contactId: string,
+): Promise<{ fields: GhlUploadField[]; ok: boolean; error: string | null }> {
   const fieldsRes = await ghlFetch<{ customFields?: { id: string; name: string; dataType: string }[] }>(
     cfg, "GET", `/locations/${cfg.locationId}/customFields`,
   );
+  if (!fieldsRes.ok) {
+    return { fields: [], ok: false, error: `custom-field list failed (${fieldsRes.status}): ${fieldsRes.error ?? ""}` };
+  }
   const fileFieldNames = new Map(
     (fieldsRes.data?.customFields ?? [])
       .filter((f) => f.dataType === "FILE_UPLOAD")
@@ -406,6 +425,9 @@ export async function listContactFileUploads(
   );
 
   const contactRes = await getContact(cfg, contactId);
+  if (!contactRes.ok) {
+    return { fields: [], ok: false, error: `contact ${contactId} unreadable (${contactRes.status}): ${contactRes.error ?? ""}` };
+  }
   const cf = ((contactRes.data?.contact as Record<string, unknown> | undefined)?.customFields ??
     []) as { id: string; value: unknown }[];
 
@@ -421,7 +443,7 @@ export async function listContactFileUploads(
     });
     if (files.length) out.push({ field: fileFieldNames.get(f.id)!, files });
   }
-  return out;
+  return { fields: out, ok: true, error: null };
 }
 
 // ---- Business (company) helpers — groups contacts into a business hierarchy --

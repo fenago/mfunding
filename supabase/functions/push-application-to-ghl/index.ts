@@ -22,6 +22,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch, addContactTags,
   lastEmailFailure, bounceMessage, recordEmailOutcome,
 } from "../_shared/ghl.ts";
+import { recordMerchantContacts } from "../_shared/merchantIdentity.ts";
 // Field-id map + doc-merge machinery: the SINGLE SOURCE OF TRUTH shared with
 // ghl-send-application, so the two functions can never drift (see _shared header).
 import {
@@ -513,6 +514,41 @@ Deno.serve(async (req) => {
   if (!contactId) return json({ error: `GHL upsert failed: ${cr.error ?? "no contact id"}` }, 502);
   // Additive: ADDS `merchant` without touching lead-source/campaign tags.
   await addContactTags(cfg, contactId, ["merchant"]); // best-effort
+
+  // ── THE DOCUMENT IS ABOUT TO LAND ON `contactId`. SAY SO IF THAT ISN'T THE
+  //    CONTACT THIS DEAL KNOWS ABOUT. ──────────────────────────────────────────
+  // This function upserts by the APPLICATION's email (business_email); other
+  // senders pre-flight against CUSTOMERS.EMAIL. When those differ, each one
+  // re-points the stored id at its own contact and the other re-points it back —
+  // and whichever moved last decides what every READER can see. Miami Concierge
+  // Network (MF-2026-0385, 2026-09-18): eight documents, two of them signed, all
+  // on the contact the readers were not asking about; the app told the owner
+  // "Nothing sent yet" with the merchant on the phone.
+  //
+  // Recording the id (append-only, never clobbering) is what makes the send
+  // findable afterwards no matter which pointer wins the next race. The timeline
+  // note is so a human sees the duplication instead of absorbing it.
+  const priorContactId = (customer.ghl_contact_id as string | null) ?? (deal.ghl_contact_id as string | null) ?? null;
+  const { added: newAliases, error: aliasErr } =
+    await recordMerchantContacts(db, customer.id as string, [priorContactId, contactId]);
+  if (aliasErr) console.warn("[push-application-to-ghl] alias record failed:", aliasErr);
+  if (priorContactId && priorContactId !== contactId) {
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "ghl:contact-divergence",
+        content:
+          `The application was sent to GHL contact ${contactId} (${merchantEmail}), but this deal was linked to ` +
+          `${priorContactId}. VibeReach holds more than one contact for this merchant, so their documents can be ` +
+          `filed against either. Both ids are now recorded, and document reads search all of them — ` +
+          `no document will be reported missing because of this. Merging the duplicate contacts in VibeReach is a ` +
+          `judgement call and was NOT done automatically.`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+  }
   if ((customer.ghl_contact_id ?? null) !== contactId) {
     await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
   }

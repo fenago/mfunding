@@ -54,6 +54,83 @@ export type GhlDoc = {
   url: string | null;
 };
 
+/** The full ghl-docs-status payload. The fields after `uploads` exist so a
+ *  caller can tell WHY the list is empty — see readDocsStatus below. */
+export type GhlDocsStatus = {
+  ok?: boolean;
+  documents?: GhlDoc[];
+  uploads?: Array<{ field: string; files: Array<{ name: string; url: string | null }> }>;
+  documents_error?: string | null;
+  uploads_error?: string | null;
+  /** FALSE = we never worked out which GHL contacts to search. Not "none found". */
+  identity_readable?: boolean;
+  identity_error?: string | null;
+  /** TRUE = only ONE contact was searched because it couldn't be tied to exactly
+   *  one merchant. The documents shown are real; their absence isn't proof. */
+  identity_partial?: boolean;
+  identity_note?: string | null;
+  /** Every GHL contact id this merchant is known by. >1 means the CRM has dupes. */
+  merchant_contacts?: string[];
+  merchant_contact_count?: number;
+  error?: string;
+};
+
+/**
+ * AN EMPTY DOCUMENT LIST MEANS TWO DIFFERENT THINGS AND A SURFACE MUST NOT
+ * CONFLATE THEM.
+ *
+ * On 2026-09-18 a merchant signed two disclosures and every surface in the app
+ * said "Nothing sent yet" while the owner had him on the phone. The read had
+ * asked GHL about the wrong one of his three contacts, correctly got nothing
+ * back, and printed that nothing as a statement about what the MERCHANT had done.
+ *
+ * So: route every ghl-docs-status response through this. `unreadable` must be
+ * rendered as "we couldn't check", never as "they haven't signed". The
+ * distinction is the whole point — see the hard rule in
+ * supabase/functions/_shared/merchantIdentity.ts.
+ */
+export type DocsReadState =
+  | {
+      kind: "ok";
+      docs: GhlDoc[];
+      contactCount: number;
+      /** Set when only one contact could be searched — show it, but never let an
+       *  empty `docs` under it become a claim about the merchant. */
+      caveat: string | null;
+      status: GhlDocsStatus;
+    }
+  | { kind: "unreadable"; why: string };
+
+export function readDocsStatus(
+  data: GhlDocsStatus | null | undefined,
+  invokeError?: { message: string } | null,
+): DocsReadState {
+  if (invokeError) return { kind: "unreadable", why: invokeError.message };
+  if (!data) return { kind: "unreadable", why: "VibeReach returned nothing" };
+  if (data.error) return { kind: "unreadable", why: data.error };
+  // The document crawl failed or was truncated — the list we hold is a floor,
+  // not the whole truth, so absence from it proves nothing.
+  if (data.documents_error) return { kind: "unreadable", why: data.documents_error };
+  // We never established which contacts belong to this merchant.
+  if (data.identity_readable === false) {
+    return { kind: "unreadable", why: data.identity_error ?? "couldn't identify this merchant in VibeReach" };
+  }
+  return {
+    kind: "ok",
+    docs: data.documents ?? [],
+    contactCount: data.merchant_contact_count ?? (data.merchant_contacts?.length ?? 1),
+    caveat: data.identity_partial ? (data.identity_note ?? "only one VibeReach contact could be searched") : null,
+    status: data,
+  };
+}
+
+/** One line a human can act on when a merchant maps to several GHL contacts.
+ *  Null when there is nothing unusual to say. */
+export function duplicateContactNote(contactCount: number): string | null {
+  if (contactCount <= 1) return null;
+  return `⚠ ${contactCount} VibeReach contacts for this merchant — their documents can be filed against any of them. All ${contactCount} were searched.`;
+}
+
 /** Copies of the SAME document collapsed into one group: the newest copy as
  *  `latest`, any superseded copies in `older`, and how many total. */
 export type DocGroup = {

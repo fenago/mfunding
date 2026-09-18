@@ -2,11 +2,19 @@
 //
 // Given a GHL contact (passed by staff, or resolved server-side from the caller's
 // own customer row for a merchant), returns:
-//  - documents: every Documents & Contracts doc where this contact is a recipient
-//    (name, status, signed?, when, isExpired, and the PER-RECIPIENT viewer URL) —
-//    so the playbook AND the merchant portal can show/open the real signing links.
-//  - uploads: files on the contact's FILE_UPLOAD custom fields (from the Bank
+//  - documents: every Documents & Contracts doc where THIS MERCHANT is a
+//    recipient (name, status, signed?, when, isExpired, and the PER-RECIPIENT
+//    viewer URL) — so the playbook AND the merchant portal can show/open the real
+//    signing links.
+//  - uploads: files on the merchant's FILE_UPLOAD custom fields (from the Bank
 //    Statements & Documents Upload form), with friendly field names.
+//
+// ⚠ "THIS MERCHANT", NOT "THIS CONTACT ID". Read _shared/merchantIdentity.ts for
+// the incident that forced the distinction (Miami Concierge Network, 2026-09-18:
+// merchant signs, GHL files it against the second of his three contacts, every
+// read asks about the first, app says "Nothing sent yet" to a furious customer).
+// Matching is by the merchant's whole contact SET plus the recipient email that
+// GHL already prints on each document — so it costs no extra GHL calls.
 //
 // Read-only. Callable by staff (any contact they pass) or by a merchant (their
 // OWN linked contact only — a client-supplied id is ignored for merchants so they
@@ -17,7 +25,19 @@
 // caller and must never be logged.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, listContactFileUploads } from "../_shared/ghl.ts";
+import {
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch,
+  listContactFileUploads, listContactFileUploadsResult, type GhlUploadField,
+} from "../_shared/ghl.ts";
+import {
+  loadMerchantIdentity, discoverGhlContacts, recordMerchantContacts,
+  recipientMatchesMerchant, type MerchantIdentity,
+} from "../_shared/merchantIdentity.ts";
+
+/** Cap on how many of a merchant's contacts we will read uploads from. One GHL
+ *  call each; a merchant with one contact (the normal case) costs exactly what
+ *  it always did. */
+const MAX_UPLOAD_CONTACTS = 4;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -58,6 +78,13 @@ Deno.serve(async (req) => {
       url?: string;
       /** Skip the 60s document-list cache (use right after a merchant signs). */
       refresh?: boolean;
+      /**
+       * Ask GHL which OTHER contacts carry this merchant's emails/phones before
+       * reading. Costs one /contacts/search per identifier (capped, and at most
+       * once per 12h per merchant). Worth it on a surface that is about to tell
+       * someone a document was or wasn't sent; not worth it on a mount-time chip.
+       */
+      discover?: boolean;
     };
 
     const db = serviceClient();
@@ -75,6 +102,7 @@ Deno.serve(async (req) => {
 
     // Resolve the contact this call reports on.
     let contactId: string | undefined;
+    let ownCustomerId: string | undefined;
     if (isStaff) {
       // Staff may query any contact — the id is required from the caller.
       contactId = body.ghl_contact_id;
@@ -82,19 +110,63 @@ Deno.serve(async (req) => {
     } else {
       // Merchant: ALWAYS resolve from their own customer row. Any client-supplied
       // id is ignored, so a merchant can only ever see their own contact's docs.
-      const { data: mine } = await db
+      // A merchant can own more than one customer row (one owner, several
+      // businesses), so pick the first that has ANY known GHL contact — the
+      // primary pointer or, failing that, an alias. Filtering in code rather
+      // than PostgREST keeps the "or an alias" half honest.
+      const { data: mineRows } = await db
         .from("customers")
-        .select("ghl_contact_id")
+        .select("id, ghl_contact_id, ghl_contact_ids")
         .eq("user_id", caller.id)
-        .not("ghl_contact_id", "is", null)
-        .limit(1)
-        .maybeSingle();
-      contactId = (mine?.ghl_contact_id as string | null | undefined) ?? undefined;
-      // No linked GHL contact yet → nothing to show (not an error).
-      if (!contactId) return json({ ok: true, documents: [], uploads: [] });
+        .order("created_at", { ascending: true })
+        .limit(5);
+      const mine = (mineRows ?? []).find((r) =>
+        !!r.ghl_contact_id || ((r.ghl_contact_ids as string[] | null) ?? []).length > 0);
+      ownCustomerId = (mine?.id as string | undefined) ?? undefined;
+      contactId = (mine?.ghl_contact_id as string | null | undefined)
+        ?? ((mine?.ghl_contact_ids as string[] | null | undefined) ?? [])[0]
+        ?? undefined;
+      // No linked GHL contact yet → nothing to show. Distinctly "we have no
+      // contact to look in", never "we looked and there was nothing".
+      if (!contactId) {
+        return json({
+          ok: true, documents: [], uploads: [],
+          identity_readable: false,
+          identity_error: "this merchant has no GHL contact linked yet — nothing was searched",
+          merchant_contacts: [],
+        });
+      }
     }
 
     const cfg = await getGhlConfig(db);
+
+    // ── WHO IS THIS MERCHANT IN GHL? ───────────────────────────────────────────
+    // One resolver, shared with the write side. DB-only and free; it turns the
+    // single contact id the caller handed us into the merchant's whole identity
+    // (every contact id we have ever resolved + every email + every phone).
+    const identity: MerchantIdentity = await loadMerchantIdentity(db, {
+      customerId: ownCustomerId ?? null,
+      contactId,
+    });
+
+    // Opt-in: ask GHL for contacts we have never seen carrying this merchant's
+    // addresses. Rate-limited per merchant inside discoverGhlContacts(); anything
+    // new is recorded as an ALIAS, never by clobbering the primary pointer.
+    let discoveryError: string | null = null;
+    if (body.discover && identity.readable && identity.customerId && !identity.partial) {
+      try {
+        const found = await discoverGhlContacts(cfg, identity);
+        if (found.newIds.length > 0) {
+          await recordMerchantContacts(db, identity.customerId, found.newIds, { markSynced: found.complete });
+          identity.contactIds = [...new Set([...identity.contactIds, ...found.newIds])];
+        } else if (found.complete && !found.skipped) {
+          await recordMerchantContacts(db, identity.customerId, [], { markSynced: true });
+        }
+        if (!found.complete) discoveryError = found.error;
+      } catch (e) {
+        discoveryError = e instanceof Error ? e.message : String(e);
+      }
+    }
 
     // ── DOWNLOAD PROXY — the contact's UPLOADED files live behind GHL's private
     // documents/download endpoint (bearer-only), so a bare browser click 401s.
@@ -105,9 +177,19 @@ Deno.serve(async (req) => {
       if (!reqUrl.startsWith("https://services.leadconnectorhq.com/documents/download/")) {
         return json({ error: "Only GHL document-download URLs can be proxied." }, 400);
       }
-      const uploads = await listContactFileUploads(cfg, contactId!);
-      const match = uploads.flatMap((u) => u.files).find((f) => f.url === reqUrl);
-      if (!match) return json({ error: "That file doesn't belong to this contact." }, 403);
+      // Validate against EVERY contact this merchant has, not just the linked
+      // one — a file uploaded through the duplicate contact is still their file,
+      // and refusing it would be the same blind spot in a different costume.
+      const proxyIds = (identity.readable && identity.contactIds.length
+        ? identity.contactIds
+        : [contactId!]).slice(0, MAX_UPLOAD_CONTACTS);
+      let match: { name: string; url: string | null } | undefined;
+      for (const cid of proxyIds) {
+        const ups = await listContactFileUploads(cfg, cid);
+        match = ups.flatMap((u) => u.files).find((f) => f.url === reqUrl);
+        if (match) break;
+      }
+      if (!match) return json({ error: "That file doesn't belong to this merchant." }, 403);
       // GHL answers with a 307 to a TIME-LIMITED SIGNED storage URL that needs no
       // auth — hand that URL back and let the browser open it directly. (Verified:
       // the signed target serves 200 with the file's real content-type.)
@@ -196,19 +278,36 @@ Deno.serve(async (req) => {
       /Bank Verification\s*&\s*Credit Authorization/i,
     ];
 
+    // Contact ids we matched a document through. Any that our tables did not
+    // already know is a REAL duplicate we just learned about — recorded below so
+    // the next read finds it without re-deriving it, and surfaced to the caller
+    // so a human sees the ambiguity instead of a confident blank.
+    const matchedContactIds = new Set<string>();
+
     const documents = rawDocs
       .filter((d) => !UNWIRED_TEMPLATES.some((re) => re.test((d.name as string) ?? "")))
       .map((d) => {
         const recips = (d.recipients as Record<string, unknown>[] | undefined) ?? [];
         const links = (d.links as Record<string, unknown>[] | undefined) ?? [];
-        // Per-recipient viewer link (bearer token) for THIS contact. A record can
-        // have multiple recipients, so pick the link whose recipientId is ours.
-        const myLink = links.find((l) => l.recipientId === contactId);
-        // This contact's recipient record (completion state) — match by contact id,
-        // falling back to the recipient the matched link points at.
-        const myRecip =
-          recips.find((r) => r.id === contactId) ??
-          (myLink ? recips.find((r) => r.id === myLink.recipientId) : undefined);
+        // THIS MERCHANT's recipient record — by any of their contact ids, or by
+        // the email GHL prints on the recipient. The email half is what finds a
+        // document filed against a contact our tables never knew about, and it
+        // is free: the crawl above already fetched it.
+        //
+        // ⚠ The recipient's contact id is `recipients[].id` (entityName ==
+        // "contacts"). There is NO `recipients[].contactId`.
+        const myRecip = identity.readable
+          ? recips.find((r) => recipientMatchesMerchant(r as {
+              id?: string; entityName?: string; email?: string
+            }, identity))
+          : recips.find((r) => r.id === contactId);
+        // Per-recipient viewer link (bearer token). A record can have several
+        // recipients, so pick the link that points at OUR recipient.
+        const myLink =
+          (myRecip ? links.find((l) => l.recipientId === myRecip.id) : undefined) ??
+          links.find((l) => typeof l.recipientId === "string" &&
+            identity.contactIds.includes(l.recipientId as string));
+        if (myRecip && typeof myRecip.id === "string") matchedContactIds.add(myRecip.id as string);
         return { d, recips, myLink, myRecip };
       })
       .filter(({ myLink, myRecip }) => !!myLink || !!myRecip)
@@ -248,16 +347,12 @@ Deno.serve(async (req) => {
     try {
       const completed = documents.filter((d) => d.signed && d.id);
       if (completed.length > 0) {
-        // Resolve the customer behind this GHL contact (works for staff + merchant
-        // polls alike — the contact id is authoritative).
-        const { data: cust } = await db
-          .from("customers")
-          .select("id, business_name")
-          .eq("ghl_contact_id", contactId)
-          .limit(1)
-          .maybeSingle();
-        const customerId = cust?.id as string | undefined;
-        const businessName = (cust?.business_name as string | undefined) ?? "The merchant";
+        // The merchant behind this read — resolved from the identity, which
+        // already unioned the contact set. (It used to be a fresh
+        // .eq("ghl_contact_id", contactId) lookup, which missed exactly the
+        // merchant whose documents live on the OTHER contact.)
+        const customerId = identity.customerId ?? undefined;
+        const businessName = identity.businessName ?? "The merchant";
 
         if (customerId) {
           // Deal to attach to: the customer's most recent non-declined deal. Fine
@@ -376,11 +471,16 @@ Deno.serve(async (req) => {
       // completed crawl is definitive: if this contact has no signature in it,
       // they have none. (The old heuristic — "fewer than 20 came back, so we saw
       // everything" — is gone with the single-page read that forced it.)
-      if (docsCrawlComplete && !documentsError) {
+      //
+      // It is also only honest when we know WHO we read for. An unreadable
+      // identity means we never established which contacts to union across, so
+      // stamping "checked" would convert a blind spot into a clean bill of
+      // health — the exact move that told the owner "Nothing sent yet".
+      if (docsCrawlComplete && !documentsError && identity.readable && identity.customerId) {
         const { error: stampErr } = await db
           .from("customers")
           .update({ ghl_docs_checked_at: new Date().toISOString() })
-          .eq("ghl_contact_id", contactId);
+          .eq("id", identity.customerId);
         if (stampErr) {
           console.warn("[ghl-docs-status] readability stamp failed:", stampErr.message);
         }
@@ -389,8 +489,35 @@ Deno.serve(async (req) => {
       console.warn("[ghl-docs-status] readability stamp skipped:", e instanceof Error ? e.message : e);
     }
 
-    // 2) Uploaded files on the contact's FILE_UPLOAD custom fields.
-    const uploads = await listContactFileUploads(cfg, contactId);
+    // 1d) Record any contact we matched a document through but did not already
+    //     know. Append-only — the primary pointer is never clobbered here; that
+    //     is what made the two pointers diverge in the first place.
+    const newlyLearned = [...matchedContactIds].filter((id) => !identity.contactIds.includes(id));
+    if (newlyLearned.length > 0 && identity.customerId) {
+      const { error: recErr } = await recordMerchantContacts(db, identity.customerId, newlyLearned);
+      if (recErr) console.warn("[ghl-docs-status] alias record failed:", recErr);
+      else identity.contactIds = [...identity.contactIds, ...newlyLearned];
+    }
+
+    // 2) Uploaded files on the merchant's FILE_UPLOAD custom fields — across
+    //    every contact we know for them. One GHL call each; a merchant with a
+    //    single contact (the normal case) costs exactly what it always did.
+    const uploadIds = (identity.readable && identity.contactIds.length
+      ? identity.contactIds
+      : [contactId]).slice(0, MAX_UPLOAD_CONTACTS);
+    const uploads: GhlUploadField[] = [];
+    let uploadsError: string | null = null;
+    for (const cid of uploadIds) {
+      try {
+        const r = await listContactFileUploadsResult(cfg, cid!);
+        uploads.push(...r.fields);
+        // UNREADABLE for this contact. Say so — an upload list that is short
+        // because a call failed must never read as "they uploaded nothing".
+        if (!r.ok) uploadsError = r.error;
+      } catch (e) {
+        uploadsError = `uploads for contact ${cid} could not be read: ${e instanceof Error ? e.message : e}`;
+      }
+    }
 
     // Strip the internal doc id — the client GhlDocument shape doesn't carry it.
     const documentsOut = documents.map(({ id: _id, ...rest }) => rest);
@@ -399,11 +526,31 @@ Deno.serve(async (req) => {
       ok: true,
       documents: documentsOut,
       uploads,
+      uploads_error: uploadsError,
       documents_error: documentsError,
       // Explicit so a caller can tell a fresh read from a ≤60s cached one
       // instead of inferring it. Pass { refresh: true } to force a fresh crawl.
       documents_cached: docsFromCache,
       documents_scanned: rawDocs.length,
+      // ── WHAT WAS ACTUALLY SEARCHED ────────────────────────────────────────
+      // An empty `documents` means one of two completely different things, and a
+      // caller that cannot tell them apart will say "nothing sent yet" about a
+      // merchant who signed. identity_readable:false means we never established
+      // whose documents to look for — that is UNREADABLE, not zero.
+      identity_readable: identity.readable,
+      identity_error: identity.readable ? discoveryError : identity.unreadableReason,
+      // PARTIAL: we had a contact id to search but could not tie it to exactly
+      // one merchant, so the search covered that contact only. Documents below
+      // are real; their ABSENCE is not proof about the merchant.
+      identity_partial: identity.partial,
+      identity_note: identity.scopeNote,
+      customer_id: identity.customerId,
+      // Every GHL contact this merchant is known by. More than one = the CRM
+      // holds duplicates; surfaces should say so rather than imply a single
+      // tidy record.
+      merchant_contacts: identity.contactIds,
+      merchant_contact_count: identity.contactIds.length,
+      contacts_searched: identity.contactIds.length || (contactId ? 1 : 0),
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);

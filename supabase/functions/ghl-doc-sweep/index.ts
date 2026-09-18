@@ -40,6 +40,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch } from "../_shared/ghl.ts";
+import { recordMerchantContacts } from "../_shared/merchantIdentity.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -134,27 +135,54 @@ Deno.serve(async (req) => {
           document_id: documentId,
           doc_name: d.name ?? "Document",
           contact_id: r.id as string,
+          // The address GHL prints on the recipient record. This is the second
+          // way home when the contact id is one we have never stored — see below.
+          recipient_email: (r.email ?? "").trim().toLowerCase(),
           // The merchant's REAL signature time. Falls back to the document's
           // updatedAt only if GHL ever omits it (all 39 live rows carry it).
           signed_at: r.signedDate ?? d.updatedAt ?? null,
         }));
     });
 
-    // ── 3. Resolve contacts -> customers in ONE query (never per-row).
+    // ── 3. Resolve signers -> customers in ONE query (never per-row).
+    //
+    // ⚠ THIS USED TO BE .in("ghl_contact_id", ids) AND IT DROPPED REAL
+    // SIGNATURES ON THE FLOOR. A merchant has one row here but can have several
+    // GHL contacts (two emails, a second owner). Miami Concierge Network signed
+    // two disclosures on 2026-09-18; GHL filed them against the contact our
+    // customers row did NOT point at, this lookup matched nothing, and they were
+    // counted as `unmappedContacts` — a number nobody reads — while every
+    // downstream surface said "not signed" to the owner with the merchant on the
+    // phone.
+    //
+    // So resolve through the whole identity: the primary pointer, every alias we
+    // have recorded, every deal-level pointer, AND the recipient's email. The
+    // email half is free (the crawl already fetched it) and is what finds a
+    // signature filed against a contact we have never stored.
     const contactIds = [...new Set(completions.map((c) => c.contact_id))];
+    const recipientEmails = [...new Set(completions.map((c) => c.recipient_email).filter(Boolean))];
     const byContact = new Map<string, { id: string; business_name: string | null }>();
-    if (contactIds.length > 0) {
-      const { data: custs, error: custErr } = await db
-        .from("customers")
-        .select("id, business_name, ghl_contact_id")
-        .in("ghl_contact_id", contactIds);
+    const byEmail = new Map<string, { id: string; business_name: string | null }>();
+    const ambiguousEmails = new Set<string>();
+    if (contactIds.length > 0 || recipientEmails.length > 0) {
+      const { data: hits, error: custErr } = await db.rpc("customer_ids_for_ghl", {
+        p_contact_ids: contactIds,
+        p_emails: recipientEmails,
+      });
       if (custErr) return json({ error: `customer lookup failed: ${custErr.message}` }, 502);
-      for (const c of custs ?? []) {
-        byContact.set(c.ghl_contact_id as string, {
-          id: c.id as string,
-          business_name: (c.business_name as string | null) ?? null,
-        });
+      for (const h of (hits ?? []) as Array<{ key: string; kind: string; customer_id: string; business_name: string | null }>) {
+        const target = h.kind === "contact" ? byContact : byEmail;
+        const prior = target.get(h.key);
+        if (prior && prior.id !== h.customer_id) {
+          // One address, two merchants. Refusing to guess is the point: attaching
+          // a signature to the wrong file is worse than leaving it unattached,
+          // and the count below makes the ambiguity visible.
+          if (h.kind === "email") ambiguousEmails.add(h.key);
+          continue;
+        }
+        target.set(h.key, { id: h.customer_id, business_name: h.business_name });
       }
+      for (const e of ambiguousEmails) byEmail.delete(e);
     }
 
     // ── 4. Upsert. document_id is the natural key, so re-running is free.
@@ -164,9 +192,20 @@ Deno.serve(async (req) => {
     let unmappedContacts = 0;
     const newlySigned: Array<{ customerId: string; businessName: string; docName: string; signedAt: string | null }> = [];
 
+    // Contact ids we only recognised via the recipient's email — i.e. GHL
+    // duplicates our tables did not know about. Recorded as aliases so the next
+    // read finds them by id, and reported so a human can see the duplication.
+    const learnedAliases = new Map<string, Set<string>>(); // customerId -> contactIds
+
     for (const c of completions) {
-      const cust = byContact.get(c.contact_id);
+      const byId = byContact.get(c.contact_id);
+      const viaEmail = !byId && c.recipient_email ? byEmail.get(c.recipient_email) : undefined;
+      const cust = byId ?? viaEmail;
       if (!cust) { unmappedContacts++; continue; } // a signer we have no customer for
+      if (viaEmail) {
+        if (!learnedAliases.has(cust.id)) learnedAliases.set(cust.id, new Set());
+        learnedAliases.get(cust.id)!.add(c.contact_id);
+      }
 
       const { data: existing, error: selErr } = await db
         .from("ghl_doc_completions")
@@ -214,6 +253,16 @@ Deno.serve(async (req) => {
           signedAt: c.signed_at,
         });
       }
+    }
+
+    // ── 4b. Persist the duplicates we just learned about. Append-only: the
+    //     primary pointer is never clobbered, because two writers clobbering one
+    //     pointer is the bug this whole change exists to end.
+    let aliasesRecorded = 0;
+    for (const [customerId, ids] of learnedAliases) {
+      const { added, error } = await recordMerchantContacts(db, customerId, [...ids]);
+      if (error) console.warn("[ghl-doc-sweep] alias record failed:", error);
+      else aliasesRecorded += added.length;
     }
 
     // ── 5. Side effects for genuinely fresh signatures: the closer-visible note
@@ -289,6 +338,11 @@ Deno.serve(async (req) => {
       recorded_new: recorded,
       signed_at_backfilled: updated,
       unmapped_contacts: unmappedContacts,
+      // Signatures we found only because we matched the recipient's EMAIL — each
+      // one is a GHL contact duplicate our tables had never recorded, and each
+      // would previously have been silently dropped as "unmapped".
+      aliases_recorded: aliasesRecorded,
+      ambiguous_emails: ambiguousEmails.size,
       fresh_signatures: newlySigned.length,
       timeline_notes: noted,
       checklist_ticks: checklistTicks,

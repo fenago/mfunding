@@ -58,7 +58,7 @@ import PlaybookTextSend from "../../components/admin/PlaybookTextSend";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
-import { openGhlUploadViaProxy } from "../../lib/ghlDocs";
+import { openGhlUploadViaProxy, readDocsStatus, duplicateContactNote, type GhlDocsStatus } from "../../lib/ghlDocs";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
@@ -850,17 +850,36 @@ export default function PlaybooksPage() {
           // succeeded — an accusation manufactured out of a stale read. The
           // cache is right for the mount-time readers; it is wrong for a check
           // whose whole job is to observe something that just changed.
-          .invoke("ghl-docs-status", { body: { ghl_contact_id: deal.ghl_contact_id, refresh: true } })
-          .then(({ data }) => {
-            const docs = (data?.documents ?? []) as Array<{ name?: string }>;
+          // discover: true — before accusing anyone, look for a DUPLICATE
+          // VibeReach contact the application may have landed on. Merchants with
+          // two email addresses have several contacts, and the document goes to
+          // whichever one the send resolved (see _shared/merchantIdentity.ts).
+          .invoke("ghl-docs-status", {
+            body: { ghl_contact_id: deal.ghl_contact_id, refresh: true, discover: true },
+          })
+          .then(({ data, error }) => {
+            const state = readDocsStatus(data as GhlDocsStatus, error);
+            // UNREADABLE MAY NOT ACCUSE. An empty list we never earned would
+            // announce "the send may have failed" about a send that worked —
+            // and the obvious response is to send the merchant a second copy.
+            if (state.kind === "unreadable") {
+              notify(
+                `Stage moved to App Sent. Couldn't verify it in VibeReach (${state.why}) — this is NOT a sign the send failed; check VibeReach before re-sending.`,
+                "warn",
+              );
+              return;
+            }
             // isApplicationDoc, not a local regex: this decides whether to accuse
             // a closer of a failed send, and a matcher that drifted onto the
             // broker disclosure would call a real send a failure (or miss a real
             // failure by matching the disclosure that IS out).
-            const appOut = docs.some((d) => isApplicationDoc(d.name ?? ""));
+            const appOut = state.docs.some((d) => isApplicationDoc(d.name ?? ""));
             if (!appOut) {
               notify(
-                "⚠️ Stage moved to App Sent, but GHL shows NO application out for signature — the send may have failed. Use Send docs to actually send it.",
+                "⚠️ Stage moved to App Sent, but GHL shows NO application out for signature — the send may have failed. Use Send docs to actually send it." +
+                  (state.contactCount > 1
+                    ? ` (Searched all ${state.contactCount} VibeReach contacts for this merchant.)`
+                    : ""),
                 "error",
               );
             }
@@ -1842,6 +1861,18 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<GhlDoc[]>([]);
   const [uploads, setUploads] = useState<{ field: string; files: { name: string; url: string | null }[] }[]>([]);
+  // An upload list that is short because a GHL call FAILED must not read as "they
+  // uploaded nothing" — that is how a merchant who sent their statements gets
+  // chased for them.
+  const [uploadsError, setUploadsError] = useState<string | null>(null);
+  // How many VibeReach contacts this merchant is known by. >1 means the CRM holds
+  // duplicates and a document could be filed against any of them — a setter needs
+  // to SEE that rather than trust a tidy-looking single record.
+  const [contactCount, setContactCount] = useState(1);
+  // Set when only ONE contact could be searched because it couldn't be tied to
+  // exactly one merchant. The documents shown are real; an empty list under this
+  // caveat proves nothing about what the merchant did.
+  const [scopeCaveat, setScopeCaveat] = useState<string | null>(null);
   // Whether the signed application is attached APP-SIDE (customer_documents) —
   // ground truth for the action banner. Null until the first check resolves, so
   // the LOUD banner never flashes before we know.
@@ -1860,13 +1891,30 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
     setLoading(true);
     setError(null);
     try {
+      // discover: true — this panel answers "what came back from the merchant?",
+      // so it is worth one bounded VibeReach lookup to find a DUPLICATE contact
+      // their documents may have been filed against. (Miami Concierge Network,
+      // 2026-09-18: three contacts for one company, eight documents on the one
+      // nobody was reading, two of them signed, panel said "No documents sent yet".)
       const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
-        body: { ghl_contact_id: ghlContactId },
+        body: { ghl_contact_id: ghlContactId, discover: true },
       });
-      if (data?.error) throw new Error(data.error);
       if (error) await invokeThrow(error);
-      setDocs(data?.documents ?? []);
-      setUploads(data?.uploads ?? []);
+      const state = readDocsStatus(data as GhlDocsStatus, null);
+      if (state.kind === "unreadable") {
+        // Unreadable is an ERROR state here, deliberately — never an empty list.
+        // An empty list under this heading is a claim about the merchant.
+        setDocs([]);
+        setUploads([]);
+        setContactCount(1);
+        setScopeCaveat(null);
+        throw new Error(state.why);
+      }
+      setDocs(state.docs);
+      setUploads((data as GhlDocsStatus)?.uploads ?? []);
+      setUploadsError((data as GhlDocsStatus)?.uploads_error ?? null);
+      setContactCount(state.contactCount);
+      setScopeCaveat(state.caveat);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load doc status");
     }
@@ -1938,13 +1986,38 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
           </Link>
         </div>
       )}
+      {/* THE CRM HOLDS MORE THAN ONE CONTACT FOR THIS MERCHANT. Say it out loud:
+          a confident blank is what put a furious signed-and-ignored customer on
+          the owner's phone. All of them ARE searched — this is disclosure, not a
+          warning to act on. */}
+      {contactCount > 1 && !loading && !error && (
+        <p className="mb-2 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-900/20 px-2.5 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+          {duplicateContactNote(contactCount)}
+        </p>
+      )}
       {loading ? (
         <p className="text-xs text-gray-400">Checking GHL…</p>
       ) : error ? (
-        <p className="text-xs text-red-500">{error}</p>
+        <p className="text-xs text-red-500">
+          Couldn't read VibeReach — {error}. This does <strong>not</strong> mean nothing was sent or signed.
+        </p>
       ) : (
         <div className="space-y-2">
-          {docs.length === 0 && <p className="text-xs text-gray-400">No documents sent yet.</p>}
+          {scopeCaveat && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              Only part of VibeReach was searched — {scopeCaveat}. An empty list here is not proof.
+            </p>
+          )}
+          {docs.length === 0 && (
+            <p className="text-xs text-gray-400">
+              {scopeCaveat ? "No documents on the contact we could search." : "No documents sent yet."}
+            </p>
+          )}
+          {uploadsError && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              Their uploaded files couldn't be read ({uploadsError}) — the list below may be incomplete.
+            </p>
+          )}
           {groupDocs(docs).map((g) => {
             // The application group's LATEST copy signed in GHL is the trigger for
             // the unmissable "upload it here" banner (only once the check resolves,
