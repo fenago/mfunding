@@ -17,7 +17,7 @@
 //   3. Non-application docs (disclosures, TCPA, bank auth) are unaffected.
 // Implemented here so every surface inherits it by construction.
 
-import type { MerchantDocument, GhlDocument } from "../services/portalService";
+import type { MerchantDocument, GhlDocument, GhlDocsResult } from "../services/portalService";
 
 // KEEP IN LOCKSTEP with public.is_application_doc_name(text) (migration
 // 20260917a). The previous rule here was /application|prefill/i, which does NOT
@@ -119,7 +119,17 @@ function applyOneApplicationRule(all: Signable[]): Signable[] {
 }
 
 export interface ApplicationStatus {
-  state: "signed" | "pending" | "none";
+  /**
+   * FOUR states, not three.
+   *
+   * `unknown` is the one that was missing, and its absence was a bug with a
+   * customer on the other end: with only signed/pending/none, a document read
+   * that FAILED collapsed into `none`, and the portal told the merchant their
+   * specialist would send the application "shortly" — about an application that
+   * may already be sitting in their inbox, or already signed. `none` now means
+   * we looked and there is genuinely nothing; `unknown` means we could not look.
+   */
+  state: "signed" | "pending" | "none" | "unknown";
   name?: string;
   /** Signed date (ISO), when state is 'signed'. */
   date?: string | null;
@@ -142,13 +152,38 @@ export interface UnifiedDocs {
   expiredGhl: GhlDocument[];
   /** The single resolved application, for the journey's application step. */
   application: ApplicationStatus;
+  /**
+   * ⚠️ THE LIST MAY BE INCOMPLETE, AND EVERY SURFACE MUST HONOUR THIS.
+   *
+   * True when the e-sign read failed outright, or covered only part of the
+   * merchant's contact set. `pending` being empty then proves NOTHING, and no
+   * surface may say "nothing to sign" — the one claim the merchant has no way to
+   * verify and every reason to believe.
+   */
+  docsUnknown: boolean;
+  /** Which kind of not-knowing, so a surface can word it accurately. */
+  unknownKind: "unreadable" | "partial" | null;
 }
 
-export function unifyDocs(native: MerchantDocument[], ghl: GhlDocument[]): UnifiedDocs {
+/**
+ * Collapse the merchant's two document sources into one list.
+ *
+ * The second argument is the WHOLE result of the e-sign read, not just its
+ * documents, so that "we found nothing" and "we couldn't look" cannot be
+ * confused by construction. Every caller gets `docsUnknown` whether it
+ * remembered to think about it or not — which is the point, because the surfaces
+ * that got this wrong were the ones that never considered the failure path.
+ */
+export function unifyDocs(native: MerchantDocument[], ghl: GhlDocsResult): UnifiedDocs {
   const kept = applyOneApplicationRule([
     ...native.map(nativeToSignable),
-    ...ghl.map(ghlToSignable),
+    ...ghl.documents.map(ghlToSignable),
   ]);
+  const unknownKind: UnifiedDocs["unknownKind"] = !ghl.readable
+    ? "unreadable"
+    : ghl.partial
+      ? "partial"
+      : null;
   return {
     all: kept,
     pending: kept.filter((s) => s.pending),
@@ -156,11 +191,13 @@ export function unifyDocs(native: MerchantDocument[], ghl: GhlDocument[]): Unifi
     signedNative: kept.filter((s) => s.source === "native" && s.signed).map((s) => s.nativeDoc!),
     signedGhl: kept.filter((s) => s.source === "ghl" && s.signed).map((s) => s.ghlDoc!),
     expiredGhl: kept.filter((s) => s.source === "ghl" && s.expired).map((s) => s.ghlDoc!),
-    application: resolveApplication(kept),
+    application: resolveApplication(kept, unknownKind !== null),
+    docsUnknown: unknownKind !== null,
+    unknownKind,
   };
 }
 
-function resolveApplication(kept: Signable[]): ApplicationStatus {
+function resolveApplication(kept: Signable[], docsUnknown: boolean): ApplicationStatus {
   const apps = kept.filter((s) => s.isApplication);
   const signed = apps.find((s) => s.signed);
   if (signed) {
@@ -168,7 +205,14 @@ function resolveApplication(kept: Signable[]): ApplicationStatus {
     return { state: "signed", name: signed.name, date, signable: signed };
   }
   const pending = apps.filter((s) => s.pending).sort((a, b) => b.ts - a.ts)[0];
+  // A document we can SEE is worth more to the merchant than a caveat: showing
+  // the pending application keeps the signing link in reach. The page-level
+  // notice still tells them the list may be incomplete, which is the honest
+  // pairing — hiding the link to be cautious would strand someone who could
+  // have signed in the next minute.
   if (pending) return { state: "pending", name: pending.name, signable: pending };
+  // NOTHING FOUND. Which is only "nothing was sent" if we actually looked.
+  if (docsUnknown) return { state: "unknown" };
   return { state: "none" };
 }
 

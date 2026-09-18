@@ -473,19 +473,97 @@ export interface GhlDocument {
   url: string | null;
 }
 
-/** The signed-in merchant's real GHL e-sign documents. Resolves the contact
- *  server-side; graceful [] on any failure (never blocks the portal). */
-export async function getMyGhlDocuments(): Promise<GhlDocument[]> {
+/**
+ * The result of asking for the merchant's e-sign documents — DOCUMENTS PLUS
+ * WHETHER WE ACTUALLY MANAGED TO LOOK.
+ *
+ * ⚠️ THIS IS THE WHOLE POINT OF THE TYPE. The old version of this function
+ * returned a bare `GhlDocument[]` and turned every failure into `[]`. The portal
+ * then told the MERCHANT "No documents are waiting for your signature right now"
+ * — a confident negative fact, said to the one person who cannot check it, on the
+ * strength of a read that never happened. When they then don't sign, the deal
+ * reads internally as UNSIGNED, so an outage we never disclosed becomes the
+ * merchant's fault. That is the July–September shape where 44 merchants with a
+ * working login were shown an empty page, two stuck at application_sent for two
+ * months.
+ *
+ * The edge function has always distinguished these cases (`documents_error`,
+ * `identity_readable`, `identity_partial`) and its own comment says a caller that
+ * cannot tell them apart "will say 'nothing sent yet' about a merchant who
+ * signed". The client threw every one of those fields away. It doesn't now.
+ */
+export interface GhlDocsResult {
+  documents: GhlDocument[];
+  /**
+   * TRUE only when the read genuinely succeeded: we established whose documents
+   * to look for AND the document crawl completed. When false, an empty
+   * `documents` means WE DON'T KNOW — never "nothing was sent".
+   */
+  readable: boolean;
+  /**
+   * TRUE when we searched only part of the merchant's contact set. The documents
+   * listed are real; their ABSENCE proves nothing. Not theoretical: one live
+   * merchant's eight documents all sit on his SECOND contact, so a single-contact
+   * read reports him as having nothing.
+   */
+  partial: boolean;
+  /** Server's plain-language scope note. DIAGNOSTIC — never rendered raw. */
+  note: string | null;
+  /** What went wrong, when something did. DIAGNOSTIC — never rendered raw. */
+  error: string | null;
+  /** How many GHL contacts this merchant is known by (>1 = CRM duplicates). */
+  contactCount: number;
+}
+
+/** The honest empty: nothing found AND nothing established. */
+function unreadableDocs(error: string): GhlDocsResult {
+  return { documents: [], readable: false, partial: false, note: null, error, contactCount: 0 };
+}
+
+/** The signed-in merchant's real GHL e-sign documents, plus whether the read
+ *  could be trusted. Resolves the contact server-side. Never throws and never
+ *  blocks the portal — but a failure comes back as `readable: false`, NOT as an
+ *  empty list that reads like an answer. */
+export async function getMyGhlDocuments(): Promise<GhlDocsResult> {
   try {
     const { data, error } = await supabase.functions.invoke("ghl-docs-status", { body: {} });
     if (error) {
-      console.warn("[ghl-docs-status] load failed (non-blocking):", error.message);
-      return [];
+      console.warn("[ghl-docs-status] load failed:", error.message);
+      return unreadableDocs(error.message || "the document service did not respond");
     }
-    return ((data?.documents ?? []) as GhlDocument[]).filter((d) => !!d && !!d.name);
+    if (!data || data.ok !== true) {
+      // A body without ok:true is a failure wearing a 200. Treat it as one.
+      const why = (data?.error as string | undefined) ?? "the document service returned no result";
+      console.warn("[ghl-docs-status] not ok:", why);
+      return unreadableDocs(why);
+    }
+
+    const documents = ((data.documents ?? []) as GhlDocument[]).filter((d) => !!d && !!d.name);
+    // READABLE means BOTH halves worked: we knew whose documents to look for,
+    // and the crawl for them completed. Either half failing makes the list's
+    // emptiness meaningless.
+    const identityReadable = data.identity_readable === true;
+    const documentsError = (data.documents_error as string | null) ?? null;
+    const readable = identityReadable && !documentsError;
+
+    if (!readable) {
+      console.warn(
+        "[ghl-docs-status] unreadable:",
+        documentsError ?? (data.identity_error as string | undefined) ?? "identity not established",
+      );
+    }
+
+    return {
+      documents,
+      readable,
+      partial: data.identity_partial === true,
+      note: (data.identity_note as string | null) ?? null,
+      error: documentsError ?? ((data.identity_error as string | null) ?? null),
+      contactCount: (data.merchant_contact_count as number | undefined) ?? 0,
+    };
   } catch (e) {
-    console.warn("[ghl-docs-status] threw (non-blocking):", e);
-    return [];
+    console.warn("[ghl-docs-status] threw:", e);
+    return unreadableDocs(e instanceof Error ? e.message : "the document service could not be reached");
   }
 }
 

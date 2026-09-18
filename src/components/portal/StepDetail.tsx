@@ -13,6 +13,7 @@ import PaydownTracker from "./PaydownTracker";
 import PostFundingVault from "./PostFundingVault";
 import Countdown from "./Countdown";
 import FreshApplicationLink from "./FreshApplicationLink";
+import DocsUnknownNotice from "./DocsUnknownNotice";
 
 interface StepDetailProps {
   deal: PortalDeal;
@@ -253,6 +254,14 @@ function ApplicationCard({
     );
   }
 
+  // ⚠️ WE COULD NOT CHECK. Saying "your specialist will send it shortly" here
+  // would be a promise made on a read that never happened — to a merchant whose
+  // application may already be in their inbox, or already signed. The four-state
+  // model exists for exactly this branch; see ApplicationStatus in utils/signing.
+  if (application.state === "unknown") {
+    return <DocsUnknownNotice kind="unreadable" variant="inline" className="text-sm" />;
+  }
+
   return (
     <p className="text-sm text-gray-500 dark:text-gray-400">
       Your specialist will send your application to sign shortly.
@@ -297,6 +306,11 @@ function PaperworkList({
 
   return (
     <div className="space-y-4">
+      {/* The counts below are computed over the documents we could SEE. When the
+          e-sign read failed or covered only part of the merchant's file, say so
+          before the numbers — "3 of 3 done" over a short list reads as finished. */}
+      <DocsUnknownNotice kind={unified.unknownKind} variant="inline" />
+
       {/* Combined progress — signatures + required uploads primary, optional secondary */}
       {total > 0 && (
         <p className="text-sm font-semibold text-gray-900 dark:text-white">

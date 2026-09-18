@@ -15,7 +15,7 @@ import {
   type PortalDeal,
   type DocRequest,
   type MerchantDocument,
-  type GhlDocument,
+  type GhlDocsResult,
 } from "../../services/portalService";
 import ActionBlock from "../../components/portal/ActionBlock";
 import ConnectBankCard from "../../components/portal/ConnectBankCard";
@@ -40,7 +40,16 @@ export default function PortalDashboardPage() {
   const [deals, setDeals] = useState<PortalDeal[]>([]);
   const [docRequests, setDocRequests] = useState<DocRequest[]>([]);
   const [signDocuments, setSignDocuments] = useState<MerchantDocument[]>([]);
-  const [ghlDocuments, setGhlDocuments] = useState<GhlDocument[]>([]);
+  // The WHOLE e-sign result. `readable: false` until the first load returns, so
+  // a failed load can never be mistaken for "nothing was sent".
+  const [ghlDocuments, setGhlDocuments] = useState<GhlDocsResult>({
+    documents: [],
+    readable: false,
+    partial: false,
+    note: null,
+    error: null,
+    contactCount: 0,
+  });
   const [offerCount, setOfferCount] = useState(0);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
@@ -101,7 +110,8 @@ export default function PortalDashboardPage() {
       setSignDocuments([]);
     }
 
-    // Real GHL e-sign documents (resolves the contact server-side; [] on failure).
+    // Real GHL e-sign documents (contact resolved server-side). A failure comes
+    // back as readable:false, NOT as an empty list — see getMyGhlDocuments.
     setGhlDocuments(await getMyGhlDocuments());
 
     // Authoritative count of reviewable offers, for the Action-Needed hero.
@@ -237,6 +247,8 @@ export default function PortalDashboardPage() {
         deals={deals}
         pending={unified.pending}
         application={unified.application}
+        docsUnknown={unified.docsUnknown}
+        unknownKind={unified.unknownKind}
         docRequests={docRequests}
         offerCount={offerCount}
         onSignNative={setSigningDoc}

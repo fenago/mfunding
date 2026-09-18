@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { BellIcon, PencilSquareIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
+import {
+  BellIcon,
+  PencilSquareIcon,
+  ArrowTopRightOnSquareIcon,
+  ExclamationTriangleIcon,
+} from "@heroicons/react/24/outline";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { tryWrite } from "@/supabase/writes";
@@ -30,6 +35,11 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [pending, setPending] = useState<Signable[]>([]);
+  // ⚠️ "No documents to sign" and "we could not check" are different facts, and
+  // this bell used to render both as silence — no badge, no row, nothing. A
+  // merchant with an application waiting saw an empty bell and concluded there
+  // was nothing to do.
+  const [docsUnknown, setDocsUnknown] = useState(false);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -43,11 +53,15 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
         getMyGhlDocuments(),
       ]);
       setMessages(msgs);
-      setPending(unifyDocs(mDocs, gDocs).pending);
+      const unified = unifyDocs(mDocs, gDocs);
+      setPending(unified.pending);
+      setDocsUnknown(unified.docsUnknown);
     } catch (e) {
       console.error("Failed to load notifications:", e);
       setMessages([]);
       setPending([]);
+      // The whole load failed, so we know nothing about their documents either.
+      setDocsUnknown(true);
     }
     setLoading(false);
   };
@@ -131,6 +145,14 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
         className="relative p-1.5 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"
       >
         <BellIcon className="w-6 h-6" />
+        {/* A count would be a claim. When the document read failed we mark the
+            bell without asserting a number — the panel explains. */}
+        {docsUnknown && (
+          <span
+            className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white dark:ring-gray-800"
+            aria-label="We couldn't check your documents"
+          />
+        )}
         {unreadCount > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 bg-mint-green text-white text-[10px] font-bold rounded-full flex items-center justify-center">
             {unreadCount > 9 ? "9+" : unreadCount}
@@ -189,9 +211,34 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
                 </button>
               ))}
 
+              {/* Pinned above everything when we could not read their documents.
+                  Never a silent empty bell — see the note on docsUnknown. */}
+              {docsUnknown && !loading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    navigate("/portal/documents");
+                  }}
+                  className="w-full text-left px-4 py-3 flex items-start gap-3 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                >
+                  <span className="p-1.5 rounded-lg bg-amber-100 dark:bg-amber-800/40 text-amber-700 dark:text-amber-300 flex-shrink-0">
+                    <ExclamationTriangleIcon className="w-4 h-4" />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                      We couldn't check your documents
+                    </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      This doesn't mean nothing was sent — open Documents to try again.
+                    </p>
+                  </div>
+                </button>
+              )}
+
               {loading && recent.length === 0 && signPinCount === 0 ? (
                 <div className="p-6 text-center text-sm text-gray-500">Loading…</div>
-              ) : recent.length === 0 && signPinCount === 0 ? (
+              ) : recent.length === 0 && signPinCount === 0 && !docsUnknown ? (
                 <div className="p-6 text-center">
                   <CheckCircleIcon className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
                   <p className="text-sm text-gray-500">You're all caught up.</p>

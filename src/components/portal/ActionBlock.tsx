@@ -9,11 +9,12 @@ import {
   BanknotesIcon,
 } from "@heroicons/react/24/solid";
 import type { PortalDeal, DocRequest, MerchantDocument } from "../../services/portalService";
-import { openGhlDoc, type Signable, type ApplicationStatus } from "../../utils/signing";
+import { openGhlDoc, type Signable, type ApplicationStatus, type UnifiedDocs } from "../../utils/signing";
 import { isDeadlinePast } from "../../utils/deadline";
 import { cleanDocLabel, joinLabels } from "../../data/docRequests";
 import Countdown from "./Countdown";
 import FreshApplicationLink from "./FreshApplicationLink";
+import DocsUnknownNotice from "./DocsUnknownNotice";
 
 interface ActionBlockProps {
   deals: PortalDeal[];
@@ -21,6 +22,16 @@ interface ActionBlockProps {
   pending: Signable[];
   /** Resolved application — powers the "fill out a fresh one" fallback link. */
   application: ApplicationStatus;
+  /**
+   * ⚠️ TRUE when the e-sign document read failed or covered only part of the
+   * merchant's file. `pending` is then not a short list, it is an UNKNOWN one —
+   * and the green "You're all set" below must not fire on it. This block sits
+   * sticky at the top of the dashboard, so it is the loudest thing we say to a
+   * merchant, and "all set" is the single claim they have no way to check.
+   */
+  docsUnknown?: boolean;
+  /** Which kind of not-knowing, for the wording. */
+  unknownKind?: UnifiedDocs["unknownKind"];
   docRequests: DocRequest[];
   offerCount: number;
   /** Open a native agreement in the in-app signing modal. */
@@ -50,6 +61,8 @@ export default function ActionBlock({
   deals,
   pending,
   application,
+  docsUnknown = false,
+  unknownKind = null,
   docRequests,
   offerCount,
   onSignNative,
@@ -84,6 +97,17 @@ export default function ActionBlock({
   const offersActive = offerCount > 0 || deals.some((d) => d.status === "offer_presented");
 
   const rowCount = pending.length + (needUpload ? 1 : 0) + (offersActive ? 1 : 0);
+
+  // WE COULD NOT CHECK. Not an all-clear: an unread application may be sitting
+  // in their inbox right now. Say so where the green card would have been,
+  // rather than reassuring them on the strength of a read that never happened.
+  if (rowCount === 0 && docsUnknown) {
+    return (
+      <div className="sticky top-2 z-20">
+        <DocsUnknownNotice kind={unknownKind ?? "unreadable"} />
+      </div>
+    );
+  }
 
   // Nothing urgent → the all-set state (with a soft optional nudge if any remain).
   if (rowCount === 0) {
@@ -124,6 +148,10 @@ export default function ActionBlock({
         <BoltIcon className="w-5 h-5 text-amber-500" />
         <h2 className="font-bold text-gray-900 dark:text-white">What you need to do now</h2>
       </div>
+
+      {/* There ARE things to do — but the list may be short. A header promising
+          "what you need to do now" is a completeness claim; qualify it. */}
+      {docsUnknown && <DocsUnknownNotice kind={unknownKind ?? "unreadable"} variant="inline" className="mb-3" />}
 
       <div className="space-y-2">
         {/* 1) Sign */}

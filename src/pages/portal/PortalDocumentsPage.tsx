@@ -16,7 +16,7 @@ import {
   getMyGhlDocuments,
   type DocRequest,
   type MerchantDocument,
-  type GhlDocument,
+  type GhlDocsResult,
 } from "../../services/portalService";
 import { DOCUMENT_TYPES } from "../../data/docRequests";
 import { unifyDocs, openGhlDoc } from "../../utils/signing";
@@ -24,6 +24,7 @@ import DocChecklist from "../../components/portal/DocChecklist";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
 import ConnectBankCard from "../../components/portal/ConnectBankCard";
+import DocsUnknownNotice from "../../components/portal/DocsUnknownNotice";
 
 interface CustomerDocument {
   id: string;
@@ -45,7 +46,18 @@ export default function PortalDocumentsPage() {
   const [documents, setDocuments] = useState<CustomerDocument[]>([]);
   const [requests, setRequests] = useState<DocRequest[]>([]);
   const [merchantDocs, setMerchantDocs] = useState<MerchantDocument[]>([]);
-  const [ghlDocs, setGhlDocs] = useState<GhlDocument[]>([]);
+  // The WHOLE e-sign result, not just its documents: whether the read worked is
+  // what decides between "nothing to sign" and "we couldn't check".
+  const [ghlDocs, setGhlDocs] = useState<GhlDocsResult>({
+    documents: [],
+    // Until the first load returns, we have not looked — and must not imply we
+    // have. isLoading covers the spinner; this covers a failed first load.
+    readable: false,
+    partial: false,
+    note: null,
+    error: null,
+    contactCount: 0,
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [showOnFile, setShowOnFile] = useState(false);
@@ -118,7 +130,9 @@ export default function PortalDocumentsPage() {
   const ghlDead = unified.expiredGhl;
   const hasPendingSign = unified.pending.length > 0;
   // All-clear only when there's nothing to sign (native OR GHL) AND nothing requested.
-  const allClear = !hasPendingSign && requests.length === 0;
+  // ⚠️ The big green all-clear is the loudest confident negative on this page.
+  // It may only appear when the document read actually succeeded.
+  const allClear = !hasPendingSign && requests.length === 0 && !unified.docsUnknown;
   const onFileCount = signedDocs.length + documents.length + ghlDone.length + ghlDead.length;
 
   return (
@@ -157,11 +171,20 @@ export default function PortalDocumentsPage() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">To sign</h2>
             {hasPendingSign ? (
-              <DocumentsToSign
-                pending={unified.pending}
-                onSelectNative={setSigningDoc}
-                application={unified.application}
-              />
+              <>
+                <DocumentsToSign
+                  pending={unified.pending}
+                  onSelectNative={setSigningDoc}
+                  application={unified.application}
+                />
+                {/* Real documents, possibly not ALL of them. Quiet line, not a
+                    warning block — nothing here is wrong, it may just be short. */}
+                <DocsUnknownNotice kind={unified.unknownKind} variant="inline" />
+              </>
+            ) : unified.docsUnknown ? (
+              // ⚠️ NOT an empty state. We did not manage to look, so we say that
+              // instead of telling the merchant nothing is waiting for them.
+              <DocsUnknownNotice kind={unified.unknownKind} onRetry={fetchAll} />
             ) : (
               <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
                 No documents are waiting for your signature right now.
