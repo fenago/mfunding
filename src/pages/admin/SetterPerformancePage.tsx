@@ -3532,6 +3532,15 @@ export default function SetterPerformancePage() {
        *  (`outcome_followed_refusal`), so it goes straight into the tooltip.
        *  null when no artifact was linked to the call at all. */
       refusal: string | null;
+      /** THE CALL THE DERIVATION SITS ON — which is NOT `latest`, and reading the
+       *  reason off `latest` is a bug this row has already had.
+       *  `disposition_derived_reason` exists only on the derived row, and later
+       *  chases routinely bury it: on MF-2026-0323, the ONLY live derivation,
+       *  the derived call is 09-08 and four typed "Voice Message" chases follow
+       *  it through 09-16. `latest` is therefore a typed row whose reason is
+       *  null, and the marker rendered its generic half while silently dropping
+       *  the artifact it exists to name. */
+      derivedCall: SetterCall | null;
     } => {
       const digits = last10(d.customer?.phone);
       const calls =
@@ -3539,7 +3548,7 @@ export default function SetterPerformancePage() {
         (digits ? byPhone.get(digits) : undefined) ??
         [];
       if (calls.length === 0) {
-        return { kind: "none", latest: null, calls: 0, derivedOnly: false, refusal: null };
+        return { kind: "none", latest: null, calls: 0, derivedOnly: false, refusal: null, derivedCall: null };
       }
       const latest = [...calls].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
       // ── AND WHY WE DID NOT WORK IT OUT OURSELVES ───────────────────────
@@ -3559,8 +3568,17 @@ export default function SetterPerformancePage() {
       const refusal = linked?.outcome_followed_refusal ?? null;
       // ── A DERIVED POSITIVE DOES NOT CLOSE THE LOGGING GAP ──────────────
       // 20260918d derives a disposition from the application that followed the
-      // call, which correctly puts Rafael Badia in the table above — but it does
-      // NOT mean anybody typed a disposition. Collapsing both into one
+      // call, which correctly puts Terrance Smith (MF-2026-0323) in the table
+      // above — but it does NOT mean anybody typed a disposition.
+      //
+      // The example used to read "Rafael Badia" and no longer can: 20260918e
+      // gates derivation on answered_at, and Rafael's call was never answered,
+      // so he derives NOTHING and his row shows the plain
+      // "no disposition on the call ⚠" this chip was built for. Naming a live
+      // merchant in a comment is worth doing — it is checkable — which is
+      // exactly why it has to be re-checked when the rule moves.
+      //
+      // Collapsing both into one
       // "also on a call" badge silently heals the exact coaching signal this
       // chip was built for, which is why the positives are split by provenance
       // here rather than counted. The Disposition Review tab keeps both facts
@@ -3576,15 +3594,20 @@ export default function SetterPerformancePage() {
           calls: calls.length,
           derivedOnly: positives.every(isDerived),
           refusal,
+          // Newest first, so if several calls on one merchant ever derive, the
+          // reason shown is the one the reader is most likely asking about.
+          derivedCall:
+            positives.filter(isDerived)
+              .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0] ?? null,
         };
       }
       if (calls.every(isUndispositioned)) {
-        return { kind: "undispositioned", latest, calls: calls.length, derivedOnly: false, refusal };
+        return { kind: "undispositioned", latest, calls: calls.length, derivedOnly: false, refusal, derivedCall: null };
       }
       const dispositioned = [...calls]
         .filter((c) => !isUndispositioned(c))
         .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
-      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length, derivedOnly: false, refusal };
+      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length, derivedOnly: false, refusal, derivedCall: null };
     };
   }, [aggRows]);
 
@@ -5495,17 +5518,25 @@ export default function SetterPerformancePage() {
                                             DERIVED from this very application.
                                             Nobody typed one. Without this the
                                             derivation silently heals the
-                                            coaching signal: Rafael Badia would
-                                            read "also on a call ↑" as though
-                                            Catherine had dispositioned the call
-                                            she never dispositioned. */}
+                                            coaching signal: Terrance Smith
+                                            (MF-2026-0323) would read "also on a
+                                            call ↑" as though Kristine had
+                                            dispositioned the 97-second call she
+                                            never dispositioned. (Rafael Badia
+                                            was this example until 20260918e
+                                            gated derivation on answered_at; he
+                                            now derives nothing.) */}
                                         {callState.kind === "positive" && callState.derivedOnly && (
                                           <span
                                             className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
                                             title={
                                               `The disposition on that call was DERIVED from this application, not typed. ` +
-                                              (callState.latest?.disposition_derived_reason
-                                                ? `${callState.latest.disposition_derived_reason}. `
+                                              // derivedCall, NOT latest — the
+                                              // reason lives only on the derived
+                                              // row, and typed chases after it
+                                              // are what `latest` returns.
+                                              (callState.derivedCall?.disposition_derived_reason
+                                                ? `${callState.derivedCall.disposition_derived_reason}. `
                                                 : "") +
                                               `The conversation is real and now counts, but the setter still left the call undispositioned — that gap is coachable and does not disappear because we recovered the answer.`
                                             }
