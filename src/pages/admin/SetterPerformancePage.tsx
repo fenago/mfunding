@@ -917,11 +917,25 @@ function needsDispositionReview(r: SetterCall): boolean {
   // The duration+answered test below is a proxy for "this was probably a real
   // talk". `outcome_followed_at` is not a proxy at all: an application or an
   // appointment demonstrably came out of this call's window. Requiring the proxy
-  // AS WELL made this tab blind to exactly the calls it exists to catch —
-  // Rafael Badia's 09-18 dial carries answered_at NULL and seconds NULL, so it
+  // AS WELL made this tab blind to exactly the calls it exists to catch.
+  //
+  // THE ORIGINAL EXAMPLE IS GONE, AND HOW IT WENT IS THE BETTER ARGUMENT.
+  // Rafael Badia's 09-18 dial read answered_at NULL and seconds NULL, so it
   // failed `reachedHuman` and `>= 60s` twice over while an application went out
-  // twelve minutes later. The one surface built to find that gap could not see
-  // it.
+  // twelve minutes later — the one surface built to find that gap could not see
+  // it. Then 20260918f re-asked WAVV for the row and it came back 1503 SECONDS,
+  // answered, dispositioned "Full Application" by the setter herself. The call
+  // had never been un-dispositioned at all; our mirror wrote the row 31 seconds
+  // into the dial, while the line was still ringing, and never looked again.
+  // Kietta Gamble was the same (786s, "Partial Application").
+  //
+  // So the proxy did not merely miss a real talk — it was reading a TRUNCATED
+  // write and scoring a twenty-five minute conversation as a dial that missed.
+  // That is the case for keeping this gate on the ARTIFACT rather than on
+  // duration and answer: `outcome_followed_at` was right about both rows while
+  // every duration-shaped test on the page was wrong about them, because an
+  // application going out is a fact about the world and `seconds` was a fact
+  // about our ingestion.
   //
   // This matters MORE than the derivation does. A derivation guesses on
   // Catherine's behalf; this puts the call in front of a human who can ask her
@@ -3623,12 +3637,20 @@ export default function SetterPerformancePage() {
       // call, which correctly puts Terrance Smith (MF-2026-0323) in the table
       // above — but it does NOT mean anybody typed a disposition.
       //
-      // The example used to read "Rafael Badia" and no longer can: 20260918e
-      // gates derivation on answered_at, and Rafael's call was never answered,
-      // so he derives NOTHING and his row shows the plain
-      // "no disposition on the call ⚠" this chip was built for. Naming a live
-      // merchant in a comment is worth doing — it is checkable — which is
-      // exactly why it has to be re-checked when the rule moves.
+      // The example used to read "Rafael Badia", and he has now been WRONG here
+      // for two different reasons in one day. First 20260918e gated derivation
+      // on answered_at and his row looked unanswered, so he derived nothing.
+      // Then 20260918f re-asked WAVV and the row came back 1503 seconds,
+      // answered, typed "Full Application" by Catherine — so he STILL derives
+      // nothing, but now because a TYPED VALUE WINS, which is the opposite
+      // reason. He is not an un-dispositioned call and never was; our mirror
+      // wrote the row 31 seconds into the dial and stopped listening.
+      //
+      // A comment that reaches a true conclusion by a false route is worse than
+      // one that is simply wrong, because it survives review. Naming a live
+      // merchant is still worth doing — it is checkable, which is the only
+      // reason this was caught — but the check has to be re-run whenever the
+      // rule OR the underlying row can move, and a mirrored row can move.
       //
       // Collapsing both into one "also on a call" badge silently heals the exact
       // coaching signal this chip was built for, which is why the positives are
@@ -5643,8 +5665,13 @@ export default function SetterPerformancePage() {
                                             dispositioned the 97-second call she
                                             never dispositioned. (Rafael Badia
                                             was this example until 20260918e
-                                            gated derivation on answered_at; he
-                                            now derives nothing.) */}
+                                            gated derivation on answered_at.
+                                            20260918f then superseded even that:
+                                            his call was never un-dispositioned
+                                            at all — WAVV had 1503 seconds and
+                                            "Full Application" typed by the
+                                            setter, and our mirror had frozen
+                                            the row 31 seconds into the dial.) */}
                                         {callState.kind === "positive" && callState.derivedOnly && (
                                           <span
                                             className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
