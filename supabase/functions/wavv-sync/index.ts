@@ -403,6 +403,19 @@ async function finalizeStubs(
     });
   }
 
+  // ── A SWEEP THAT ANSWERED NOTHING IS UNREADABLE, NOT CLEAN ────────────────
+  // Without this, a run where every fetch failed with a non-401 reports
+  // ok:true and "0 recovered, 0 genuinely unfinalised, 0 gone" — a plausible,
+  // tidy sentence describing a total failure, which is the exact shape that let
+  // the derived-marker bug survive review. A failure must not be able to
+  // render as "nothing to do".
+  const answered = out.finalized + out.still_unfinalized + out.not_found;
+  if (out.unreadable === null && out.errors > 0 && answered === 0) {
+    out.unreadable =
+      `every re-pull attempt failed (${out.errors} of ${out.checked}) — not one stub was answered. ` +
+      out.error_reasons.join("; ");
+  }
+
   return out;
 }
 
@@ -612,9 +625,14 @@ Deno.serve(async (req) => {
       ok: rep.unreadable === null,
       action: "finalize",
       ...rep,
+      // Errors are named in the headline sentence, never left to be inferred
+      // from a field further down that a reader may not reach.
       note: rep.unreadable
-        ? "UNREADABLE — this is not a report of zero stubs."
-        : `${rep.finalized} recovered, ${rep.still_unfinalized} genuinely unfinalised at WAVV too, ${rep.not_found} gone.`,
+        ? `UNREADABLE — this is NOT a report of zero stubs. ${rep.unreadable}`
+        : `${rep.finalized} recovered, ${rep.still_unfinalized} genuinely unfinalised at WAVV too, ${rep.not_found} gone.` +
+          (rep.errors > 0
+            ? ` ⚠ ${rep.errors} stub${rep.errors === 1 ? "" : "s"} could not be checked at all — that is unknown, not clean: ${rep.error_reasons.join("; ")}`
+            : ""),
     }, rep.unreadable ? 500 : 200);
   }
 
