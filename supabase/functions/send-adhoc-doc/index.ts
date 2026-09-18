@@ -79,14 +79,25 @@ function signingUrlFor(doc: GhlDoc, contactId: string): string | null {
 // companion-doc special-casing (an ad-hoc doc has no companion).
 async function verifyAdhocSent(
   cfg: GhlConfig, contactId: string, email: string, expected: RegExp, sinceMs: number,
+  /** The recipient's NAME — see the note below; pass it whenever you have it. */
+  recipientName?: string | null,
 ): Promise<{ verification: "confirmed" | "wrong_template" | "unconfirmed"; template: string | null; signingUrl: string | null }> {
   const wantEmail = email.trim().toLowerCase();
+  // TARGETED, NOT WINDOWED — same reasoning as verifyDocumentSent in
+  // _shared/application-fields.ts, which this mirrors. The old `limit=20` read the
+  // twenty newest documents location-wide and depended on GHL returning them
+  // newest-first, an ordering the endpoint REJECTS as a parameter (probed live:
+  // "property sortBy should not exist"). If that default ever flipped, every
+  // ad-hoc send would report "unconfirmed" forever. `query` matches the
+  // recipient's name (not their email) and is the only targeted filter available.
+  const q = (recipientName ?? "").trim();
+  const filter = q ? `&query=${encodeURIComponent(q)}` : "";
   const deadline = Date.now() + 15_000;
   let delay = 1_500;
   for (;;) {
     await sleep(delay);
     const res = await ghlFetch<{ documents?: GhlDoc[] }>(
-      cfg, "GET", `/proposals/document?locationId=${cfg.locationId}&limit=20`,
+      cfg, "GET", `/proposals/document?locationId=${cfg.locationId}&limit=21${filter}`,
     );
     if (res.ok) {
       const mine = (res.data?.documents ?? []).filter((d) => {
@@ -215,7 +226,10 @@ Deno.serve(async (req) => {
 
   // Verify what actually went out.
   const expected = new RegExp(def.doc_pattern, "i");
-  const { verification, template, signingUrl } = await verifyAdhocSent(cfg, contactId, email, expected, sendStartedMs);
+  const { verification, template, signingUrl } = await verifyAdhocSent(
+    cfg, contactId, email, expected, sendStartedMs,
+    [cust?.first_name, cust?.last_name].filter(Boolean).join(" ").trim() || null,
+  );
   if (verification === "wrong_template") {
     return json({
       error: `GHL sent "${template ?? "an unrecognized document"}" instead of ${def.label} — check the workflow's Send-Documents action. Do NOT retry until it's fixed (a retry mints another wrong document).`,

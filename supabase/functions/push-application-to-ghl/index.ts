@@ -804,6 +804,9 @@ Deno.serve(async (req) => {
     : "04B MCA PREFILL";
   const { verification, template, signingUrl } = await verifyDocumentSent(
     cfg, contactId, merchantEmail, mode, sendStartedMs,
+    // The merchant's name — makes the verify a targeted read instead of a
+    // 20-document window resting on an ordering GHL will not let us request.
+    [customer.first_name, customer.last_name].filter(Boolean).join(" ").trim() || null,
   );
 
   // ── WRONG TEMPLATE → FAIL LOUDLY. ──

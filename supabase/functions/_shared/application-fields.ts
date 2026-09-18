@@ -83,9 +83,40 @@ export async function verifyDocumentSent(
   email: string,
   mode: SendMode,
   sinceMs: number,
+  /**
+   * The RECIPIENT'S NAME, which turns this from a windowed read into a targeted
+   * one. Optional only because a contact can lack a name; pass it whenever you
+   * have it, which is almost always.
+   */
+  recipientName?: string | null,
 ): Promise<{ verification: Verification; template: string | null; signingUrl: string | null }> {
   const expected = EXPECTED_DOC[mode];
   const wantEmail = email.trim().toLowerCase();
+
+  // ── WHY `query=` AND NOT `limit=20` ──────────────────────────────────────
+  // This used to read the twenty newest documents LOCATION-WIDE and hope the one
+  // it just triggered was among them. Two problems, and the second is the bad one:
+  //
+  //   1. Under load, 20 documents can be created between the send and the poll,
+  //      and the one we are verifying falls out of the window.
+  //   2. It depends on GHL returning documents newest-first, which is an
+  //      UNDOCUMENTED DEFAULT. Probed live 2026-09-18: /proposals/document REJECTS
+  //      sortBy and sort outright ("property sortBy should not exist"), so there
+  //      is no way to ask for that order — we were relying on a behaviour we
+  //      cannot request and are not promised. If it ever flipped to oldest-first,
+  //      limit=20 would return the twenty OLDEST documents and EVERY send would
+  //      report "unconfirmed" — a silent, total failure of send verification.
+  //
+  // `query` is the only targeted filter this endpoint has (contactId, recipientId
+  // and documentId are all rejected). Probed live: it matches the recipient's NAME
+  // and the document name, but NOT their email. Selectivity measured the same day:
+  // query=Derian → 2 documents, query=Badia → 8, against 284 location-wide and 69
+  // for the template name alone. One call, no window, no ordering assumption.
+  //
+  // The query is fuzzy, so the contactId/email + sinceMs filter below still does
+  // the deciding — the query narrows what we fetch, it never decides what counts.
+  const q = (recipientName ?? "").trim();
+  const filter = q ? `&query=${encodeURIComponent(q)}` : "";
 
   const deadline = Date.now() + 15_000;
   let delay = 1_500;
@@ -96,8 +127,15 @@ export async function verifyDocumentSent(
     const res = await ghlFetch<{ documents?: GhlDoc[] }>(
       cfg,
       "GET",
-      `/proposals/document?locationId=${cfg.locationId}&limit=20`,
+      // No name → the old windowed read, which is a DEGRADED path: it can miss a
+      // document under load and it rests on the unrequestable ordering above. Its
+      // failure mode is "unconfirmed", which is honest, so it stays rather than
+      // blocking a send — but pass a name.
+      `/proposals/document?locationId=${cfg.locationId}&limit=21${filter}`,
     );
+    if (!q) {
+      console.warn("[verifyDocumentSent] no recipient name — falling back to the windowed read");
+    }
 
     if (res.ok) {
       const mine = (res.data?.documents ?? []).filter((d) => {
@@ -618,7 +656,11 @@ export async function sendPrefillApplication(
   }
 
   // ── VERIFY WHAT GHL ACTUALLY SENT (read the document back). ──
-  const { verification, template, signingUrl } = await verifyDocumentSent(cfg, contactId, sentTo, "prefill", sendStartedMs);
+  const { verification, template, signingUrl } = await verifyDocumentSent(
+    cfg, contactId, sentTo, "prefill", sendStartedMs,
+    // The contact's own name — turns the verify into a targeted read.
+    [std.firstName, std.lastName].filter(Boolean).join(" ").trim() || null,
+  );
   if (verification === "wrong_template") {
     return {
       ...base, business, ok: false, status: 502, verification, template, sent_to: sentTo, fields_pushed: fields.length, missing_fields: missing,
