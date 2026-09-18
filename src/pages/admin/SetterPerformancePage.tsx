@@ -885,8 +885,17 @@ function DerivedMark({ call }: { call: Pick<SetterCall, "disposition_source" | "
     <span
       className="ml-1 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400 cursor-help"
       title={
-        `DERIVED, not typed. The setter never dispositioned this call — this value is inferred from what happened next: ` +
-        `${call.disposition_derived_reason ?? "an artifact shortly after the call"}. ` +
+        `DERIVED, not typed. The setter never dispositioned this call — this value is inferred from what happened next. ` +
+        // ── A FALLBACK THAT READS LIKE AN ANSWER HIDES A BROKEN LOOKUP ──
+        // This used to substitute "an artifact shortly after the call" for a
+        // missing reason, which is a plausible sentence and therefore reads as
+        // provenance. It is exactly how the `latest`-vs-derived bug survived:
+        // the marker rendered, the sentence looked complete, and the artifact
+        // it exists to name was silently absent on 1 of 1 derived rows. A
+        // missing reason must now LOOK missing.
+        (call.disposition_derived_reason
+          ? `${call.disposition_derived_reason}. `
+          : `⚠ THE PROVENANCE SENTENCE IS MISSING on this row — that is a fault in whatever fetched it, not a softer version of the claim. A derived value must always be able to name the artifact it came from; treat this one as unverified until it can. `) +
         `You cannot send a merchant an application without having talked to them, so the application is the evidence the conversation happened. ` +
         `The setter's own record is still empty; this does not overwrite it.`
       }
@@ -3578,11 +3587,10 @@ export default function SetterPerformancePage() {
       // merchant in a comment is worth doing — it is checkable — which is
       // exactly why it has to be re-checked when the rule moves.
       //
-      // Collapsing both into one
-      // "also on a call" badge silently heals the exact coaching signal this
-      // chip was built for, which is why the positives are split by provenance
-      // here rather than counted. The Disposition Review tab keeps both facts
-      // side by side for the same reason; this row now does too.
+      // Collapsing both into one "also on a call" badge silently heals the exact
+      // coaching signal this chip was built for, which is why the positives are
+      // split by provenance here rather than counted. The Disposition Review tab
+      // keeps both facts side by side for the same reason; this row now does too.
       const positives = calls.filter((c) => {
         const d2 = dispositionOf(c);
         return !!d2 && POSITIVE_DISPOSITIONS.includes(d2);
