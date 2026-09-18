@@ -85,7 +85,7 @@ export default function DealDetailPage() {
   // and sentAtFor returns null for a phantom stamp so the badge never reports a
   // send that didn't happen.
   const signatureDealIds = useMemo(() => [deal?.id], [deal?.id]);
-  const { signatureFor, sentAtFor } = useApplicationSignatures(signatureDealIds);
+  const { badgePropsFor, statusFor } = useApplicationSignatures(signatureDealIds);
 
   useEffect(() => {
     if (id) fetchDeal();
@@ -367,8 +367,8 @@ export default function DealDetailPage() {
                   when the owner raised this. The badge goes wherever the stage
                   goes. */}
               <ApplicationSignatureBadge
-                signature={signatureFor(deal.id)}
-                sentAt={sentAtFor(deal.id)}
+                {...badgePropsFor(deal.id)}
+                evidenceAgeSeconds={statusFor(deal.id)?.send_evidence_age_seconds ?? null}
                 size="sm"
               />
               <span className="px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
@@ -700,8 +700,8 @@ export default function DealDetailPage() {
                         merchant actually signed. */}
                     {item.badge && (
                       <ApplicationSignatureBadge
-                        signature={signatureFor(deal.id)}
-                        sentAt={sentAtFor(deal.id)}
+                        {...badgePropsFor(deal.id)}
+                        evidenceAgeSeconds={statusFor(deal.id)?.send_evidence_age_seconds ?? null}
                         hideWhenNothingSent
                       />
                     )}

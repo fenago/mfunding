@@ -236,6 +236,8 @@ export default function ProcessorDetailDrawer({
   pipe,
   signature,
   signatureSentAt,
+  signatureSendEvidence,
+  signatureEvidenceAgeSeconds,
   onClose,
   onChanged,
 }: {
@@ -251,6 +253,12 @@ export default function ProcessorDetailDrawer({
   /** The send date, or null when there is no send to date — never sent, or a
    *  phantom stamp the VibeReach mirror wrote at deal creation. */
   signatureSentAt: string | null;
+  /** The send verdict, resolved once on the page and handed down with the
+   *  signature so the drawer and the row can never disagree about whether a
+   *  document exists. Both unknowns must render as unknown, never UNSIGNED. */
+  signatureSendEvidence?: "confirmed" | "none" | "unknown";
+  /** Age of the evidence behind a negative verdict. */
+  signatureEvidenceAgeSeconds?: number | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -557,6 +565,8 @@ export default function ProcessorDetailDrawer({
                   signatureSentAt ??
                   (row ? hasReachedApplicationSent(row) || null : null)
                 }
+                sendEvidence={signatureSendEvidence}
+                evidenceAgeSeconds={signatureEvidenceAgeSeconds ?? null}
                 size="sm"
               />
             </div>

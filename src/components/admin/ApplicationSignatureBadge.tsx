@@ -64,8 +64,23 @@ interface Props {
    * assigned closer, so the attribution ladder reports "assumed_owner" for her
    * exactly as it does for a genuine send. Guessing here rebuilds the bug one
    * level down.
+   *
+   * ⚠ UNDEFINED ≠ "unknown". Leaving this off means "this caller has not been
+   * wired to the verdict yet" and keeps the legacy rendering. Passing "unknown"
+   * means we ASKED and could not establish it — and that must never render as
+   * UNSIGNED, which is where the whole problem re-enters at the last inch.
+   * `badgePropsFor()` in useApplicationSignatures always passes an explicit
+   * value; prefer it over wiring these by hand.
    */
   sendEvidence?: "confirmed" | "none" | "unknown";
+  /**
+   * How old the evidence behind a NEGATIVE verdict is, in seconds.
+   *
+   * A "never sent" derived from a twelve-hour-old crawl has to READ as twelve
+   * hours old: `complete=true` proves the crawl read everything that existed
+   * when it ran, not that it is current, and "never sent" is a claim about NOW.
+   */
+  evidenceAgeSeconds?: number | null;
   /** Suppress the badge entirely when nothing has been sent AND nothing signed.
    *  Lists use this so rows with no application at all stay quiet. */
   hideWhenNothingSent?: boolean;
@@ -82,6 +97,15 @@ const ICON_CLS: Record<BadgeSize, string> = {
   sm: "w-3.5 h-3.5",
 };
 
+/** "12h", "3d", "40m" — how old the evidence behind a negative verdict is. A
+ *  "never sent" is a claim about NOW, so its age is part of the claim. */
+function ageText(seconds: number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
 /** Short date for a badge — the full stamp lives in the tooltip. */
 function shortDate(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -95,7 +119,8 @@ export default function ApplicationSignatureBadge({
   sentAt = null,
   size = "xs",
   showSent = false,
-  sendEvidence = "unknown",
+  sendEvidence,
+  evidenceAgeSeconds = null,
   hideWhenNothingSent = false,
   className = "",
 }: Props) {
@@ -155,6 +180,42 @@ export default function ApplicationSignatureBadge({
       >
         <ExclamationTriangleIcon className={icon} />
         NEVER SENT — nothing to sign
+        {/* A negative carries its own age. Twelve hours old has to LOOK twelve
+            hours old — the crawl proves what existed when it ran, not now. */}
+        {ageText(evidenceAgeSeconds) ? (
+          <span className="ml-1 font-normal opacity-70">· checked {ageText(evidenceAgeSeconds)} ago</span>
+        ) : null}
+      </span>
+    );
+  }
+
+  // ── WE ASKED AND COULD NOT ESTABLISH IT. ──────────────────────────────────
+  // The last inch. Four verdicts come out of deal_application_status and two of
+  // them are unknowns — the evidence predates the send (`unknown_stale`), or no
+  // complete crawl has run (`unknown_unreadable`). Collapsing either into
+  // "unsigned" would rebuild, in the final component, the exact accusation four
+  // layers underneath were rewritten to prevent: red UNSIGNED against a merchant
+  // we cannot show was ever sent anything.
+  //
+  // Only intercepts when a send is actually CLAIMED (`sentAt` set) — that is the
+  // case that produces the accusation. With no stamp at all the legacy branches
+  // below already say the honest thing.
+  if (sendEvidence === "unknown" && sentAt) {
+    return (
+      <span
+        className={`${base} bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 ${className}`}
+        title={
+          `The deal says an application was sent${typeof sentAt === "string" ? ` (${dateTimeET(sentAt)})` : ""}, and we could NOT verify it. ` +
+          `Either the document evidence is older than the send, or no complete document crawl has run for this merchant. ` +
+          `That is UNKNOWN — not sent, and not missing. Do not chase a signature and do not re-send off this badge: ` +
+          `look at the merchant's documents first.`
+        }
+      >
+        <QuestionMarkCircleIcon className={icon} />
+        Sent? not verified
+        {ageText(evidenceAgeSeconds) ? (
+          <span className="ml-1 font-normal opacity-70">· evidence {ageText(evidenceAgeSeconds)} old</span>
+        ) : null}
       </span>
     );
   }

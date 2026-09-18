@@ -120,6 +120,7 @@ import {
 import { INDUSTRY_BENCHMARKS, benchmarkRag, benchmarkVerdict, type BenchmarkId } from "@/data/industryBenchmarks";
 import {
   signatureFromStatus,
+  badgeSendEvidence,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
@@ -5777,9 +5778,17 @@ export default function SetterPerformancePage() {
                                       )}
                                     </td>
                                     <td className={TD}>
+                                      {/* FOUR VERDICTS, NOT TWO. send_evidence
+                                          answers what the stamp cannot — whether
+                                          a document exists — and its two unknowns
+                                          render as "Sent? not verified" rather
+                                          than collapsing into an UNSIGNED
+                                          accusation at the last inch. */}
                                       <ApplicationSignatureBadge
                                         signature={signature}
                                         sentAt={d.application_sent_at}
+                                        sendEvidence={badgeSendEvidence(appStatus?.get(d.id))}
+                                        evidenceAgeSeconds={appStatus?.get(d.id)?.send_evidence_age_seconds ?? null}
                                         size="xs"
                                       />
                                     </td>

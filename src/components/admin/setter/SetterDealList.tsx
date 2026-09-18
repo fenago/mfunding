@@ -26,6 +26,7 @@ import { dateTimeET, etWallClockToUtcIso } from "@/utils/time";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import {
   signatureFromStatus,
+  badgeSendEvidence,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
 
@@ -748,6 +749,12 @@ export default function SetterDealList({
                               // "Sent 12 Sep · UNSIGNED" about an application
                               // that never left.
                               sentAt={st && !st.born_at_application_sent ? st.app_sent_at : null}
+                              // The fourth thing the stamp cannot tell you:
+                              // whether a document actually exists. Both
+                              // unknowns render as "Sent? not verified", never
+                              // as UNSIGNED.
+                              sendEvidence={badgeSendEvidence(st)}
+                              evidenceAgeSeconds={st?.send_evidence_age_seconds ?? null}
                               hideWhenNothingSent
                             />
                           );

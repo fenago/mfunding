@@ -243,7 +243,7 @@ export default function ProcessorPage() {
   // safe on a list, and returns the real three-state verdict plus the phantom
   // flag — so the board says the same thing the Application chase tab says.
   const rowDealIds = useMemo(() => allRows.map((r) => r.id), [allRows]);
-  const { signatureFor, sentAtFor } = useApplicationSignatures(rowDealIds);
+  const { signatureFor, sentAtFor, sendEvidenceFor, statusFor } = useApplicationSignatures(rowDealIds);
 
   // The working funnel: interested-but-not-yet-submission-ready.
   const inScopeRows = useMemo(
@@ -902,6 +902,8 @@ export default function ProcessorPage() {
                                 // keeps the badge alive for a row the status RPC
                                 // didn't answer for.
                                 sentAt={sentAtFor(r.id) ?? (hasReachedApplicationSent(r) || null)}
+                                sendEvidence={sendEvidenceFor(r.id)}
+                                evidenceAgeSeconds={statusFor(r.id)?.send_evidence_age_seconds ?? null}
                                 hideWhenNothingSent
                               />
                             </div>
@@ -1129,6 +1131,8 @@ export default function ProcessorPage() {
         pipe={pipe}
         signature={signatureFor(selectedDealId)}
         signatureSentAt={sentAtFor(selectedDealId)}
+        signatureSendEvidence={sendEvidenceFor(selectedDealId)}
+        signatureEvidenceAgeSeconds={statusFor(selectedDealId)?.send_evidence_age_seconds ?? null}
         onClose={() => setSelectedDealId(null)}
         onChanged={reloadAll}
       />

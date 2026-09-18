@@ -58,7 +58,7 @@ export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) 
   // come back. A failed ledger read renders "Signature unknown", never
   // "unsigned".
   const signatureDealIds = useMemo(() => [deal.id], [deal.id]);
-  const { signatureFor, sentAtFor } = useApplicationSignatures(signatureDealIds);
+  const { badgePropsFor, statusFor } = useApplicationSignatures(signatureDealIds);
 
   // Report status up without making onStatus a load() dependency (parents may pass
   // a fresh function each render).
@@ -220,9 +220,12 @@ export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) 
             <CheckCircleIcon className="w-4 h-4 text-emerald-500" />
           ) : null}
           <span className="text-sm font-bold text-gray-900 dark:text-white">Application</span>
+          {/* badgePropsFor, not signature+sentAt by hand: passing a send date
+              WITHOUT the send evidence is what put red UNSIGNED on a merchant
+              who was never sent anything. The bundle makes that unspellable. */}
           <ApplicationSignatureBadge
-            signature={signatureFor(deal.id)}
-            sentAt={sentAtFor(deal.id)}
+            {...badgePropsFor(deal.id)}
+            evidenceAgeSeconds={statusFor(deal.id)?.send_evidence_age_seconds ?? null}
             size="sm"
           />
         </div>
