@@ -38,7 +38,7 @@
 //
 // AND THE MIRROR CHECKS ITSELF. Wherever the canonical flag is available beside
 // this function's verdict, compare them and show the disagreement — see
-// phantomDivergence() below and its one live caller on the Setter Performance
+// checkPhantomMirror() below and its one live caller on the Setter Performance
 // funnel. A mirror that hopes is how nine copies of the document-name rule
 // drifted, one of them counting the broker disclosure as a returned
 // application, with nothing watching to notice.
@@ -95,39 +95,69 @@ export interface PhantomDivergence {
   canonical: boolean;
 }
 
+/** What the cross-check actually managed to do. Three states, never two. */
+export interface PhantomCheck {
+  /** Rows offered for checking. */
+  candidates: number;
+  /** Of those, how many carried a canonical flag and were really compared. */
+  compared: number;
+  /** Disagreements found among `compared`. Empty when `compared` is 0 — which is
+   *  why `unchecked` exists and why a caller must not read "[]" as "clean". */
+  divergences: PhantomDivergence[];
+  /** THERE WAS SOMETHING TO CHECK AND NOTHING COULD BE CHECKED.
+   *
+   *  A watchdog that reports "no divergence" in the same voice whether it looked
+   *  and found nothing or had nothing to look at has acquired the exact defect it
+   *  was built to catch. This flag is the difference, and callers must show it.
+   *  Live cause to expect: the canonical flag is loaded by a DIFFERENT query,
+   *  and if that query stops covering these deals the check quietly dies. */
+  unchecked: boolean;
+}
+
 /**
  * THE TRIPWIRE. Compares this mirror's verdict against the canonical
- * `born_at_application_sent` for every deal present in BOTH, and returns the
- * disagreements.
+ * `born_at_application_sent` for every deal present in BOTH.
  *
- * A caller MUST render what comes back — visibly, naming the deals. The point
- * is not to log it; it is that the moment the SQL rule is edited and this copy
- * is not (or the reverse), somebody looking at the screen finds out. Silence
- * here is the only failure mode a mirror has, and a console warning is silence.
+ * A caller MUST render what comes back — visibly, naming the deals. The point is
+ * not to log it; it is that the moment the SQL rule is edited and this copy is
+ * not (or the reverse), somebody looking at the screen finds out. Silence is the
+ * only failure mode a mirror has, and a console warning is silence.
  *
  * Deals the server did not return are SKIPPED, not counted as agreement and not
  * counted as divergence: absence is unknown (RLS, a slow load, a partial read),
  * and an unknown announced as a contradiction would train people to ignore this.
+ * They ARE counted in `candidates`, so a check that skipped everything reports
+ * `unchecked` instead of a clean bill of health.
  *
  * Costs one pass over the rows both sides already hold. No query.
  */
-export function phantomDivergence<T extends PhantomSendInputs>(
+export function checkPhantomMirror<T extends PhantomSendInputs>(
   rows: T[],
   idOf: (row: T) => string,
   labelOf: (row: T) => string,
   /** deal id → the canonical flag. `null` = not loaded / unreadable → no check. */
   canonicalByDeal: ReadonlyMap<string, { born_at_application_sent: boolean }> | null,
-): PhantomDivergence[] {
-  if (!canonicalByDeal || canonicalByDeal.size === 0) return [];
-  const out: PhantomDivergence[] = [];
+): PhantomCheck {
+  const divergences: PhantomDivergence[] = [];
+  let compared = 0;
   for (const row of rows) {
-    const id = idOf(row);
-    const canonicalRow = canonicalByDeal.get(id);
+    const canonicalRow = canonicalByDeal?.get(idOf(row));
     if (!canonicalRow) continue; // unknown, not a contradiction
+    compared++;
     const mirror = isPhantomApplicationSend(row);
     if (mirror !== canonicalRow.born_at_application_sent) {
-      out.push({ dealId: id, label: labelOf(row), mirror, canonical: canonicalRow.born_at_application_sent });
+      divergences.push({
+        dealId: idOf(row),
+        label: labelOf(row),
+        mirror,
+        canonical: canonicalRow.born_at_application_sent,
+      });
     }
   }
-  return out;
+  return {
+    candidates: rows.length,
+    compared,
+    divergences,
+    unchecked: rows.length > 0 && compared === 0,
+  };
 }

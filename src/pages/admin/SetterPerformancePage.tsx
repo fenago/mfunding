@@ -122,7 +122,7 @@ import {
   signatureFromStatus,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
-import { isPhantomApplicationSend, phantomDivergence } from "@/lib/phantomApplicationSend";
+import { isPhantomApplicationSend, checkPhantomMirror } from "@/lib/phantomApplicationSend";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -1729,6 +1729,11 @@ export default function SetterPerformancePage() {
   /** Application send + signature state per DEAL for the applications sent in
    *  range. null = UNREADABLE, which renders "—", never "nobody signed". */
   const [appStatus, setAppStatus] = useState<Map<string, DealApplicationStatus> | null>(new Map());
+  /** Has loadDeals FINISHED writing appStatus this range? The map's own value
+   *  cannot say: an empty Map is both "not started" and "read fine, nothing to
+   *  report", and the phantom cross-check below must not cry "not checked"
+   *  during the load it is waiting for. */
+  const [appStatusLoaded, setAppStatusLoaded] = useState(false);
   const [dealsError, setDealsError] = useState<string | null>(null);
   // Productive contacts (the pipeline-side positive). null = UNREADABLE, which
   // renders as an error — never as "this setter produced nothing".
@@ -1989,8 +1994,23 @@ export default function SetterPerformancePage() {
   // Three different timestamps are in play, so one OR'd query pulls anything
   // that touched the range on ANY of them and the per-metric range test is done
   // in the fold below.
+  // ⚠ A DOWNSTREAM CONSUMER DEPENDS ON THIS QUERY'S SHAPE.
+  //
+  // The `application_sent_at` branch of the OR-filter below is what puts every
+  // in-range application into `dealRows`, which is what `appStatus` is fetched
+  // for, which is the CANONICAL born_at_application_sent that
+  // `phantomMirrorCheck` cross-checks src/lib/phantomApplicationSend.ts against
+  // (see the tripwire memo further down). Drop that branch — trimming a slow
+  // query, narrowing a scope — and the overlap goes to zero, the cross-check has
+  // nothing to compare, and the only guard on a duplicated rule is disarmed.
+  //
+  // It will SAY so rather than dying quietly: PhantomCheck.unchecked separates
+  // "looked and found nothing" from "had nothing to look at", and the panel
+  // prints the second one. Do not remove that either. If this query must change,
+  // move the canonical flag onto a read the funnel actually depends on.
   const loadDeals = useCallback(async () => {
     setDealsError(null);
+    setAppStatusLoaded(false);
     try {
       const { data, error } = await supabase
         .from("deals")
@@ -2036,6 +2056,8 @@ export default function SetterPerformancePage() {
       setAppStatus(null);
       setDealsError(e instanceof Error ? e.message : "Failed to read deals");
     }
+    // Settled either way — the cross-check may now judge what it has.
+    setAppStatusLoaded(true);
   }, [fromIso, toIso]);
 
   useEffect(() => { void loadDeals(); }, [loadDeals]);
@@ -3016,9 +3038,18 @@ export default function SetterPerformancePage() {
   //
   // Free: no query, one pass over rows both sides already hold. Deals the RPC
   // did not return are skipped, because absence is unknown, not a contradiction.
-  const phantomMirrorDivergence = useMemo(
+  //
+  // AND THE WATCHDOG REPORTS ITS OWN BLINDNESS. `appStatus` is loaded by
+  // loadDeals, a query three hundred lines up whose OR-filter happens to include
+  // application_sent_at. Narrow that filter for an unrelated reason and the
+  // overlap goes to zero — at which point an "[] divergences" result would mean
+  // "I had nothing to look at" while reading exactly like "I looked and found
+  // nothing". That is the failure this page keeps having, one level up, in the
+  // guard itself. PhantomCheck.unchecked separates the two and the panel prints
+  // it; loadDeals carries a matching warning for whoever would break it.
+  const phantomMirrorCheck = useMemo(
     () =>
-      phantomDivergence(
+      checkPhantomMirror(
         (productiveDeals ?? []).filter((d) => inRange(d.application_sent_at, range.from, range.to)),
         (d) => d.id,
         (d) => d.deal_number ?? d.customer?.business_name?.trim() ?? `deal ${d.id.slice(0, 8)}`,
@@ -4450,20 +4481,20 @@ export default function SetterPerformancePage() {
                         them is wrong, so the count above is not trustworthy
                         until they agree again — said on screen, by deal, rather
                         than logged where nobody looks. */}
-                    {phantomMirrorDivergence.length > 0 && (
+                    {phantomMirrorCheck.divergences.length > 0 && (
                       <div className="alert alert-warning text-sm">
                         <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
                         <span>
                           <b>
                             The phantom-send rule disagrees with itself on{" "}
-                            {phantomMirrorDivergence.length.toLocaleString()} deal
-                            {phantomMirrorDivergence.length === 1 ? "" : "s"}
+                            {phantomMirrorCheck.divergences.length.toLocaleString()} deal
+                            {phantomMirrorCheck.divergences.length === 1 ? "" : "s"}
                           </b>{" "}
                           — this page's copy (<code>src/lib/phantomApplicationSend.ts</code>) and the database's{" "}
                           <code>public.is_phantom_application_send</code> no longer give the same answer, so{" "}
                           <b>the count above may be wrong</b> until they are reconciled. The SQL one is canonical.
                           <ul className="mt-1 list-disc pl-5">
-                            {phantomMirrorDivergence.map((v) => (
+                            {phantomMirrorCheck.divergences.map((v) => (
                               <li key={v.dealId}>
                                 <b>{v.label}</b> — this page says{" "}
                                 {v.mirror ? "mirror stamp (excluded)" : "a real send (counted)"}, the database says{" "}
@@ -4472,6 +4503,26 @@ export default function SetterPerformancePage() {
                             ))}
                           </ul>
                         </span>
+                      </div>
+                    )}
+
+                    {/* ── THE WATCHDOG HAD NOTHING TO LOOK AT ───────────────
+                        NOT the same fact as "checked and clean", and it must
+                        never be allowed to read like it. In-range applications
+                        exist, none of them carried the canonical flag, so the
+                        exclusions above rest on this page's copy of the rule
+                        with nothing verifying it. Expected causes: the deals
+                        read failed this load, or loadDeals no longer covers
+                        these deals (see the warning on that query). */}
+                    {appStatusLoaded && phantomMirrorCheck.unchecked && (
+                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                        <b>Not cross-checked this load.</b> The phantom-send rule this page applies could not be
+                        compared against the database's canonical one for any of the{" "}
+                        <b className="tabular-nums">{phantomMirrorCheck.candidates.toLocaleString()}</b> in-range
+                        application{phantomMirrorCheck.candidates === 1 ? "" : "s"}
+                        {appStatus === null ? " — the application-status read failed" : ""}. That is{" "}
+                        <b>not checked</b>, not <b>checked and clean</b> — the numbers above stand on one
+                        unverified copy of the rule until it can be compared again.
                       </div>
                     )}
 
