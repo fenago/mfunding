@@ -304,15 +304,16 @@ export async function recordCompletions(
         ? "identifier maps to more than one merchant — refused to guess"
         : "no merchant on file for this signer");
 
-    if (!cust) {
-      out.unresolved.push({
-        documentId: c.documentId,
-        docName: c.docName,
-        contactId: c.contactId,
-        recipientEmail: c.recipientEmail,
-        reason: unresolvedReason as string,
-      });
-    } else if (!byContact.has(c.contactId)) {
+    // NOTE the deliberate absence of an `out.unresolved.push` here. `unresolved`
+    // must describe the state of the ROW, not the opinion of the resolver — an
+    // earlier writer with better context may already have attributed this
+    // signature correctly, and re-reporting it would put a solved problem on a
+    // human's worklist. Measured: Douglas Davis's four documents resolve as
+    // "ambiguous" (one contact, two of his companies) yet are already filed
+    // per-document by signing time, each against the company that existed when
+    // he signed it. Four of the eight entries on the unplaced list were that.
+    // A worklist that cries wolf is a worklist nobody reads.
+    if (cust && !byContact.has(c.contactId)) {
       // The signature itself is evidence that this contact belongs to this
       // merchant. Append it (never clobber the primary pointer) so the NEXT read
       // of this merchant already knows where their documents live.
@@ -371,6 +372,18 @@ export async function recordCompletions(
           // merchant record catches up with a signer we did not know.
           markFresh(c, cust);
         }
+      } else if (!existing.customer_id && !cust) {
+        // Still unplaced, and we could not place it either. NOW it is a worklist
+        // item. An existing row that already HAS a customer_id is left alone and
+        // deliberately not reported: whoever attributed it knew more than this
+        // pass does, and we do not churn a settled attribution on new ambiguity.
+        out.unresolved.push({
+          documentId: c.documentId,
+          docName: c.docName,
+          contactId: c.contactId,
+          recipientEmail: c.recipientEmail,
+          reason: unresolvedReason as string,
+        });
       }
 
       if (!existing.signed_at && c.signedAt) {
@@ -387,6 +400,13 @@ export async function recordCompletions(
       // Recorded, deliberately silent: there is no merchant and therefore no deal
       // to put a note on. public.unattributed_doc_signatures is where it surfaces.
       out.recordedUnattributed++;
+      out.unresolved.push({
+        documentId: c.documentId,
+        docName: c.docName,
+        contactId: c.contactId,
+        recipientEmail: c.recipientEmail,
+        reason: unresolvedReason as string,
+      });
       continue;
     }
     markFresh(c, cust);
