@@ -1874,9 +1874,20 @@ function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
  */
 type DocEvidence =
   | { kind: "checking" }
-  | { kind: "sent"; count: number }
+  /** VERIFIED SENT. We read the merchant's documents back out of GHL and these
+   *  are the names it returned. The receipt prints them rather than classifying
+   *  them — naming what the system of record actually holds is the claim; a
+   *  fourth client-side copy of the "which name is the application" rule is how
+   *  that claim would go wrong (the rule is SQL's `is_application_doc_name`,
+   *  deliberately not mirrored here). */
+  | { kind: "sent"; names: string[] }
+  /** NEVER SENT — and this rung is only reachable from a read that was both
+   *  COMPLETE and scoped to the merchant's whole contact SET. */
   | { kind: "none" }
-  | { kind: "unreadable"; why: string };
+  /** CANNOT VERIFY. A failed crawl, a truncated one, an unidentifiable
+   *  merchant, or a read that could only see ONE of several contacts. A zero we
+   *  cannot prove is unknown, never zero. */
+  | { kind: "cannot_verify"; why: string };
 
 function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { dealId: string; ghlContactId: string; customerId: string; onDocEvidence?: (e: DocEvidence) => void }) {
   const [loading, setLoading] = useState(true);
@@ -1930,12 +1941,24 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
         setUploads([]);
         setContactCount(1);
         setScopeCaveat(null);
-        onDocEvidence?.({ kind: "unreadable", why: state.why });
+        onDocEvidence?.({ kind: "cannot_verify", why: state.why });
         throw new Error(state.why);
       }
-      // The receipt below asserts a send. It gets its evidence from here — the
-      // read that actually looked — and never from the stage stamp.
-      onDocEvidence?.(state.docs.length > 0 ? { kind: "sent", count: state.docs.length } : { kind: "none" });
+      // ── THE THREE-RUNG LADDER, AND THE RUNG THAT IS EASY TO GET WRONG ───
+      // `readDocsStatus` already refuses a failed OR TRUNCATED crawl and an
+      // unidentifiable merchant. What it still returns as `ok` is a PARTIAL
+      // IDENTITY read — only one contact searched because the merchant could not
+      // be tied to exactly one. An empty list under that caveat proves nothing:
+      // Miami Concierge Network's eight documents all sit on his SECOND contact,
+      // so a single-pointer read reports him never-sent. Absence is only
+      // "never sent" when the read was complete AND covered the whole set.
+      onDocEvidence?.(
+        state.docs.length > 0
+          ? { kind: "sent", names: state.docs.map((d) => d.name) }
+          : state.caveat
+            ? { kind: "cannot_verify", why: state.caveat }
+            : { kind: "none" },
+      );
       setDocs(state.docs);
       setUploads((data as GhlDocsStatus)?.uploads ?? []);
       setUploadsError((data as GhlDocsStatus)?.uploads_error ?? null);
@@ -1946,7 +1969,7 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
       setError(why);
       // A THROWN read is unreadable too. Without this the receipt would sit on
       // "checking" forever and silently fall back to its old confident sentence.
-      onDocEvidence?.({ kind: "unreadable", why });
+      onDocEvidence?.({ kind: "cannot_verify", why });
     }
     setLoading(false);
   }
@@ -5182,8 +5205,16 @@ function StepCard({
           <div className="mt-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs space-y-1.5">
             <div className="flex flex-wrap items-center gap-3">
               <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                📨 Application sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} —{" "}
-                <b>{docEvidence.count}</b> document{docEvidence.count === 1 ? "" : "s"} on file for this merchant
+                {/* NAMES, NOT A TEMPLATE. The old line said "app + disclosure +
+                    upload link" on every deal. This prints what GHL actually
+                    handed back, which is the same standard the send modal holds
+                    itself to ("Read back from GHL after the send") — and it is
+                    why a disclosure-only send can no longer read as an
+                    application. Classifying the names is NOT done here: that
+                    rule is SQL's is_application_doc_name and a client copy of it
+                    has already been wrong once. */}
+                📨 Sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — read back from GHL:{" "}
+                <b>{docEvidence.names.join(", ")}</b>
               </span>
               <button
                 type="button"
@@ -5203,8 +5234,9 @@ function StepCard({
               </button>
             </div>
             <p className="text-[11px] text-gray-500 dark:text-gray-400">
-              Documents exist on their record — <b>the live status above says which, and whether any are signed</b>.
-              Sent is not signed.
+              Those are the documents VibeReach holds for this merchant, read back after the fact —{" "}
+              <b>not a list of what we meant to send</b>. Check the names: if the funding application is not among
+              them, it was not sent. The live status above says which are signed. <b>Sent is not signed.</b>
             </p>
           </div>
         )}
@@ -5214,12 +5246,13 @@ function StepCard({
             "checking" branch also covers the case where DocsBackPanel is not
             mounted at all (a deal with no VibeReach contact id), which is
             precisely when a stage stamp is least trustworthy. */}
-        {step.stageKey === "application_sent" && done && docEvidence.kind === "unreadable" && (
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "cannot_verify" && (
           <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 px-3 py-2 text-xs">
-            <b className="text-amber-700 dark:text-amber-300">The stage says sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""}, and we could not check it.</b>{" "}
+            <b className="text-amber-700 dark:text-amber-300">The stage says sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""}, and we could not verify it.</b>{" "}
             <span className="text-amber-700/90 dark:text-amber-300/90">
-              Reading this merchant's documents failed ({docEvidence.why}), so we cannot tell you whether anything
-              actually went out. That is <b>unknown</b>, not sent and not missing — retry the live status above.
+              We could not read this merchant's documents back ({docEvidence.why}), so we cannot tell you whether
+              anything actually went out. That is <b>unknown</b> — not sent, and not missing either. A zero we
+              cannot prove is not a zero. Retry the live status above before acting on this.
             </span>
           </div>
         )}

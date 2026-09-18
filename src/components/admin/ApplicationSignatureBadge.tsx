@@ -48,14 +48,22 @@ interface Props {
    * read a stamp plus no signature and printed red UNSIGNED, which accuses a
    * merchant of ignoring an application she was never sent.
    *
-   *   "confirmed" — a document demonstrably went out.
-   *   "none"      — we LOOKED and nothing was ever sent → "NEVER SENT".
+   *   "confirmed" — a document was READ BACK out of the system of record.
+   *   "none"      — a COMPLETE, SET-SCOPED read found nothing → "NEVER SENT".
    *   "unknown"   — not established (the default, and today's behaviour).
    *
-   * Pass "none" ONLY off a real document read. There is no safe way to infer it
-   * from the deal row: Joyce carries an assigned closer, so the attribution
-   * ladder reports "assumed_owner" for her exactly as it does for a genuine
-   * send. Guessing here would re-create the bug in a new place.
+   * ⚠ "none" HAS TWO PRECONDITIONS AND BOTH HAVE ALREADY FAILED IN PRODUCTION:
+   *   1. THE READ MUST BE COMPLETE. Fetched must match the reported total. A
+   *      merchant was reported never-sent off 273 of 282 documents; they had in
+   *      fact signed. A truncated crawl is "cannot verify", never "nothing".
+   *   2. IT MUST COVER THE MERCHANT'S WHOLE CONTACT SET, never the single
+   *      `ghl_contact_id` pointer. Miami Concierge Network's eight documents all
+   *      sit on his SECOND contact; a single-pointer read calls him never-sent.
+   *
+   * And there is no safe way to infer "none" from the deal row: Joyce carries an
+   * assigned closer, so the attribution ladder reports "assumed_owner" for her
+   * exactly as it does for a genuine send. Guessing here rebuilds the bug one
+   * level down.
    */
   sendEvidence?: "confirmed" | "none" | "unknown";
   /** Suppress the badge entirely when nothing has been sent AND nothing signed.
@@ -137,8 +145,8 @@ export default function ApplicationSignatureBadge({
       <span
         className={`${base} bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200 ring-1 ring-inset ring-gray-400/50 dark:ring-gray-500 ${className}`}
         title={
-          `NEVER SENT — nothing to sign. We read this merchant's documents and there are none, so no application ` +
-          `ever reached them.` +
+          `NEVER SENT — nothing to sign. We read this merchant's documents back out of VibeReach — the complete list, ` +
+          `across every contact they are known by — and there are none, so no application ever reached them.` +
           (typeof sentAt === "string"
             ? ` The deal carries an "application sent" stamp (${dateTimeET(sentAt)}), but a pipeline stage move writes that stamp without sending anything.`
             : "") +
