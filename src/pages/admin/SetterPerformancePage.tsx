@@ -844,8 +844,18 @@ function isUndispositioned(r: Pick<SetterCall, "disposition">): boolean {
 // This is NOT the re-absorption of "None" that the block above forbids. "None"
 // on its own still counts as nothing, because nothing was recorded. What counts
 // here is an ARTIFACT — an application document that physically went out —
-// carried on a separate column with its own provenance. Three calls in 90 days
-// qualify; the refusals are visible in v_setter_dial_calls_derivation_audit.
+// carried on a separate column with its own provenance, and ONLY on a call WAVV
+// recorded as answered (20260918e). That gate is what keeps this page's
+// subset chain sound: a derived conversation needs the same `answered_at` that
+// connects and humans need, so it can never outrun either of them. It also
+// throws out the unsafe two-thirds — a pre-filled application can be sent to a
+// merchant nobody ever spoke to, and both refused calls carried a stated ask and
+// revenue on the deal BEFORE any dial. ONE call in 90 days qualifies.
+//
+// The refusals are visible in v_wavv_call_outcome_links (refusal_reason NULL =
+// derived), and on every row of this view as `outcome_followed_refusal`. The
+// older v_setter_dial_calls_derivation_audit was dropped in 20260918e — do not
+// send anyone to it.
 //
 // THE RULE THAT MUST NEVER BE BROKEN: a derived value may never render as
 // though a setter typed it. Count with dispositionOf(); render with
@@ -3517,14 +3527,36 @@ export default function SetterPerformancePage() {
        *  actually typed one. The logging gap is still open — see the memo on the
        *  chip. False for a typed positive, and meaningless on the other kinds. */
       derivedOnly: boolean;
+      /** WHY we would not infer a disposition ourselves, when an application DID
+       *  follow the call. Written as a full sentence by 20260918e
+       *  (`outcome_followed_refusal`), so it goes straight into the tooltip.
+       *  null when no artifact was linked to the call at all. */
+      refusal: string | null;
     } => {
       const digits = last10(d.customer?.phone);
       const calls =
         (d.ghl_contact_id ? byContact.get(d.ghl_contact_id) : undefined) ??
         (digits ? byPhone.get(digits) : undefined) ??
         [];
-      if (calls.length === 0) return { kind: "none", latest: null, calls: 0, derivedOnly: false };
+      if (calls.length === 0) {
+        return { kind: "none", latest: null, calls: 0, derivedOnly: false, refusal: null };
+      }
       const latest = [...calls].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
+      // ── AND WHY WE DID NOT WORK IT OUT OURSELVES ───────────────────────
+      // 20260918e links an artifact to the call that preceded it even where it
+      // REFUSES to derive a disposition from it, and states the refusal as a
+      // sentence. That completes the answer this chip exists to give: nobody
+      // typed a disposition, AND here is why we would not infer one either.
+      // Rafael Badia's reads "WAVV never recorded this call as answered, so
+      // there is no conversation to credit — a pre-filled application can be
+      // sent to a merchant nobody spoke to."
+      //
+      // Prefer the link an APPLICATION made, since this table is about
+      // applications; an appointment link is the fallback.
+      const linked =
+        calls.find((c) => c.outcome_followed_refusal && c.outcome_followed_kind === "application_sent") ??
+        calls.find((c) => c.outcome_followed_refusal);
+      const refusal = linked?.outcome_followed_refusal ?? null;
       // ── A DERIVED POSITIVE DOES NOT CLOSE THE LOGGING GAP ──────────────
       // 20260918d derives a disposition from the application that followed the
       // call, which correctly puts Rafael Badia in the table above — but it does
@@ -3543,15 +3575,16 @@ export default function SetterPerformancePage() {
           latest,
           calls: calls.length,
           derivedOnly: positives.every(isDerived),
+          refusal,
         };
       }
       if (calls.every(isUndispositioned)) {
-        return { kind: "undispositioned", latest, calls: calls.length, derivedOnly: false };
+        return { kind: "undispositioned", latest, calls: calls.length, derivedOnly: false, refusal };
       }
       const dispositioned = [...calls]
         .filter((c) => !isUndispositioned(c))
         .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
-      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length, derivedOnly: false };
+      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length, derivedOnly: false, refusal };
     };
   }, [aggRows]);
 
@@ -5496,7 +5529,13 @@ export default function SetterPerformancePage() {
                                               `${callState.calls === 1 ? "was" : "were"} never dispositioned` +
                                               (callState.latest ? ` (last one ${etStamp(callState.latest.started_at)} ET)` : "") +
                                               `. The application is real; the call earns no conversation and no positive-disposition credit, ` +
-                                              `so this merchant appears here and nowhere in Positive dispositions. Coach the logging — the work happened.`
+                                              `so this merchant appears here and nowhere in Positive dispositions. Coach the logging — the work happened.` +
+                                              // WHY WE DIDN'T JUST WORK IT OUT. Without this the reader's next
+                                              // question ("can't you infer it from the application?") has no
+                                              // answer on screen, and the honest answer is a good one.
+                                              (callState.refusal
+                                                ? ` We did NOT infer a disposition from the application either: ${callState.refusal}.`
+                                                : "")
                                             }
                                           >
                                             no disposition on the call ⚠
