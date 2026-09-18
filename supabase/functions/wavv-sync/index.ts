@@ -222,6 +222,190 @@ function projectCall(raw: Record<string, unknown>) {
   };
 }
 
+// ── FINALIZE: the stub re-pull (20260918f) ──────────────────────────────────
+// A row written while the call was still ringing is a STUB — answered_at NULL,
+// ended_at NULL, seconds NULL, outcome 'UNKNOWN'. The OVERLAP_MS re-read above
+// corrects one only while it is still within ten minutes of the watermark;
+// WAVV's feed is indexed by startedAt, so after that the row is out of every
+// future window forever and `reparse` cannot help (the stored raw IS the stub).
+//
+// THE DEFECT IS SELF-CONCEALING AND IT BLAMES A PERSON. A frozen stub is
+// byte-identical to a dial nobody picked up, so it does not read as a broken
+// record — it reads as a setter who dialled and missed. Measured live 2026-09-18:
+// of six frozen rows, the two OUTBOUND ones were fully recoverable and BOTH had
+// been dispositioned by the setter — Rafael Badia 1503 seconds / "Full
+// Application", Kietta Gamble 786 seconds / "Partial Application". The funnel
+// had been showing both as calls that never connected and were never logged.
+//
+// The fix is a TARGETED re-pull by id, never a wider overlap: widening the
+// window to catch seven rows would re-read thousands of already-final calls on
+// every run, forever. GET /v3/calls/{id} returns the full final record long
+// after the list window has closed — verified live against both rows above.
+/** Leave a call alone until it has had time to finish honestly. */
+const FINALIZE_SETTLE_MS = 15 * 60 * 1000;
+/** Don't chase a stub older than this; if WAVV has not finalised it by now it
+ *  never will, and the row's honest state is already recorded. */
+const FINALIZE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Wait this long before asking again about a call that came back still-stubbed. */
+const FINALIZE_RETRY_AFTER_MS = 6 * 60 * 60 * 1000;
+/** After this many honest "still nothing" answers, stop asking. */
+const FINALIZE_MAX_ATTEMPTS = 5;
+/** Per-invocation cap. One API call per stub; today's whole backlog is six. */
+const FINALIZE_BATCH = 25;
+
+type FinalizeReport = {
+  checked: number;
+  finalized: number;
+  still_unfinalized: number;
+  not_found: number;
+  errors: number;
+  /** WHY the errors happened. A count with no cause is what let a live outage
+   *  sit behind "errors: 2" for an hour — the stub re-pull was hitting a broken
+   *  spoke_at trigger (20260918g) and said only that it had failed twice. Never
+   *  report a failure count without the reason attached. */
+  error_reasons: string[];
+  /** Populated only when a row actually gained data — this is the audit trail
+   *  for a number that moved on somebody's scorecard. */
+  recovered: Array<{
+    call_id: string;
+    started_at: string | null;
+    seconds: number | null;
+    outcome: string | null;
+    disposition: string | null;
+  }>;
+  /** UNREADABLE, not "nothing to do". Distinguished so a caller can never read
+   *  a failed sweep as a clean one. */
+  unreadable: string | null;
+};
+
+/** Re-ask WAVV, by id, for every call still carrying the stub signature.
+ *
+ *  WRITES ARE BOOKKEEPING, NOT NEWS. The only trigger on wavv_calls is the
+ *  spoke_at stamper, which updates deals.spoke_at and nothing else; both
+ *  branches of deals_merchant_notify guard on `status` / `paydown_percentage`,
+ *  neither of which is touched, so no merchant is messaged and no GHL stage is
+ *  pushed. Verified against the live catalog before this was written. Recovering
+ *  a 25-minute conversation SHOULD stamp spoke_at — that is the true fact the
+ *  frozen row was hiding — so the trigger is left to fire rather than suppressed.
+ */
+async function finalizeStubs(
+  db: SupabaseClient,
+  apiKey: string,
+  budgetEndsMs: number,
+): Promise<FinalizeReport> {
+  const out: FinalizeReport = {
+    checked: 0, finalized: 0, still_unfinalized: 0, not_found: 0, errors: 0,
+    error_reasons: [], recovered: [], unreadable: null,
+  };
+  /** Keep the reason list short and deduped — 25 copies of one message is noise,
+   *  and one copy of each distinct cause is the diagnosis. */
+  const noteError = (msg: string) => {
+    if (!out.error_reasons.includes(msg)) out.error_reasons.push(msg);
+  };
+
+  const now = Date.now();
+  const settledBefore = new Date(now - FINALIZE_SETTLE_MS).toISOString();
+  const notOlderThan = new Date(now - FINALIZE_MAX_AGE_MS).toISOString();
+  const retryBefore = new Date(now - FINALIZE_RETRY_AFTER_MS).toISOString();
+
+  const { data: stubs, error } = await db
+    .from("wavv_calls")
+    .select("id,wavv_call_id,started_at,refetch_attempts,refetched_at")
+    .eq("outcome", "UNKNOWN")
+    .is("ended_at", null)
+    .is("seconds", null)
+    .lt("started_at", settledBefore)
+    .gt("started_at", notOlderThan)
+    .lt("refetch_attempts", FINALIZE_MAX_ATTEMPTS)
+    // Never asked, OR asked long enough ago to be worth asking again.
+    .or(`refetched_at.is.null,refetched_at.lt.${retryBefore}`)
+    .order("started_at", { ascending: false })
+    .limit(FINALIZE_BATCH);
+
+  if (error) {
+    // A read failure is UNREADABLE. Reporting zeros here would say "no stubs",
+    // which is the exact failure-reads-as-success bug this codebase keeps paying
+    // for.
+    out.unreadable = `could not read the stub worklist: ${error.message}`;
+    return out;
+  }
+  if (!stubs || stubs.length === 0) return out;
+
+  for (const row of stubs) {
+    if (Date.now() > budgetEndsMs) break;
+    if (!row.wavv_call_id) continue;
+    out.checked++;
+
+    const res = await wavvGet<Record<string, unknown>>(
+      apiKey, `/calls/${encodeURIComponent(row.wavv_call_id)}`,
+    );
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        out.not_found++;
+        await db.from("wavv_calls").update({
+          refetched_at: new Date().toISOString(),
+          refetch_state: "not_found",
+          refetch_attempts: (row.refetch_attempts ?? 0) + 1,
+        }).eq("id", row.id);
+      } else {
+        // Do NOT burn an attempt on our own inability to read. An API error is
+        // not an answer about the call.
+        out.errors++;
+        noteError(`${row.wavv_call_id}: ${res.error ?? `WAVV HTTP ${res.status}`}`);
+        if (res.keyInvalid) {
+          out.unreadable = res.error ?? "WAVV API key invalid";
+          break;
+        }
+      }
+      continue;
+    }
+
+    const p = projectCall(res.body);
+    const stillStub = p.ended_at === null && p.seconds === null &&
+      (p.outcome ?? "UNKNOWN") === "UNKNOWN";
+
+    if (stillStub) {
+      // ASKED, AND WAVV HAS NOTHING EITHER. A real and different fact from
+      // "frozen, never asked" — this one is not worth taking to a setter.
+      out.still_unfinalized++;
+      await db.from("wavv_calls").update({
+        refetched_at: new Date().toISOString(),
+        refetch_state: "still_unfinalized",
+        refetch_attempts: (row.refetch_attempts ?? 0) + 1,
+      }).eq("id", row.id);
+      continue;
+    }
+
+    const { wavv_call_id: _id, ...cols } = p;
+    const { error: upErr } = await db.from("wavv_calls").update({
+      ...cols,
+      refetched_at: new Date().toISOString(),
+      refetch_state: "finalized",
+      refetch_attempts: (row.refetch_attempts ?? 0) + 1,
+    }).eq("id", row.id);
+
+    if (upErr) {
+      out.errors++;
+      // The write is where a broken trigger shows up, so the message matters
+      // more here than anywhere else in this function.
+      noteError(`${row.wavv_call_id}: write failed — ${upErr.message}`);
+      console.error("[wavv-sync] finalize update failed:", upErr.message);
+      continue;
+    }
+    out.finalized++;
+    out.recovered.push({
+      call_id: row.wavv_call_id,
+      started_at: p.started_at,
+      seconds: p.seconds,
+      outcome: p.outcome,
+      disposition: p.disposition,
+    });
+  }
+
+  return out;
+}
+
 const DIRECTIONS = ["outbound", "inbound"] as const;
 type Direction = typeof DIRECTIONS[number];
 
@@ -417,6 +601,23 @@ Deno.serve(async (req) => {
     return json({ ok: false, key_invalid: true, error: msg });
   }
 
+  // ── finalize — the stub re-pull, on its own ───────────────────────────────
+  // Also runs automatically at the tail of every `sync` (see below), so this
+  // action exists for a manual catch-up and for reporting. It adds NO new cron:
+  // its cost is one API call per STUB, so it tracks the defect rather than the
+  // size of the call book.
+  if (action === "finalize") {
+    const rep = await finalizeStubs(db, apiKey, startedMs + BUDGET_MS);
+    return json({
+      ok: rep.unreadable === null,
+      action: "finalize",
+      ...rep,
+      note: rep.unreadable
+        ? "UNREADABLE — this is not a report of zero stubs."
+        : `${rep.finalized} recovered, ${rep.still_unfinalized} genuinely unfinalised at WAVV too, ${rep.not_found} gone.`,
+    }, rep.unreadable ? 500 : 200);
+  }
+
   // ── recording / transcript — on-demand per-call proxies ───────────────────
   // The signed URL is returned to the caller and never persisted: it expires in
   // ~72h, so a stored copy would rot into a broken link that looks valid.
@@ -570,6 +771,16 @@ Deno.serve(async (req) => {
   // watermark stays put — moving it early is exactly the gap this design prevents.
   const complete = Object.keys(pending).length === 0;
 
+  // ── Catch the calls the watermark has already outrun ──────────────────────
+  // Runs on every sync, so a stub is repaired within hours instead of never, and
+  // adds NO cron and no standing cost: with no stubs the worklist query returns
+  // nothing and not one API call is made. Deliberately AFTER the descent, so a
+  // truncated window never loses page budget to it, and only when there is time
+  // left on the clock.
+  const finalize = Date.now() < startedMs + BUDGET_MS
+    ? await finalizeStubs(db, apiKey, startedMs + BUDGET_MS)
+    : null;
+
   const saved = await saveState(db, {
     watermark: complete ? before : state.watermark,
     run_before: complete ? null : before,
@@ -585,6 +796,8 @@ Deno.serve(async (req) => {
   return json({
     ok: true, upserted, pages, truncated,
     complete, per_direction: perDirection,
+    // null = the sync ran out of clock before the stub pass, NOT "no stubs".
+    finalize,
     window: { startedAfter, startedBefore: before },
     watermark: saved.watermark,
     // Present only while a descent is still owed work — tells the caller to invoke
