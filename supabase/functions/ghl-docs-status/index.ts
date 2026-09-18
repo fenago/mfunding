@@ -33,6 +33,7 @@ import {
   loadMerchantIdentity, discoverGhlContacts, recordMerchantContacts,
   recipientMatchesMerchant, type MerchantIdentity,
 } from "../_shared/merchantIdentity.ts";
+import { indexDocumentRecipients, type IndexableDoc } from "../_shared/documentIndex.ts";
 
 /** Cap on how many of a merchant's contacts we will read uploads from. One GHL
  *  call each; a merchant with one contact (the normal case) costs exactly what
@@ -265,6 +266,33 @@ Deno.serve(async (req) => {
     // Cache ONLY a crawl that read the whole set — never a partial or errored one.
     if (!docsFromCache && docsCrawlComplete && !documentsError) {
       docCache = { at: Date.now(), docs: rawDocs, total: docsTotal };
+    }
+
+    // ── KEEP THE EVIDENCE INDEX CURRENT, FOR FREE. ───────────────────────────
+    // This function has just crawled the ENTIRE location document list — it has
+    // to, because /proposals/document has no per-contact filter — so the read is
+    // already paid for. Writing it into ghl_document_recipients makes
+    // application_claims_vs_evidence() as fresh as the last time anybody opened
+    // anything, instead of as fresh as last night's 07:35 crawl.
+    //
+    // That gap was not hypothetical: the nightly crawl finished at 20:46:37Z
+    // having honestly read 282 of 282, and Joyce Derian's application was created
+    // at 20:46:57Z. For the next eleven hours the check would have called her
+    // "never sent" — the exact sentence it was built to prevent, about the exact
+    // merchant it was built for.
+    //
+    // Only a FRESH, COMPLETE crawl is indexed: a cached copy would stamp an old
+    // read with a new timestamp, which is the staleness bug wearing a disguise,
+    // and a partial one must never license a negative.
+    if (!docsFromCache && docsCrawlComplete && !documentsError) {
+      try {
+        await indexDocumentRecipients(db, rawDocs as IndexableDoc[], {
+          complete: true, reportedTotal: docsTotal, error: null, via: "ghl-docs-status",
+        });
+      } catch (e) {
+        // Best-effort: this is a side benefit of a read the caller is waiting on.
+        console.warn("[ghl-docs-status] document index skipped:", e instanceof Error ? e.message : e);
+      }
     }
 
     // The merchant flow (Revenue Playbook Rail 1) e-signs the application +

@@ -51,6 +51,7 @@ import {
   DOC_PAGE, type ProposalDoc,
 } from "../_shared/ghlDocCompletions.ts";
 import { ghlFetch } from "../_shared/ghl.ts";
+import { indexDocumentRecipients } from "../_shared/documentIndex.ts";
 
 /**
  * Crawl EVERY document, not just the completed ones — the evidence half of
@@ -200,39 +201,17 @@ Deno.serve(async (req) => {
     if (url.searchParams.get("full") === "1") {
       const all = await crawlAllDocs(cfg, MAX_PAGES);
       indexComplete = all.complete && !all.error;
-      const rows = all.docs.flatMap((d) => {
-        const documentId = (d._id ?? d.documentId) as string | undefined;
-        if (!documentId) return [];
-        return (d.recipients ?? [])
-          .filter((r) => !!r.id && (r.entityName ?? "contacts") === "contacts")
-          .map((r) => ({
-            document_id: documentId,
-            contact_id: r.id as string,
-            recipient_email: (r.email ?? "").trim().toLowerCase() || null,
-            doc_name: d.name ?? "Document",
-            doc_status: d.status ?? null,
-            doc_created_at: (d as { createdAt?: string }).createdAt ?? null,
-            seen_at: new Date().toISOString(),
-          }));
-      });
-      for (let i = 0; i < rows.length; i += 200) {
-        const { error: upErr } = await db
-          .from("ghl_document_recipients")
-          .upsert(rows.slice(i, i + 200), { onConflict: "document_id,contact_id" });
-        if (upErr) { console.warn("[ghl-doc-sweep] document index upsert failed:", upErr.message); break; }
-        indexed += rows.slice(i, i + 200).length;
-      }
-      // THE RECEIPT IS THE POINT. Without it an empty index and a failed crawl are
-      // indistinguishable, and the check would report a merchant as never-sent
-      // because OUR read broke — which is exactly how Brideau Insurance got
-      // reported as having no documents off a 273-of-282 read.
-      const { error: recErr } = await db.from("ghl_document_crawls").insert({
+      // ONE writer for the index, shared with ghl-docs-status — which now writes
+      // it on every staff/portal read, so the index tracks reality between these
+      // nightly passes instead of going stale for eleven hours.
+      const idx = await indexDocumentRecipients(db, all.docs, {
         complete: indexComplete,
-        fetched: all.docs.length,
-        reported_total: all.reportedTotal,
+        reportedTotal: all.reportedTotal,
         error: all.error,
+        via: "ghl-doc-sweep",
       });
-      if (recErr) console.warn("[ghl-doc-sweep] crawl receipt failed:", recErr.message);
+      indexed = idx.rows;
+      if (idx.error) console.warn("[ghl-doc-sweep] document index:", idx.error);
     }
 
     // ── 4. THE READABILITY STAMP — only on a crawl that read the whole set.
