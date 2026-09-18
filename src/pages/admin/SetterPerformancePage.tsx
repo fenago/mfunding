@@ -340,7 +340,7 @@ interface SourceDeal {
 // customers is deliberately whole-book (qualification data a setter must see to
 // qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
 // deal row the caller could read.
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,monthly_revenue,phone)";
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,first_name,last_name,monthly_revenue,phone)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -370,7 +370,26 @@ interface ProductiveDeal {
   /** Masked to absent for a setter looking at someone else's deal — the row
    *  itself is not returned, so this is null/undefined rather than 0. */
   amount_requested: number | null;
-  customer: { business_name: string | null; monthly_revenue: number | null; phone: string | null } | null;
+  customer: {
+    business_name: string | null;
+    /** The person on the deal, for the Applications drill-down's Merchant
+     *  column. The dial-side tables get this from the call row; a deal row has
+     *  to carry it, or the list would name businesses and no people. */
+    first_name: string | null;
+    last_name: string | null;
+    monthly_revenue: number | null;
+    phone: string | null;
+  } | null;
+}
+
+/** "First Last" off a deal's customer, or null when neither half is on file —
+ *  never a half-name padded with whitespace, and never "Unknown". */
+function customerPersonName(d: ProductiveDeal): string | null {
+  const name = [d.customer?.first_name, d.customer?.last_name]
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return name || null;
 }
 
 /** Deal statuses that must never be the one a merchant is represented by while a
@@ -933,6 +952,21 @@ interface FunnelStage {
   /** A second line under the rung's label — the Applications rung uses it for
    *  "X with statements". */
   secondaryLine?: ReactNode;
+  /** WHAT KIND OF FACT this rung counts, printed ON the rung — never only in a
+   *  tooltip.
+   *
+   *  Owner report 9/18: "The funnel says we have one application and one partial
+   *  application. But when I look below, I only see a partial application." Both
+   *  numbers were right — Volcy Marketing was dispositioned Partial Application
+   *  at 11:25 and the application was SENT at 11:30 — but the two rungs sit
+   *  adjacent in a funnel, which reads as "Applications is the subset of Partial
+   *  apps that converted". It is not: one is a word the setter typed on a call,
+   *  the other is a stamp on a deal. The rung's help text said so; hovering is
+   *  what failed, so the distinction is now on the face of the rung.
+   *
+   *  tone "call" = typed by a setter on a call (a disposition).
+   *  tone "file" = read off `deals` (a stamp nobody types into a funnel). */
+  kindNote?: { text: string; tone: "call" | "file" };
   /** Overrides the denominator of the "% of <ofLabel>" line (and therefore of
    *  any band judged on `ofTotal`) for THIS rung only. The bar width still uses
    *  stage 0, so the funnel keeps its true shape.
@@ -1040,6 +1074,7 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.partialApps, f.conversations), targetKey: null,
       benchmark: { id: "app_per_conversation", basis: "step" },
+      kindNote: { text: "dispositioned on the call", tone: "call" },
       ...scoredShare,
     },
   ];
@@ -1068,6 +1103,10 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       targetKey: null,
       benchmark: unreadable ? null : { id: "app_per_conversation", basis: "step" },
       unreadable,
+      // NOT a subset of the rung above it. Partial apps is a word typed on a
+      // call; this is a stamp on a deal, and the same merchant can honestly
+      // produce both within minutes.
+      kindNote: { text: "sent, on file", tone: "file" },
       secondaryLine: unreadable ? (
         <span className="text-amber-600 dark:text-amber-400">pipeline unreadable — unknown, not zero</span>
       ) : (
@@ -1602,6 +1641,9 @@ export default function SetterPerformancePage() {
   /** Scroll target for the funnel's clickable "Positive dispositions" count. */
   const positivesRef = useRef<HTMLDivElement | null>(null);
   const [positivesHighlight, setPositivesHighlight] = useState(false);
+  /** Scroll target for the funnel's clickable "Applications" count. */
+  const applicationsRef = useRef<HTMLDivElement | null>(null);
+  const [applicationsHighlight, setApplicationsHighlight] = useState(false);
   // Opens on TODAY: this page is read as a shift monitor — "how is the floor
   // doing right now" — so the first paint must be today's dials, not a 7-day
   // blend that hides a dead morning.
@@ -2836,6 +2878,62 @@ export default function SetterPerformancePage() {
     return m;
   }, [productiveByOwner, range]);
 
+  // ── Applications sent in this range — the rung's own drill-down ────────────
+  // THE EXACT DEALS the Applications rung counted, one row each. Same filter the
+  // rung uses (computeProductive: application_sent_at inside the range), so the
+  // list length IS the rung's number — it cannot drift from it, because it is
+  // the same predicate over the same rows.
+  //
+  // Why this exists: every other figure on the page had a list behind it, and
+  // this one did not. "Positive dispositions" lists DISPOSITIONS, so an
+  // application that was genuinely SENT appeared nowhere on the page — which is
+  // exactly what the owner went looking for on 9/18 and could not find.
+  //
+  // null = the pipeline read failed. UNREADABLE, never "no applications".
+  // No query is added: these are rows productiveDeals already holds.
+  const applicationRows = useMemo((): ProductiveDeal[] | null => {
+    if (!productiveDeals) return null;
+    return productiveDeals
+      .filter((d) => inRange(d.application_sent_at, range.from, range.to))
+      .sort((a, b) => (b.application_sent_at ?? "").localeCompare(a.application_sent_at ?? ""));
+  }, [productiveDeals, range]);
+
+  /** profiles.id → the display name the rest of the page already resolved for
+   *  that setter (staff_directory, falling back to the dial side, flagged when
+   *  neither could name them). Folded off productiveRows so the naming ladder
+   *  lives in ONE place — a second copy of it is a second thing to drift. */
+  const setterNameById = useMemo(
+    () => new Map((productiveRows ?? []).map((r) => [r.setterId, r.name])),
+    [productiveRows],
+  );
+
+  /** The merchants who ALSO carry a positive disposition in this range, keyed
+   *  both ways the page matches merchants (GHL contact id, then last-10 phone).
+   *  Used to label an applications row that legitimately appears in BOTH panels
+   *  — Volcy Marketing, dispositioned Partial Application 11:25 and application
+   *  sent 11:30, is one merchant twice, not two merchants. */
+  const positiveCallMatch = useMemo(() => {
+    const contacts = new Set<string>();
+    const phones = new Set<string>();
+    for (const r of positiveCalls) {
+      if (r.contact_id) contacts.add(r.contact_id);
+      const digits = (r.phone ?? "").replace(/\D/g, "").slice(-10);
+      if (digits.length === 10) phones.add(digits);
+    }
+    return (d: ProductiveDeal) => {
+      if (d.ghl_contact_id && contacts.has(d.ghl_contact_id)) return true;
+      const digits = (d.customer?.phone ?? "").replace(/\D/g, "").slice(-10);
+      return digits.length === 10 && phones.has(digits);
+    };
+  }, [positiveCalls]);
+
+  /** The funnel's Applications count is a jump link into those exact deals. */
+  const jumpToApplications = useCallback(() => {
+    applicationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setApplicationsHighlight(true);
+    window.setTimeout(() => setApplicationsHighlight(false), 1600);
+  }, []);
+
   /** "What happened" digest — one row per SETTER for the selected range: their
    *  dial work (from the WAVV rows) joined with their pipeline work (from deals).
    *  People only — unattributed lines stay in the by-setter funnel cards. */
@@ -3873,6 +3971,7 @@ export default function SetterPerformancePage() {
                     targetFor={targetFor}
                     headerRight={<RagLegend />}
                     onPositivesClick={jumpToPositives}
+                    onApplicationsClick={jumpToApplications}
                     appsForScope={appsRungCombined}
                   >
                     <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
@@ -4176,6 +4275,252 @@ export default function SetterPerformancePage() {
                           this range, and a dead duplicate never wins over the live cycle. A <b>—</b> means no deal we can
                           read carries the figure — the field was never filled, or the deal belongs to another setter
                           (setters see the money only on their own book). It never means zero.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── Applications sent in this range ──────────────────────
+                    The drill-down behind the funnel's Applications rung. It sits
+                    directly under "Positive dispositions" and is deliberately a
+                    SEPARATE card with a different heading and a different icon:
+                    the two lists answer different questions, and the day the
+                    owner went looking for a sent application among the
+                    dispositions is the day this card was specified. */}
+                <div
+                  ref={applicationsRef}
+                  className={`card bg-base-100 border shadow-sm scroll-mt-4 transition-colors ${
+                    applicationsHighlight ? "border-indigo-400" : "border-base-300"
+                  }`}
+                >
+                  <div className="card-body p-4 space-y-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                          <DocumentTextIcon className="w-5 h-5 text-indigo-500" /> Applications sent in this range
+                          <span className="shrink-0 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-600 dark:text-indigo-300">
+                            on file
+                          </span>
+                        </h2>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl">
+                          The exact deals behind the funnel's <b>Applications</b> rung — an application{" "}
+                          <b>on file</b> (<code>application_sent_at</code> inside this range), <b>not</b> a
+                          disposition somebody typed on a call. A merchant can appear here <b>and</b> in{" "}
+                          <b>Positive dispositions</b> above: a setter who takes a partial application on the
+                          call and then sends the application produces both facts, minutes apart, and neither
+                          one is double counting.
+                        </p>
+                      </div>
+                      {applicationRows !== null && applicationRows.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            { label: "sent", n: applicationRows.length },
+                            { label: "with statements", n: applicationRows.filter(dealReachedStatements).length },
+                          ].map((k) => (
+                            <span
+                              key={k.label}
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
+                                k.n > 0 ? RAG_CHIP.green : RAG_CHIP.none
+                              }`}
+                            >
+                              {k.label}
+                              <b className="tabular-nums">{k.n.toLocaleString()}</b>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* UNREADABLE IS NOT ZERO. A failed pipeline read renders as
+                        an error here, exactly as the rung renders "—" — never as
+                        an empty list captioned "no applications". */}
+                    {applicationRows === null ? (
+                      <div className="alert alert-error text-sm">
+                        <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                        <span>
+                          <b>Applications unreadable this load</b> — unknown, <b>not</b> zero. The funnel's
+                          Applications rung shows “—” for the same reason.
+                          {productiveError ? ` ${productiveError}` : ""}
+                        </span>
+                      </div>
+                    ) : productiveLoading && applicationRows.length === 0 ? (
+                      <div className="flex items-center gap-2 text-gray-400 text-sm py-3">
+                        <span className="loading loading-spinner loading-sm" /> Loading applications…
+                      </div>
+                    ) : applicationRows.length === 0 ? (
+                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                        <b className="text-gray-700 dark:text-gray-200">No application was sent in this range.</b>{" "}
+                        The pipeline read fine — this is a real zero, not a failed read. A call dispositioned
+                        “Full Application” with no application actually sent still shows in{" "}
+                        <b>Partial apps</b> above and correctly shows nothing here.
+                      </div>
+                    ) : (
+                      <>
+                        <div className={TABLE_WRAP}>
+                          <table className={TABLE}>
+                            <thead className={THEAD}>
+                              <tr>
+                                <th className={TH}>Sent (ET)</th>
+                                <th className={TH}>Setter</th>
+                                <th className={TH}>Merchant</th>
+                                <th className={TH}>Business</th>
+                                <th className={TH}>Phone</th>
+                                <th className={TH}>Amount requested</th>
+                                <th className={TH}>Monthly revenue</th>
+                                <th className={TH}>Statements</th>
+                                <th className={TH} />
+                              </tr>
+                            </thead>
+                            <tbody className={TBODY}>
+                              {applicationRows.map((d) => {
+                                const ownerId = productiveOwner(d);
+                                const setterName = ownerId
+                                  ? setterNameById.get(ownerId) ?? `Setter ${ownerId.slice(0, 8)}`
+                                  : null;
+                                const person = customerPersonName(d);
+                                const business = d.customer?.business_name?.trim() || null;
+                                const statements = dealReachedStatements(d);
+                                const alsoDispositioned = positiveCallMatch(d);
+                                return (
+                                  <tr key={d.id} className={TR}>
+                                    <td
+                                      className={`${TD} whitespace-nowrap`}
+                                      title={localTimeTitle(d.application_sent_at)}
+                                    >
+                                      {etStamp(d.application_sent_at)}
+                                    </td>
+                                    <td className={TD}>
+                                      {setterName ? (
+                                        <span className="truncate">{setterName}</span>
+                                      ) : (
+                                        <span
+                                          className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400"
+                                          title="No assigned closer and no creator on this deal — work nobody owns, shown as such rather than credited to somebody"
+                                        >
+                                          unassigned
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className={TD}>
+                                      <div className="flex items-center gap-2">
+                                        <Text value={person} />
+                                        {alsoDispositioned && (
+                                          <button
+                                            type="button"
+                                            onClick={jumpToPositives}
+                                            title="This same merchant also carries a positive disposition in this range — one merchant, two different facts. Jump to that call."
+                                            className="shrink-0 rounded-full border border-mint-green/40 bg-mint-green/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-mint-green hover:underline underline-offset-2"
+                                          >
+                                            also on a call ↑
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className={TD}>
+                                      {business ? (
+                                        <span className="text-gray-900 dark:text-white">{business}</span>
+                                      ) : (
+                                        <span
+                                          className="text-gray-300 dark:text-gray-600"
+                                          title="No business name on this deal's customer record"
+                                        >
+                                          —
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                                      {d.customer?.phone ? prettyPhone(d.customer.phone) : (
+                                        <span className="text-gray-300 dark:text-gray-600" title="No phone on this deal's customer record">—</span>
+                                      )}
+                                    </td>
+                                    <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                                      {d.amount_requested != null ? (
+                                        <b className="text-gray-900 dark:text-white">{usd(d.amount_requested)}</b>
+                                      ) : (
+                                        <span
+                                          className="text-gray-300 dark:text-gray-600"
+                                          title="No amount on this deal — never filled, or masked because the deal belongs to another setter. Never zero."
+                                        >
+                                          —
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                                      {d.customer?.monthly_revenue != null ? (
+                                        <span className="text-gray-700 dark:text-gray-200">
+                                          {usd(d.customer.monthly_revenue)}
+                                          <span className="text-gray-400">/mo</span>
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className="text-gray-300 dark:text-gray-600"
+                                          title="No stated monthly revenue on this deal's customer record"
+                                        >
+                                          —
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className={TD}>
+                                      <span
+                                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                                          statements ? RAG_CHIP.green : RAG_CHIP.none
+                                        }`}
+                                        title={
+                                          statements
+                                            ? "Bank statements are in — a bank_statements_at / docs_collected_at stamp, or a stage at Bank Statements or deeper."
+                                            : "No statements signal on this deal yet. This is where the industry's #1 leak sits — chase it from Doc Review or the Revenue Playbook."
+                                        }
+                                      >
+                                        {statements ? "in" : "not yet"}
+                                      </span>
+                                    </td>
+                                    <td className={`${TD} text-right whitespace-nowrap`}>
+                                      <div className="inline-flex items-center gap-3">
+                                        {/* Same JMP send path (sms-send) as the
+                                            playbook and the positives table —
+                                            arm/confirm inside the panel, never a
+                                            browser popup. */}
+                                        {d.customer?.phone && (
+                                          <TextMerchantPanel
+                                            merchantPhone={d.customer.phone}
+                                            merchantFirstName={(d.customer.first_name ?? "").trim() || undefined}
+                                            businessName={business}
+                                            buttonLabel="Text"
+                                            buttonClassName="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-300 hover:underline underline-offset-2 font-medium"
+                                            presentation="modal"
+                                          />
+                                        )}
+                                        <Link
+                                          to={`/admin/playbooks?deal=${encodeURIComponent(d.id)}`}
+                                          className="text-mint-green hover:underline underline-offset-2 font-medium"
+                                          title="Open this deal in the Revenue Playbook"
+                                        >
+                                          Open →
+                                        </Link>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-xs text-gray-400">
+                          {applicationRows.length.toLocaleString()} application
+                          {applicationRows.length === 1 ? "" : "s"} carry an <code>application_sent_at</code>{" "}
+                          stamp inside this range — the same rows, and the same count, as the funnel's{" "}
+                          <b>Applications</b> rung. Newest first. <b>Setter</b> is the deal's owner
+                          (<code>assigned_closer_id</code>, falling back to <code>created_by</code>) — the same
+                          attribution the rung uses, which is not necessarily whoever pressed send; the{" "}
+                          <b>Apps sent</b> column on the setter table is the who-pressed-send figure. Times are
+                          US Eastern; hover a time for your own clock.
+                          {productiveTruncated && (
+                            <span className="text-amber-600 dark:text-amber-400">
+                              {" "}This range hit the {PRODUCTIVE_DEAL_CAP.toLocaleString()}-deal read cap, so
+                              this list is a floor, not a total — narrow the range.
+                            </span>
+                          )}
                         </p>
                       </>
                     )}
@@ -5876,7 +6221,8 @@ function sumOrDash(values: (number | null)[]) {
 // `compact` is the grid variant: same numbers, same RAG rule, tighter layout so
 // several funnels sit side by side for comparison.
 function FunnelCard({
-  calls, title, subtitle, badge, targetFor, compact = false, icon = false, headerRight, onPositivesClick, appsForScope, children,
+  calls, title, subtitle, badge, targetFor, compact = false, icon = false, headerRight,
+  onPositivesClick, onApplicationsClick, appsForScope, children,
 }: {
   calls: SetterCall[];
   title: string;
@@ -5889,6 +6235,9 @@ function FunnelCard({
   /** When set, the bottom "Positive dispositions" count becomes a jump link to
    *  the list of those exact calls. */
   onPositivesClick?: () => void;
+  /** When set, the "Applications" count becomes a jump link to the list of the
+   *  deals that rung counted — the drill-down it spent months without. */
+  onApplicationsClick?: () => void;
   /** Deal-derived Applications rung for THIS card's scope+range. See AppsRung:
    *  object → draw it, null → draw it unreadable, undefined → omit the rung. */
   appsForScope?: AppsRung | null;
@@ -5934,8 +6283,14 @@ function FunnelCard({
           targetFor={targetFor}
           compact={compact}
           ofLabel="of dials"
-          jumpKey="positives"
-          onJump={onPositivesClick}
+          jumps={{
+            ...(onPositivesClick
+              ? { positives: { onJump: onPositivesClick, title: "Jump to every positive-disposition call in this range" } }
+              : {}),
+            ...(onApplicationsClick
+              ? { applications: { onJump: onApplicationsClick, title: "Jump to the applications actually sent in this range" } }
+              : {}),
+          }}
         />
 
         {children}
@@ -5950,7 +6305,7 @@ function FunnelCard({
 // for every bar's width and for the "% of <ofLabel>" line, so the two funnels
 // draw identically even though they count entirely different things.
 function StageBars({
-  stages, targetFor, compact = false, ofLabel, jumpKey, onJump,
+  stages, targetFor, compact = false, ofLabel, jumps,
 }: {
   stages: FunnelStage[];
   targetFor: TargetLookup;
@@ -5958,9 +6313,12 @@ function StageBars({
   /** Names the denominator: "of dials" on the dial funnel, "of leads" on the
    *  pipeline one. Never guessed from the data. */
   ofLabel: string;
-  /** Stage whose count becomes a drill-down link, when onJump is supplied. */
-  jumpKey?: string;
-  onJump?: () => void;
+  /** Stage key → its drill-down. That stage's count renders as a link into the
+   *  list of rows behind it. A map rather than a single key because EVERY
+   *  number on this page is supposed to have a list behind it — the Applications
+   *  rung was the one that did not, which is how a real application that was
+   *  actually sent ended up visible nowhere on the page. */
+  jumps?: Record<string, { onJump: () => void; title: string }>;
 }) {
   const total = stages[0]?.count ?? 0;
   return (
@@ -6068,7 +6426,11 @@ function StageBars({
 
             // Where the caller supplied a drill-down for this stage, its count
             // renders as a link instead of plain text.
-            const jumpable = !!jumpKey && s.key === jumpKey && !!onJump && s.count > 0;
+            // An UNREADABLE rung is never a link: "—" is not a row set, and a
+            // drill-down offered on an unknown reads as "there is a list and it
+            // is empty".
+            const jump = jumps?.[s.key];
+            const jumpable = !!jump && s.count > 0 && !s.unreadable;
             const countBase = `${compact ? "text-sm shrink-0" : "text-base"} font-semibold tabular-nums`;
             // UNREADABLE draws "—", never "0" — an unloaded source must not read
             // as an empty result (see readers-must-distinguish-unreadable).
@@ -6076,8 +6438,8 @@ function StageBars({
             const countNode = jumpable ? (
               <button
                 type="button"
-                onClick={onJump}
-                title="Jump to every positive-disposition call in this range"
+                onClick={jump.onJump}
+                title={jump.title}
                 className={`${countBase} text-mint-green hover:underline underline-offset-2`}
               >
                 {countText} <span aria-hidden="true">↓</span>
@@ -6086,12 +6448,36 @@ function StageBars({
               <span className={`${countBase} text-gray-900 dark:text-white`}>{countText}</span>
             );
 
+            // The kind-of-fact chip. Printed on the rung in BOTH densities —
+            // the whole point is that it is legible without hovering.
+            const kindChip = s.kindNote ? (
+              <span
+                className={`inline-flex shrink-0 items-center rounded-full border ${
+                  compact ? "px-1.5 py-0 text-[9px]" : "px-1.5 py-0.5 text-[10px]"
+                } font-medium ${
+                  s.kindNote.tone === "file"
+                    ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300"
+                    : "border-base-300 bg-base-200/70 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400"
+                }`}
+                title={
+                  s.kindNote.tone === "file"
+                    ? "Read from the deals table — a stamp on a real deal, not something a setter types. A merchant can appear on this rung AND on a disposition rung; that is not double counting."
+                    : "A disposition the setter typed on the call. It is not the same fact as an application on file, and neither one is a subset of the other."
+                }
+              >
+                {s.kindNote.text}
+              </span>
+            ) : null;
+
             if (compact) {
               return (
                 <div key={s.key} className="space-y-1">
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate" title={s.help}>
-                      {s.short}
+                    <span className="inline-flex min-w-0 items-baseline gap-1.5">
+                      <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate" title={s.help}>
+                        {s.short}
+                      </span>
+                      {kindChip}
                     </span>
                     {countNode}
                   </div>
@@ -6122,7 +6508,10 @@ function StageBars({
             return (
               <div key={s.key} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
                 <div className="w-full sm:w-52 shrink-0">
-                  <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
+                    {kindChip}
+                  </div>
                   <div className="text-xs text-gray-400 flex flex-wrap items-center gap-1.5">
                     {shareNode}
                     {s.benchmark?.basis === "ofTotal" && bmChip}
