@@ -3487,11 +3487,27 @@ export default function SetterPerformancePage() {
   }, [positiveCalls]);
 
   // ── AN APPLICATION OFF A CALL NOBODY DISPOSITIONED ────────────────────────
-  // Verified on today's floor: Miami Concierge Network / Rafael Badia has ONE
-  // call in range — 13:59, disposition NULL, seconds NULL, outcome UNKNOWN — and
-  // the application went out twelve minutes later at 14:11. So he appears here,
-  // under Applications sent, and NOWHERE in Positive dispositions, and there was
-  // no way to tell from this page why. The owner asked exactly that question.
+  // Built 9/18 because Miami Concierge Network / Rafael Badia sat under
+  // Applications sent and NOWHERE in Positive dispositions, and the page could
+  // not say why. His only call in range read disposition NULL, seconds NULL,
+  // outcome UNKNOWN. The owner asked exactly that question.
+  //
+  // ⚠ RAFAEL IS NO LONGER AN EXAMPLE OF THIS, AND THE REASON MATTERS. The
+  // 9/18 stub re-pull (20260918f) went back to WAVV and found the real record:
+  // answered, 1503 seconds — a twenty-five minute call — dispositioned "Full
+  // Application" by Catherine. Our mirror had written the row 31 seconds into
+  // the dial, while the line was still ringing, and never looked again. She
+  // logged it; we lost it. He now carries a TYPED positive and his row shows
+  // "also on a call ↑" like any other. Nothing here changed to make that
+  // happen — the data stopped being wrong.
+  //
+  // ⚠ SO THIS CHIP HAS NO LIVE EXAMPLE ON A TODAY RANGE, AND THAT IS NOT
+  // EVIDENCE IT IS DEAD. All three of 9/18's applications now match a typed
+  // positive. A reader checking this against today's floor will find it firing
+  // nowhere and be tempted to delete it. Don't: the condition it catches — an
+  // application on file with no dispositioned call behind it — is a real state
+  // that recurs, and the 9/18 stub bug is proof the mirror can manufacture it
+  // from nothing. Widen the range to find cases, or trust the test.
   //
   // The footnote already warns that "a setter who does not disposition their
   // calls under-reports conversations". This points at the specific instance, on
@@ -3565,9 +3581,16 @@ export default function SetterPerformancePage() {
       // REFUSES to derive a disposition from it, and states the refusal as a
       // sentence. That completes the answer this chip exists to give: nobody
       // typed a disposition, AND here is why we would not infer one either.
-      // Rafael Badia's reads "WAVV never recorded this call as answered, so
+      // The sentences read like "WAVV never recorded this call as answered, so
       // there is no conversation to credit — a pre-filled application can be
       // sent to a merchant nobody spoke to."
+      //
+      // That one was Rafael Badia's until 20260918f re-pulled his stub row and
+      // found a 1503-second call he HAD been dispositioned on; his refusal is
+      // now "the setter already dispositioned this call — the typed value
+      // wins", which is a different sentence for a different reason. Quoting a
+      // live row in a comment is worth doing because it is checkable — which is
+      // exactly why it goes stale, and twice on this one merchant in one day.
       //
       // Prefer the link an APPLICATION made, since this table is about
       // applications; an appointment link is the fallback.
