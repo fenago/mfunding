@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import supabase from "../supabase";
+import { playNewLeadChime, playMatchChime } from "../lib/chime";
+import type { AlertLeadSource, CornerAlert } from "../lib/cornerAlert";
+
+// The corner-card shape now lives in lib/cornerAlert (it is shared with the
+// signed-application stream, which feeds the SAME stack). Re-exported here so
+// existing importers keep working.
+export type { AlertLeadSource, CornerAlert };
 
 // The two Synergy products that are TIME-CRITICAL the instant they land: a live
 // transfer means the merchant is being handed to a closer on the phone RIGHT NOW;
@@ -7,23 +14,11 @@ import supabase from "../supabase";
 // My Day poll — these two get an unmissable in-app alert + chime.
 const ALERT_SOURCES = new Set(["live_transfer", "realtime_appt"]);
 
-export type AlertLeadSource = "live_transfer" | "realtime_appt";
-
-// A bottom-right corner card. `new_lead` = a brand-new time-critical deal; the
-// calmer `vendor_match` = a Synergy vendor email deduped into an EXISTING deal the
-// closer is NOT currently working (the open-deal case gets the banner instead).
-export interface CornerAlert {
-  dealId: string;
-  dealNumber: string | null;
-  business: string;
-  /** amount_requested off the deal row; null when the lead carries no ask yet. */
-  ask: number | null;
-  kind: "new_lead" | "vendor_match";
-  /** Set only for new_lead — drives the red (live) vs mint (real-time) styling. */
-  leadSource: AlertLeadSource | null;
-  /** Date.now() when the event reached us. */
-  at: number;
-}
+// This hook produces the two LEAD kinds of corner card: `new_lead` = a brand-new
+// time-critical deal; the calmer `vendor_match` = a Synergy vendor email deduped
+// into an EXISTING deal the closer is NOT currently working (the open-deal case
+// gets the banner instead). The third kind, `app_signed`, comes from
+// useSignedApplicationAlert and is merged into the same stack by LeadAlertProvider.
 
 // The SPECIAL in-playbook banner: the vendor email for the deal the closer is
 // working just landed and merged. Carries the mid-call essentials so a closer on
@@ -68,48 +63,8 @@ interface IntakeLogRow {
   received_at: string | null;
 }
 
-// ── Chimes, generated in code (no audio assets) ────────────────────────────────
-// A fresh AudioContext per chime, closed once it finishes so we never leak
-// contexts. Wrapped in try/catch: if the browser blocks audio the visual alert is
-// still the real signal.
-function playTones(tones: { freq: number; at: number; dur: number }[]) {
-  try {
-    const AC: typeof AudioContext | undefined =
-      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const start = ctx.currentTime;
-    let end = 0;
-    for (const t of tones) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = t.freq;
-      const t0 = start + t.at;
-      gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(0.28, t0 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + t.dur);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(t0);
-      osc.stop(t0 + t.dur + 0.02);
-      end = Math.max(end, t.at + t.dur);
-    }
-    setTimeout(() => ctx.close().catch(() => {}), (end + 0.2) * 1000);
-  } catch {
-    /* audio unavailable — the alert carries itself */
-  }
-}
-
-// New lead: two rising beeps ("ding-ding").
-const playNewLeadChime = () =>
-  playTones([
-    { freq: 660, at: 0, dur: 0.16 },
-    { freq: 990, at: 0.18, dur: 0.16 },
-  ]);
-
-// Vendor email matched: ONE clean high ding — deliberately distinct from the
-// two-beep new-lead chime so a closer hears the difference without looking.
-const playMatchChime = () => playTones([{ freq: 1175, at: 0, dur: 0.32 }]);
+// Chimes live in lib/chime (shared with the signed-application stream, which
+// needs a DIFFERENT sound out of the same plumbing).
 
 // How long the special banner stays before it fades on its own.
 const BANNER_TTL_MS = 30_000;
@@ -158,7 +113,7 @@ export function useNewLeadAlert(opts?: {
   viewerIsManager?: boolean;
 }): {
   alerts: CornerAlert[];
-  dismiss: (dealId: string) => void;
+  dismiss: (key: string) => void;
   dismissAll: () => void;
   matchBanner: MatchBanner | null;
   dismissBanner: () => void;
@@ -206,8 +161,11 @@ export function useNewLeadAlert(opts?: {
     viewerIsManagerRef.current = !!opts?.viewerIsManager;
   }, [opts?.viewerIsManager]);
 
-  const dismiss = useCallback((dealId: string) => {
-    setAlerts((prev) => prev.filter((a) => a.dealId !== dealId));
+  // Dismissal is BY KEY (which for these two kinds is the deal id). Ignoring a
+  // key we don't hold is deliberate: the provider fans one dismiss out to every
+  // alert stream, and only the owning stream should act on it.
+  const dismiss = useCallback((key: string) => {
+    setAlerts((prev) => prev.filter((a) => a.key !== key));
   }, []);
   const dismissAll = useCallback(() => setAlerts([]), []);
   const dismissBanner = useCallback(() => setMatchBanner(null), []);
@@ -266,6 +224,7 @@ export function useNewLeadAlert(opts?: {
 
       const business = await businessNameFor(row.customer_id);
       const alert: CornerAlert = {
+        key: row.id,
         dealId: row.id,
         dealNumber: row.deal_number,
         business,
@@ -341,6 +300,7 @@ export function useNewLeadAlert(opts?: {
       // vendor-match toast would follow every user around every screen.
       if (!isMine(d.assigned_closer_id)) return;
       const alert: CornerAlert = {
+        key: dealId,
         dealId,
         dealNumber: d.deal_number,
         business,

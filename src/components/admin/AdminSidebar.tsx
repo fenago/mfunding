@@ -60,6 +60,7 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
 import useIsProcessor from "../../hooks/useIsProcessor";
 import { useUnreadSms } from "../../hooks/useUnreadSms";
+import useSignedAppsBadge from "../../hooks/useSignedAppsBadge";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
@@ -320,6 +321,9 @@ export default function AdminSidebar() {
   const { isProcessor } = useIsProcessor();
   // Org-wide unread count for the shared SMS line → badge on "Text Messages".
   const unreadSms = useUnreadSms();
+  // Merchants who SIGNED their application and still owe bank statements →
+  // badge on "Processor", the screen where that chase actually happens.
+  const signedApps = useSignedAppsBadge();
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -335,6 +339,52 @@ export default function AdminSidebar() {
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     window.location.href = "/";
+  };
+
+  /**
+   * The nav pills. Two items carry one:
+   *
+   *   · Text Messages — org-wide unread on the shared line (red).
+   *   · Processor     — merchants who have SIGNED their application and have NO
+   *     bank statements on file (emerald). That is the queue where a signature
+   *     turns into work, and it empties itself when the statements land, so it
+   *     can never become permanent decoration. It sits on Processor because the
+   *     Application Chase tab is where that chase is actually run.
+   *
+   * ⚠️ UNREADABLE IS NEVER ZERO. A count we could not read shows an amber "?" —
+   * hiding the pill would claim "nothing to chase", which is exactly how a
+   * signed application goes unseen a second time. A count that has simply not
+   * loaded yet (no value, no error) shows nothing rather than flashing.
+   */
+  const badgeFor = (path: string): { text: string; title: string; tone: string } | null => {
+    if (path === "/admin/text-messages") {
+      if (unreadSms <= 0) return null;
+      return {
+        text: unreadSms > 99 ? "99+" : String(unreadSms),
+        title: `${unreadSms} unread text${unreadSms === 1 ? "" : "s"}`,
+        tone: "bg-red-500",
+      };
+    }
+    if (path === "/admin/processor") {
+      if (signedApps.count === null) {
+        if (!signedApps.error) return null; // still loading — say nothing
+        return {
+          text: "?",
+          title: `Signed applications awaiting bank statements: the count could not be read (${signedApps.error}). This is NOT zero.`,
+          tone: "bg-amber-500",
+        };
+      }
+      if (signedApps.count <= 0) return null;
+      const n = signedApps.count;
+      return {
+        text: n > 99 ? "99+" : String(n),
+        title: `${n} merchant${n === 1 ? " has" : "s have"} signed the application with no bank statements on file yet — chase the statements${
+          signedApps.error ? ` (last refresh failed: ${signedApps.error})` : ""
+        }`,
+        tone: signedApps.error ? "bg-amber-500" : "bg-emerald-500",
+      };
+    }
+    return null;
   };
 
   // Employees have admin-level app access minus super-admin screens, so treat
@@ -463,9 +513,7 @@ export default function AdminSidebar() {
                 {items.map((item) => {
                   const Icon = item.icon;
                   const active = isActive(item.path);
-                  // Unread badge, only on the shared-line Text Messages item, only
-                  // when there's something waiting. Org-wide count (see useUnreadSms).
-                  const badge = item.path === "/admin/text-messages" ? unreadSms : 0;
+                  const badge = badgeFor(item.path);
                   return (
                     <Link
                       key={item.path}
@@ -483,22 +531,22 @@ export default function AdminSidebar() {
                           {item.name}
                         </span>
                       )}
-                      {badge > 0 &&
+                      {badge &&
                         (isCollapsed ? (
                           // Collapsed rail: a compact dot on the icon corner — the
                           // label is hidden, so a full pill has nowhere to sit.
                           <span
-                            className="absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none tabular-nums"
-                            title={`${badge} unread text${badge === 1 ? "" : "s"}`}
+                            className={`absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full text-white text-[10px] font-bold leading-none tabular-nums ${badge.tone}`}
+                            title={badge.title}
                           >
-                            {badge > 99 ? "99+" : badge}
+                            {badge.text}
                           </span>
                         ) : (
                           <span
-                            className="ml-auto min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold tabular-nums"
-                            title={`${badge} unread text${badge === 1 ? "" : "s"}`}
+                            className={`ml-auto min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full text-white text-xs font-bold tabular-nums ${badge.tone}`}
+                            title={badge.title}
                           >
-                            {badge > 99 ? "99+" : badge}
+                            {badge.text}
                           </span>
                         ))}
                     </Link>
