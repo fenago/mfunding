@@ -1322,6 +1322,22 @@ function hms(totalSeconds: number): string {
     : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
+/** A call's length for a READER: "25s", "13m 01s", "1h 02m".
+ *
+ *  hms() above is the spreadsheet form ("0:25", "13:01") and stays where it is
+ *  used for totals and averages. This one exists because two Callback rows for
+ *  the same merchant — 25 seconds at 11:23, thirteen minutes at 13:33 — read as
+ *  duplicates when the only difference on screen is a timestamp. "0:25" vs
+ *  "13:01" is a comparison; "25s" vs "13m 01s" is obvious at a glance, and
+ *  obvious is the requirement here. */
+function durationText(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 function prettyPhone(p: string | null): string {
   if (!p) return "—";
   const d = p.replace(/\D/g, "");
@@ -2646,6 +2662,46 @@ export default function SetterPerformancePage() {
       };
     };
   }, [positiveDeals, productiveDeals]);
+
+  // ── TWO CALLS TO ONE MERCHANT ARE NOT A DUPLICATE ROW ─────────────────────
+  // Owner report 9/18: "We have duplicates here. fix it" — two Callback rows for
+  // Jean Tchatat / Vonbangoulap LLC, identical in every visible column. They are
+  // two distinct WAVV calls: 01a0b51d… at 11:23:55 for 25 seconds, 01a0b594… at
+  // 13:33:34 for 781 seconds, `also_seen_in` null on both. The callback loop
+  // worked — caught him briefly, called back, talked for thirteen minutes. That
+  // 13-minute call is the best conversation on the floor today and collapsing
+  // the pair would hide it behind the 25-second one.
+  //
+  // So nothing is deduped. The table is given what it was missing instead: this
+  // marks each row of a repeat merchant with its place in the sequence, so the
+  // pair reads as "call 1 of 2 / call 2 of 2" rather than as the same row twice.
+  // The 180s dedupe rule is NOT what this is: that stops ONE physical call being
+  // counted from two sources, and these are two physical calls.
+  //
+  // KEYED ON PHONE FIRST, contact id second: the dialed number is on essentially
+  // every WAVV row, so it groups a row that never got a contact record together
+  // with one that did. Rows with neither are left unmarked rather than guessed
+  // into a sequence.
+  const positiveCallSequence = useMemo(() => {
+    const groups = new Map<string, SetterCall[]>();
+    for (const r of positiveCalls) {
+      const digits = (r.phone ?? "").replace(/\D/g, "").slice(-10);
+      const key = digits.length === 10 ? digits : r.contact_id;
+      if (!key) continue;
+      const list = groups.get(key);
+      if (list) list.push(r);
+      else groups.set(key, [r]);
+    }
+    const out = new Map<string, { n: number; total: number }>();
+    for (const list of groups.values()) {
+      if (list.length < 2) continue; // a single call is not a sequence
+      // Ordered by the CLOCK, not by the table's sort: "call 2 of 2" must mean
+      // the later call even though the table groups by disposition first.
+      const ordered = [...list].sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
+      ordered.forEach((r, i) => out.set(r.wavv_call_id, { n: i + 1, total: ordered.length }));
+    }
+    return out;
+  }, [positiveCalls]);
 
   const positiveCounts = useMemo(() => {
     const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
@@ -4283,6 +4339,13 @@ export default function SetterPerformancePage() {
                             <thead className={THEAD}>
                               <tr>
                                 <th className={TH}>Time (ET)</th>
+                                {/* Next to the timestamp on purpose: when two
+                                    calls to one merchant differ only in when
+                                    they happened, how LONG they ran is the thing
+                                    that tells them apart. */}
+                                <th className={TH_NUM} title="How long the call ran, from the dialer">
+                                  Length
+                                </th>
                                 <th className={TH}>Setter</th>
                                 <th className={TH}>Merchant</th>
                                 <th className={TH}>Business</th>
@@ -4296,10 +4359,35 @@ export default function SetterPerformancePage() {
                             <tbody className={TBODY}>
                               {positiveCalls.map((r) => {
                                 const money = positiveMerchant(r);
+                                const seq = positiveCallSequence.get(r.wavv_call_id);
                                 return (
                                 <tr key={r.wavv_call_id} className={TR}>
                                   <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
                                     {etStamp(r.started_at)}
+                                  </td>
+                                  {/* null seconds = the dialer reported no
+                                      length. "—", never "0s": a call of unknown
+                                      length is not a call that lasted nothing. */}
+                                  <td className={TD_NUM}>
+                                    {r.seconds === null ? (
+                                      <span
+                                        className="text-gray-300 dark:text-gray-600"
+                                        title="The dialer reported no duration for this call — unknown, not zero"
+                                      >
+                                        —
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={
+                                          r.seconds >= 180
+                                            ? "font-semibold text-gray-900 dark:text-white"
+                                            : "text-gray-700 dark:text-gray-200"
+                                        }
+                                        title={`${r.seconds.toLocaleString()} seconds`}
+                                      >
+                                        {durationText(r.seconds)}
+                                      </span>
+                                    )}
                                   </td>
                                   <td className={TD}>
                                     <div className="flex items-center gap-2">
@@ -4311,7 +4399,22 @@ export default function SetterPerformancePage() {
                                       )}
                                     </div>
                                   </td>
-                                  <td className={TD}><Text value={r.contact_name} /></td>
+                                  <td className={TD}>
+                                    <div className="flex items-center gap-2">
+                                      <Text value={r.contact_name} />
+                                      {/* Context, not an alarm — quiet styling.
+                                          It turns two same-merchant rows into a
+                                          sequence instead of a suspected bug. */}
+                                      {seq && (
+                                        <span
+                                          className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400"
+                                          title={`This merchant was reached ${seq.total} times in this range and this is call ${seq.n}, counted by the clock. Separate calls, not a duplicated row.`}
+                                        >
+                                          call {seq.n} of {seq.total}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
                                   <td className={TD}>
                                     {money.businessName ? (
                                       <span className="text-gray-900 dark:text-white">{money.businessName}</span>
@@ -4397,6 +4500,10 @@ export default function SetterPerformancePage() {
                           {positiveCalls.length.toLocaleString()} call{positiveCalls.length === 1 ? "" : "s"} in this range
                           carried a positive disposition, newest first inside each type. <b>Open →</b> takes you straight
                           into that merchant's Revenue Playbook. Times are US Eastern; hover a time for your own clock.
+                          One row per <b>call</b>, not per merchant — a merchant worked twice appears twice, marked{" "}
+                          <b>call 1 of 2</b> / <b>call 2 of 2</b> by the clock. Those are separate calls, not a
+                          duplicated row, and <b>Length</b> is usually where the difference shows: a callback that
+                          runs thirteen minutes is a different event from the twenty-five seconds that earned it.
                         </p>
                         <p className="text-xs text-gray-400">
                           <b className="text-gray-500 dark:text-gray-300">Business</b>,{" "}
