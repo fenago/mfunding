@@ -74,7 +74,7 @@
 //    on the deal timeline and in realtime_lead_call_history(), not in a count of
 //    dials made.) Both source branches of the view filter direction='outbound'.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   PhoneIcon,
@@ -122,6 +122,8 @@ import {
   signatureFromStatus,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import { signatureUnknown, type SignatureState } from "@/lib/applicationSignature";
 import { isPhantomApplicationSend, checkPhantomMirror } from "@/lib/phantomApplicationSend";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
@@ -891,6 +893,50 @@ function isConversation(r: Pick<SetterCall, "disposition">): boolean {
   return !!r.disposition && CONVERSATION_DISPOSITIONS.includes(r.disposition);
 }
 
+/** Last ten digits of a phone, or "" when there aren't ten. The one place this
+ *  page's several phone comparisons agree on what "same number" means. */
+function last10(p: string | null | undefined): string {
+  const d = (p ?? "").replace(/\D/g, "").slice(-10);
+  return d.length === 10 ? d : "";
+}
+
+// ── THE UNIT OF A POSITIVE DISPOSITION IS THE MERCHANT, NOT THE CALL ─────────
+// Owner ruling 2026-09-18, raised repeatedly before that and settled here: a
+// setter who calls ONE merchant back four times has not produced four
+// opportunities. Today's floor made the cost of the old unit concrete — Jean
+// Tchatat / Vonbangoulap LLC carries two genuine Callback rows (25s at 11:23,
+// 781s at 13:33, different WAVV ids, not a mirror duplicate), so the chip read
+// "Callback 3" when only TWO merchants had called back. That inflated the
+// positives count, the positive-disposition rate and the conversations→positives
+// step rate, all three off one merchant.
+//
+// So every positive count on this page is folded on MERCHANT × DISPOSITION.
+// Two Callbacks from one merchant are one Callback; a Callback and a Partial
+// Application from the same merchant are two different facts and stay two.
+//
+// IDENTITY IS THE MERCHANT, NOT THE PHONE STRING. A merchant with two numbers is
+// still one merchant, so the GHL contact id leads. The phone is only a bridge:
+// a WAVV row that never got tied to a contact record is pulled onto the contact
+// that another row DID resolve for the same number, so the pair still folds. A
+// row with neither a contact id nor ten dialable digits is keyed on its own call
+// id — deliberately un-foldable, because merging two unidentifiable merchants is
+// worse than counting them apart.
+function makeMerchantKey(calls: SetterCall[]): (r: SetterCall) => string {
+  const phoneToContact = new Map<string, string>();
+  for (const r of calls) {
+    if (!r.contact_id) continue;
+    const digits = last10(r.phone);
+    if (digits && !phoneToContact.has(digits)) phoneToContact.set(digits, r.contact_id);
+  }
+  return (r) => {
+    if (r.contact_id) return `c:${r.contact_id}`;
+    const digits = last10(r.phone);
+    if (!digits) return `x:${r.wavv_call_id}`;
+    const viaPhone = phoneToContact.get(digits);
+    return viaPhone ? `c:${viaPhone}` : `p:${digits}`;
+  };
+}
+
 // ── The funnel, as one definition ────────────────────────────────────────────
 // Dial → Connect (answered_at set) → Human (reachedHuman: answered and not a
 // voicemail/no-answer tell) → Conversation (a talk disposition) → Positive
@@ -915,10 +961,18 @@ interface FunnelCounts {
   scoredConnects: number;
   humans: number;
   conversations: number;
+  /** MERCHANTS × DISPOSITION with a positive disposition — not calls. See the
+   *  makeMerchantKey memo: one merchant called back twice is one callback. */
   positives: number;
-  /** Calls dispositioned as an actual application taken (APPLICATION_DISPOSITIONS)
+  /** How many positive CALLS were folded away to get there. Zero on a normal
+   *  day; shown wherever the count is explained so the collapse is visible
+   *  rather than a number that quietly got smaller. */
+  positiveCallsFolded: number;
+  /** Merchants dispositioned as an actual application taken (APPLICATION_DISPOSITIONS)
    *  — the owner's "Partial Apps" rung. A strict subset of `positives`: soft wins
-   *  like Callback/Appointment Set count as positive but never land here. */
+   *  like Callback/Appointment Set count as positive but never land here. Folded
+   *  on the SAME merchant × disposition unit, so it can never exceed the rung it
+   *  is a subset of. */
   partialApps: number;
   talkSeconds: number;
   connectedSeconds: number;
@@ -926,10 +980,18 @@ interface FunnelCounts {
 }
 
 function computeFunnel(calls: SetterCall[]): FunnelCounts {
-  let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0, partialApps = 0;
+  let dials = 0, connects = 0, humans = 0, conversations = 0;
+  let positiveCalls = 0;
   let ghlDials = 0, ghlConnects = 0;
   let talkSeconds = 0, connectedSeconds = 0;
   const phones = new Set<string>();
+  // Merchant × disposition, not calls. The keyer is built from THIS slice, so a
+  // per-setter card folds within that setter's own work: a merchant two setters
+  // both reached counts once for each of them and once overall, which is why the
+  // setter column can sum higher than the combined rung. Said on the page.
+  const merchantKey = makeMerchantKey(calls);
+  const positiveKeys = new Set<string>();
+  const appKeys = new Set<string>();
   for (const r of calls) {
     const scored = isScored(r);
     dials++;
@@ -950,15 +1012,23 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
     if (scored) {
       if (reachedHuman(r)) humans++;
       if (isConversation(r)) conversations++;
-      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
-      if (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition)) partialApps++;
+      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) {
+        positiveCalls++;
+        positiveKeys.add(`${merchantKey(r)}|${r.disposition}`);
+        if (APPLICATION_DISPOSITIONS.includes(r.disposition)) {
+          appKeys.add(`${merchantKey(r)}|${r.disposition}`);
+        }
+      }
     }
     if (r.phone) phones.add(r.phone);
   }
   return {
     dials, connects, ghlDials, ghlConnects,
     scoredDials: dials - ghlDials, scoredConnects: connects - ghlConnects,
-    humans, conversations, positives, partialApps,
+    humans, conversations,
+    positives: positiveKeys.size,
+    positiveCallsFolded: positiveCalls - positiveKeys.size,
+    partialApps: appKeys.size,
     talkSeconds, connectedSeconds, uniqueLeads: phones.size,
   };
 }
@@ -1101,7 +1171,13 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     },
     {
       key: "positives", label: "Positive dispositions", short: "Positives",
-      help: POSITIVE_DISPOSITIONS.join(" · ") + scoredNote,
+      help:
+        "MERCHANTS, not calls: " + POSITIVE_DISPOSITIONS.join(" · ") +
+        ". One merchant carrying the same positive disposition on two calls counts ONCE — a setter who calls one merchant back four times has not produced four opportunities" +
+        (f.positiveCallsFolded > 0
+          ? `. ${f.positiveCallsFolded.toLocaleString()} repeat call${f.positiveCallsFolded === 1 ? " was" : "s were"} folded into a merchant already counted here; every one of them is still listed, and openable, in Positive dispositions below`
+          : "") +
+        scoredNote,
       count: f.positives, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
       ...scoredShare,
@@ -1114,9 +1190,9 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     {
       key: "partial_apps", label: "Partial apps", short: "Partial apps",
       help:
-        "Calls dispositioned as an application actually taken: " +
+        "MERCHANTS dispositioned as an application actually taken: " +
         APPLICATION_DISPOSITIONS.join(" · ") +
-        ". A subset of Positives — Interested, Callback and Appointment Set never count here." + scoredNote,
+        ". A subset of Positives — Interested, Callback and Appointment Set never count here — and folded on the same merchant unit, so it can never climb above the rung it is a subset of." + scoredNote,
       count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.partialApps, f.conversations), targetKey: null,
       benchmark: { id: "app_per_conversation", basis: "step" },
@@ -2567,11 +2643,12 @@ export default function SetterPerformancePage() {
       .sort((a, b) => b.calls.length - a.calls.length);
   }, [aggRows, funnelView]);
 
-  // ── Positive dispositions, call by call ───────────────────────────────────
-  // Every row in range whose disposition is on POSITIVE_DISPOSITIONS — the exact
-  // rows behind the funnel's bottom bar, so a manager can open the merchant
-  // instead of trusting a number. Sorted by disposition (in ladder order), then
-  // newest first inside each. Built from the SAME aggRows; no extra query.
+  // ── Positive dispositions, the raw calls ──────────────────────────────────
+  // Every row in range whose disposition is on POSITIVE_DISPOSITIONS. This is
+  // the un-folded list: it feeds the contact-id fetch and the "also on a call"
+  // match below, both of which want every call. What the TABLE renders is
+  // `positiveRows`, which folds these onto merchants — see the memo there.
+  // Built from the SAME aggRows; no extra query.
   const positiveCalls = useMemo(() => {
     const rows = aggRows.filter((r) => r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition));
     return rows.sort((a, b) => {
@@ -2676,53 +2753,109 @@ export default function SetterPerformancePage() {
     };
   }, [positiveDeals, productiveDeals]);
 
-  // ── TWO CALLS TO ONE MERCHANT ARE NOT A DUPLICATE ROW ─────────────────────
-  // Owner report 9/18: "We have duplicates here. fix it" — two Callback rows for
-  // Jean Tchatat / Vonbangoulap LLC, identical in every visible column. They are
-  // two distinct WAVV calls: 01a0b51d… at 11:23:55 for 25 seconds, 01a0b594… at
-  // 13:33:34 for 781 seconds, `also_seen_in` null on both. The callback loop
-  // worked — caught him briefly, called back, talked for thirteen minutes. That
-  // 13-minute call is the best conversation on the floor today and collapsing
-  // the pair would hide it behind the 25-second one.
+  // ── ONE MERCHANT, ONE POSITIVE — AND NOTHING IS DESTROYED ─────────────────
+  // Owner ruling 9/18, after raising it many times: the unit of a positive
+  // disposition is the MERCHANT, not the call. Jean Tchatat / Vonbangoulap LLC
+  // carries two genuine Callback rows today — 01a0b51d… at 11:23:55 for 25s and
+  // 01a0b594… at 13:33:34 for 781s, `also_seen_in` null on both, so two real
+  // calls and not a mirror duplicate — and printing both made the chip read
+  // "Callback 3" when only two merchants had called back. A setter who calls one
+  // merchant back four times has not produced four opportunities.
   //
-  // So nothing is deduped. The table is given what it was missing instead: this
-  // marks each row of a repeat merchant with its place in the sequence, so the
-  // pair reads as "call 1 of 2 / call 2 of 2" rather than as the same row twice.
+  // So the table folds on MERCHANT × DISPOSITION, exactly as computeFunnel does,
+  // and the surviving row is the LATEST call. Latest, not first, because the
+  // callback loop's whole point is that the later call is the one that went
+  // somewhere: here it keeps the thirteen-minute conversation, which is the best
+  // talk on the floor today and the reason collapsing was resisted before.
+  //
+  // NOTHING IS LOST. The row says how many calls it stands for, the expander
+  // lists every one of them with its own time, length and disposition, and when
+  // a folded call ran LONGER than the surviving one the row prints that length
+  // too — so the fold can never hide the substantial call behind a short one.
+  //
   // The 180s dedupe rule is NOT what this is: that stops ONE physical call being
-  // counted from two sources, and these are two physical calls.
-  //
-  // KEYED ON PHONE FIRST, contact id second: the dialed number is on essentially
-  // every WAVV row, so it groups a row that never got a contact record together
-  // with one that did. Rows with neither are left unmarked rather than guessed
-  // into a sequence.
-  const positiveCallSequence = useMemo(() => {
+  // counted twice from two sources. These are separate calls, deliberately kept.
+  interface PositiveRow {
+    /** merchant|disposition — the same key the funnel counts. */
+    key: string;
+    disposition: string;
+    /** Every call in the fold, oldest first. Length 1 on most rows. */
+    calls: SetterCall[];
+    /** The call this row renders: the latest one. */
+    lead: SetterCall;
+    /** The longest call in the fold, when a folded call beat the lead on
+     *  duration. null when the lead IS the longest (or nothing reported one). */
+    longerThanLead: SetterCall | null;
+  }
+
+  const positiveRows = useMemo((): PositiveRow[] => {
+    // Keyed off aggRows, NOT off positiveCalls — computeFunnel builds its keyer
+    // from aggRows, and the phone→contact bridge inside the keyer depends on
+    // which rows it saw. Feeding it a narrower slice here would let the list and
+    // the rung fold the same merchant differently, which is exactly the class of
+    // silent disagreement this page keeps paying for. Same input, same fold.
+    const merchantKey = makeMerchantKey(aggRows);
     const groups = new Map<string, SetterCall[]>();
     for (const r of positiveCalls) {
-      const digits = (r.phone ?? "").replace(/\D/g, "").slice(-10);
-      const key = digits.length === 10 ? digits : r.contact_id;
-      if (!key) continue;
+      const key = `${merchantKey(r)}|${r.disposition}`;
       const list = groups.get(key);
       if (list) list.push(r);
       else groups.set(key, [r]);
     }
-    const out = new Map<string, { n: number; total: number }>();
-    for (const list of groups.values()) {
-      if (list.length < 2) continue; // a single call is not a sequence
-      // Ordered by the CLOCK, not by the table's sort: "call 2 of 2" must mean
-      // the later call even though the table groups by disposition first.
-      const ordered = [...list].sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
-      ordered.forEach((r, i) => out.set(r.wavv_call_id, { n: i + 1, total: ordered.length }));
+    const rows: PositiveRow[] = [];
+    for (const [key, list] of groups) {
+      const calls = [...list].sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
+      const lead = calls[calls.length - 1];
+      let longest: SetterCall | null = null;
+      for (const c of calls) {
+        if (c.seconds === null) continue;
+        if (!longest || c.seconds > (longest.seconds ?? -1)) longest = c;
+      }
+      rows.push({
+        key,
+        disposition: lead.disposition!,
+        calls,
+        lead,
+        longerThanLead:
+          longest && longest.wavv_call_id !== lead.wavv_call_id && (longest.seconds ?? 0) > (lead.seconds ?? -1)
+            ? longest
+            : null,
+      });
     }
-    return out;
-  }, [positiveCalls]);
+    return rows.sort((a, b) => {
+      const da = POSITIVE_DISPOSITIONS.indexOf(a.disposition);
+      const db = POSITIVE_DISPOSITIONS.indexOf(b.disposition);
+      if (da !== db) return da - db;
+      return (b.lead.started_at ?? "").localeCompare(a.lead.started_at ?? "");
+    });
+  }, [aggRows, positiveCalls]);
 
+  /** How many positive CALLS were folded away. Printed, never silent — a count
+   *  that got smaller with no explanation is the next mystery. */
+  const positiveCallsFolded = positiveCalls.length - positiveRows.length;
+
+  /** Which folded rows the reader has opened. Expanded state only; the calls
+   *  themselves are always in the row. */
+  const [openPositiveRows, setOpenPositiveRows] = useState<Set<string>>(new Set());
+  const togglePositiveRow = useCallback((key: string) => {
+    setOpenPositiveRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /** Chips over the table. MERCHANTS per disposition — the same unit, so the
+   *  chip and the funnel rung can never disagree. */
   const positiveCounts = useMemo(() => {
     const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
-    for (const r of positiveCalls) counts.set(r.disposition!, (counts.get(r.disposition!) ?? 0) + 1);
+    for (const r of positiveRows) counts.set(r.disposition, (counts.get(r.disposition) ?? 0) + 1);
     return POSITIVE_DISPOSITIONS.map((d) => ({ disposition: d, count: counts.get(d) ?? 0 }));
-  }, [positiveCalls]);
+  }, [positiveRows]);
 
-  /** The funnel's positive bar is a jump link into the list of those exact calls. */
+  /** The funnel's positive bar is a jump link into the list of those exact
+   *  merchants — the same fold, so the number and the list always agree. */
   const jumpToPositives = useCallback(() => {
     positivesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setPositivesHighlight(true);
@@ -2741,8 +2874,13 @@ export default function SetterPerformancePage() {
   const setterRows = useMemo((): SetterRow[] => {
     interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "appsSentInferred" | "appsSigned" | "appsSignatureUnknown" | "funded" | "fundedAmount"> {
       phones: Set<string>; days: Set<string>; numberSet: Set<string>;
+      /** merchant|disposition — the same unit computeFunnel counts on. Kept as a
+       *  set rather than a counter so this table can never disagree with the
+       *  funnel about what one positive is. */
+      positiveKeys: Set<string>;
     }
     const acc = new Map<string, Acc>();
+    const merchantKey = makeMerchantKey(aggRows);
     for (const r of aggRows) {
       const attributed = !!r.setter_id;
       const key = attributed
@@ -2758,6 +2896,7 @@ export default function SetterPerformancePage() {
           human: 0, conversations: 0, positives: 0,
           talkSeconds: 0, connectedSeconds: 0,
           phones: new Set<string>(), days: new Set<string>(), numberSet: new Set<string>(),
+          positiveKeys: new Set<string>(),
         };
         acc.set(key, row);
       }
@@ -2777,7 +2916,11 @@ export default function SetterPerformancePage() {
       if (scored) {
         if (reachedHuman(r)) row.human++;
         if (isConversation(r)) row.conversations++;
-        if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) row.positives++;
+        // MERCHANT × disposition, exactly as computeFunnel folds it — a repeat
+        // call to a merchant this setter already scored is not a second win.
+        if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) {
+          row.positiveKeys.add(`${merchantKey(r)}|${r.disposition}`);
+        }
       }
       if (r.phone) row.phones.add(r.phone);
       if (r.started_at) row.days.add(ymd(new Date(r.started_at)));
@@ -2861,10 +3004,11 @@ export default function SetterPerformancePage() {
       }
     }
 
-    return [...acc.values()].map(({ phones, days, numberSet, ...row }) => {
+    return [...acc.values()].map(({ phones, days, numberSet, positiveKeys, ...row }) => {
       const deal = row.attributed && dealRows ? (byCloser.get(row.key) ?? blank()) : null;
       return {
         ...row,
+        positives: positiveKeys.size,
         numbers: [...numberSet],
         uniqueLeads: phones.size,
         activeDays: days.size,
@@ -3063,6 +3207,46 @@ export default function SetterPerformancePage() {
       .sort((a, b) => (b.application_sent_at ?? "").localeCompare(a.application_sent_at ?? ""));
   }, [productiveDeals, range]);
 
+  // ── SIGNED COMES BEFORE STATEMENTS ────────────────────────────────────────
+  // Owner, 9/18: "we keep talking about full application, partial application,
+  // and then we start looking at bank statements. Somewhere in here, we need to
+  // see what applications are signed and which ones are not signed."
+  //
+  // THREE STATES, NEVER TWO, and this is the expensive part to get wrong. The
+  // verdict comes from deal_application_status (already loaded for the phantom
+  // cross-check) via signatureFromStatus, which applies the SQL doc-name rule:
+  // only 04B MCA PREFILL / 04C MCA PARTIAL / MCA_Merchant_Funding_Application are
+  // the application. "MCA — Broker Compensation Disclosure" is NOT — a merchant
+  // signed that twice in one day and believed he was done while the application
+  // sat unsigned, which is why the rule excludes /disclosure/i before anything
+  // else. Nothing here re-implements that; it reads the one answer.
+  //
+  // UNKNOWN MUST NEVER RENDER AS NOT SIGNED. A failed read, a merchant with no
+  // VibeReach contact id, or a sweep that has not covered them yet, is "we don't
+  // know" — an UNSIGNED badge is an accusation aimed at whoever was meant to
+  // chase the signature.
+  const signatureFor = useCallback(
+    (d: ProductiveDeal): SignatureState =>
+      appStatus
+        ? signatureFromStatus(appStatus.get(d.id))
+        : signatureUnknown("the application-status read failed this load"),
+    [appStatus],
+  );
+
+  /** sent / signed / not signed / unknown over the in-range applications — the
+   *  header chips. null when the applications themselves are unreadable. */
+  const applicationSignatureCounts = useMemo(() => {
+    if (!applicationRows) return null;
+    let signed = 0, unsigned = 0, unknown = 0;
+    for (const d of applicationRows) {
+      const kind = signatureFor(d).kind;
+      if (kind === "signed") signed++;
+      else if (kind === "unsigned") unsigned++;
+      else unknown++;
+    }
+    return { signed, unsigned, unknown };
+  }, [applicationRows, signatureFor]);
+
   /** profiles.id → the display name the rest of the page already resolved for
    *  that setter (staff_directory, falling back to the dial side, flagged when
    *  neither could name them). Folded off productiveRows so the naming ladder
@@ -3091,6 +3275,73 @@ export default function SetterPerformancePage() {
       return digits.length === 10 && phones.has(digits);
     };
   }, [positiveCalls]);
+
+  // ── AN APPLICATION OFF A CALL NOBODY DISPOSITIONED ────────────────────────
+  // Verified on today's floor: Miami Concierge Network / Rafael Badia has ONE
+  // call in range — 13:59, disposition NULL, seconds NULL, outcome UNKNOWN — and
+  // the application went out twelve minutes later at 14:11. So he appears here,
+  // under Applications sent, and NOWHERE in Positive dispositions, and there was
+  // no way to tell from this page why. The owner asked exactly that question.
+  //
+  // The footnote already warns that "a setter who does not disposition their
+  // calls under-reports conversations". This points at the specific instance, on
+  // the row, where a manager can act on it: the application is REAL, the call is
+  // real, and the logging gap is the coachable thing.
+  //
+  // THREE ANSWERS, NOT TWO — the distinction is the whole value:
+  //   · "positive"       → the merchant is in the table above; already linked.
+  //   · "undispositioned"→ calls exist and NONE carries a disposition. This is
+  //                        the gap. Amber, and it says what happened.
+  //   · "dispositioned"  → a call carries a real, non-positive disposition
+  //                        (Not Interested, Voice Message…). Naming that as "no
+  //                        disposition" would be a lie about a setter who DID
+  //                        log their call, so it gets its own quiet chip.
+  //   · nothing          → no call to this merchant in range at all. The
+  //                        application may have come from an inbound, a web
+  //                        form, or a call outside the window. Silent, because
+  //                        an accusation is not available here.
+  //
+  // Matched the same two ways every merchant match on this page is: GHL contact
+  // id first, last-10 phone as the bridge. No query — these are aggRows.
+  const applicationCallState = useMemo(() => {
+    const byContact = new Map<string, SetterCall[]>();
+    const byPhone = new Map<string, SetterCall[]>();
+    for (const r of aggRows) {
+      if (r.contact_id) {
+        const list = byContact.get(r.contact_id);
+        if (list) list.push(r); else byContact.set(r.contact_id, [r]);
+      }
+      const digits = last10(r.phone);
+      if (digits) {
+        const list = byPhone.get(digits);
+        if (list) list.push(r); else byPhone.set(digits, [r]);
+      }
+    }
+    return (d: ProductiveDeal): {
+      kind: "positive" | "undispositioned" | "dispositioned" | "none";
+      /** The most recent call, for naming a time / a disposition. */
+      latest: SetterCall | null;
+      calls: number;
+    } => {
+      const digits = last10(d.customer?.phone);
+      const calls =
+        (d.ghl_contact_id ? byContact.get(d.ghl_contact_id) : undefined) ??
+        (digits ? byPhone.get(digits) : undefined) ??
+        [];
+      if (calls.length === 0) return { kind: "none", latest: null, calls: 0 };
+      const latest = [...calls].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
+      if (calls.some((c) => c.disposition && POSITIVE_DISPOSITIONS.includes(c.disposition))) {
+        return { kind: "positive", latest, calls: calls.length };
+      }
+      if (calls.every(isUndispositioned)) {
+        return { kind: "undispositioned", latest, calls: calls.length };
+      }
+      const dispositioned = [...calls]
+        .filter((c) => !isUndispositioned(c))
+        .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
+      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length };
+    };
+  }, [aggRows]);
 
   // ── THE MIRROR CHECKS ITSELF ──────────────────────────────────────────────
   // The rung folds its phantom test from creation facts on the deal row, because
@@ -3176,13 +3427,15 @@ export default function SetterPerformancePage() {
     return rows;
   }, [aggRows, productiveByOwner, appsByAuthor, staffNames, range]);
 
-  /** Calls dispositioned as an actual APPLICATION — the numerator for the
+  /** MERCHANTS dispositioned as an actual APPLICATION — the numerator for the
    *  industry app-per-conversation band, and shown next to it so the rate never
-   *  appears without the count behind it. */
-  const applicationDispositions = useMemo(
-    () => aggRows.reduce((n, r) => n + (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition) ? 1 : 0), 0),
-    [aggRows],
-  );
+   *  appears without the count behind it.
+   *
+   *  It IS the funnel's Partial apps rung, not a second count of the same fact:
+   *  reading it off `funnel` means the band and the rung can never print
+   *  different numbers for one thing, and it inherits the merchant fold for
+   *  free. */
+  const applicationDispositions = funnel.partialApps;
 
   /** How many days the active range covers, as a float. */
   const rangeDays = useMemo(
@@ -4108,7 +4361,7 @@ export default function SetterPerformancePage() {
                             <th className="px-3 py-1.5 text-left">Setter</th>
                             <th className="px-3 py-1.5 text-right">Dials</th>
                             <th className="px-3 py-1.5 text-right">Conversations</th>
-                            <th className="px-3 py-1.5 text-right">Positives</th>
+                            <th className="px-3 py-1.5 text-right" title="MERCHANTS this setter got a positive disposition from — not calls. A merchant called back twice is one positive.">Positives</th>
                             <th className="px-3 py-1.5 text-right">Appts</th>
                             <th className="px-3 py-1.5 text-right" title="Credited to the person who SENT the application (not the assigned book)">Apps sent</th>
                             <th className="px-3 py-1.5 text-right">$ added</th>
@@ -4268,7 +4521,7 @@ export default function SetterPerformancePage() {
                       id="app_per_conversation"
                       value={industryValues.app_per_conversation ?? null}
                       label="Applications per conversation"
-                      basis={`${applicationDispositions.toLocaleString()} call${applicationDispositions === 1 ? "" : "s"} dispositioned ${APPLICATION_DISPOSITIONS.join(" / ")} ÷ ${funnel.conversations.toLocaleString()} conversations.`}
+                      basis={`${applicationDispositions.toLocaleString()} merchant${applicationDispositions === 1 ? "" : "s"} dispositioned ${APPLICATION_DISPOSITIONS.join(" / ")} ÷ ${funnel.conversations.toLocaleString()} conversations. Merchants, not calls — a merchant worked twice is one application here.`}
                       caveat={
                         applicationDispositions === 0 && funnel.conversations > 0
                           ? "No application disposition in range — an app taken and logged as something else scores zero here."
@@ -4310,10 +4563,20 @@ export default function SetterPerformancePage() {
                   }`}
                 >
                   <div className="card-body p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                        <CheckCircleIcon className="w-5 h-5 text-mint-green" /> Positive dispositions
-                      </h2>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                          <CheckCircleIcon className="w-5 h-5 text-mint-green" /> Positive dispositions
+                          <span className="shrink-0 rounded-full border border-mint-green/30 bg-mint-green/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mint-green">
+                            per merchant
+                          </span>
+                        </h2>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl">
+                          Counted by <b>merchant</b>, not by call — one merchant called back twice is <b>one</b>{" "}
+                          callback. Every call is still here: a folded row says <b>“N calls”</b> and opens to show
+                          each one.
+                        </p>
+                      </div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         {positiveCounts.map((p) => (
                           <span
@@ -4321,6 +4584,7 @@ export default function SetterPerformancePage() {
                             className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
                               p.count > 0 ? RAG_CHIP.green : RAG_CHIP.none
                             }`}
+                            title={`${p.count.toLocaleString()} merchant${p.count === 1 ? "" : "s"} dispositioned "${p.disposition}" in this range. Merchants, not calls.`}
                           >
                             {p.disposition}
                             <b className="tabular-nums">{p.count.toLocaleString()}</b>
@@ -4329,7 +4593,7 @@ export default function SetterPerformancePage() {
                       </div>
                     </div>
 
-                    {positiveCalls.length === 0 ? (
+                    {positiveRows.length === 0 ? (
                       <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
                         <b className="text-gray-700 dark:text-gray-200">No positive dispositions in this range.</b> Every
                         dial was dispositioned something else, or left undispositioned — an undispositioned call never
@@ -4370,11 +4634,14 @@ export default function SetterPerformancePage() {
                               </tr>
                             </thead>
                             <tbody className={TBODY}>
-                              {positiveCalls.map((r) => {
+                              {positiveRows.map((row) => {
+                                const r = row.lead;
                                 const money = positiveMerchant(r);
-                                const seq = positiveCallSequence.get(r.wavv_call_id);
+                                const folded = row.calls.length > 1;
+                                const open = openPositiveRows.has(row.key);
                                 return (
-                                <tr key={r.wavv_call_id} className={TR}>
+                                <Fragment key={row.key}>
+                                <tr className={TR}>
                                   <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
                                     {etStamp(r.started_at)}
                                   </td>
@@ -4424,6 +4691,20 @@ export default function SetterPerformancePage() {
                                         {durationText(r.seconds)}
                                       </span>
                                     )}
+                                    {/* THE FOLD MAY NOT HIDE THE LONG CALL.
+                                        The surviving row is the LATEST call; if
+                                        an earlier one in the fold ran longer,
+                                        its length is printed here too, so the
+                                        most substantial conversation is on
+                                        screen either way. */}
+                                    {row.longerThanLead && row.longerThanLead.seconds !== null && (
+                                      <div
+                                        className="text-[10px] font-normal text-gray-500 dark:text-gray-400"
+                                        title={`An earlier call in this fold ran longer — ${durationText(row.longerThanLead.seconds)} at ${etStamp(row.longerThanLead.started_at)} ET. Open the fold to see every call.`}
+                                      >
+                                        longest {durationText(row.longerThanLead.seconds)}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className={TD}>
                                     <div className="flex items-center gap-2">
@@ -4438,16 +4719,21 @@ export default function SetterPerformancePage() {
                                   <td className={TD}>
                                     <div className="flex items-center gap-2">
                                       <Text value={r.contact_name} />
-                                      {/* Context, not an alarm — quiet styling.
-                                          It turns two same-merchant rows into a
-                                          sequence instead of a suspected bug. */}
-                                      {seq && (
-                                        <span
-                                          className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400"
-                                          title={`This merchant was reached ${seq.total} times in this range and this is call ${seq.n}, counted by the clock. Separate calls, not a duplicated row.`}
+                                      {/* The fold, said out loud and openable.
+                                          Quiet styling: this is context, not an
+                                          alarm — but it must never be possible
+                                          to read this row as the merchant's only
+                                          call. Inline expander, no popup. */}
+                                      {folded && (
+                                        <button
+                                          type="button"
+                                          onClick={() => togglePositiveRow(row.key)}
+                                          aria-expanded={open}
+                                          className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:border-mint-green/50 hover:text-mint-green"
+                                          title={`This merchant was dispositioned "${row.disposition}" on ${row.calls.length} separate calls in this range. They count as ONE positive — the unit is the merchant, not the call — and this row is the latest of them. Click to see every call with its own time and length; nothing was thrown away.`}
                                         >
-                                          call {seq.n} of {seq.total}
-                                        </span>
+                                          {open ? "▾" : "▸"} {row.calls.length} calls
+                                        </button>
                                       )}
                                     </div>
                                   </td>
@@ -4527,19 +4813,82 @@ export default function SetterPerformancePage() {
                                     </div>
                                   </td>
                                 </tr>
+                                {/* ── EVERY FOLDED CALL, IN FULL ──────────
+                                    The fold changes the COUNT, never the
+                                    record. Each call keeps its own clock time,
+                                    its own length and its own disposition, and
+                                    the one this row stands for is marked. */}
+                                {folded && open && (
+                                  <tr className="bg-base-200/40 dark:bg-gray-800/30">
+                                    <td colSpan={10} className="px-3 py-2">
+                                      <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                        <b className="text-gray-700 dark:text-gray-200">
+                                          {row.calls.length} calls to {r.contact_name?.trim() || "this merchant"},
+                                          all dispositioned “{row.disposition}”
+                                        </b>{" "}
+                                        — counted as <b>one</b> positive, because the merchant is the unit. Every
+                                        call is here:
+                                      </div>
+                                      <ul className="mt-1 space-y-0.5">
+                                        {row.calls.map((c) => (
+                                          <li key={c.wavv_call_id} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                                            <span className="tabular-nums text-gray-500 dark:text-gray-400" title={localTimeTitle(c.started_at)}>
+                                              {etStamp(c.started_at)}
+                                            </span>
+                                            <span
+                                              className={
+                                                c.seconds !== null && c.seconds >= CONVERSATION_SECONDS
+                                                  ? "tabular-nums font-semibold text-gray-900 dark:text-white"
+                                                  : "tabular-nums text-gray-600 dark:text-gray-300"
+                                              }
+                                              title={
+                                                c.seconds === null
+                                                  ? "The dialer reported no duration for this call — unknown, not zero"
+                                                  : `${c.seconds.toLocaleString()} seconds`
+                                              }
+                                            >
+                                              {c.seconds === null ? "—" : durationText(c.seconds)}
+                                            </span>
+                                            <span className="text-gray-500 dark:text-gray-400">{c.disposition}</span>
+                                            {c.wavv_call_id === r.wavv_call_id && (
+                                              <span className="rounded-full border border-mint-green/40 bg-mint-green/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-mint-green">
+                                                shown above
+                                              </span>
+                                            )}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </td>
+                                  </tr>
+                                )}
+                                </Fragment>
                                 );
                               })}
                             </tbody>
                           </table>
                         </div>
                         <p className="text-xs text-gray-400">
-                          {positiveCalls.length.toLocaleString()} call{positiveCalls.length === 1 ? "" : "s"} in this range
-                          carried a positive disposition, newest first inside each type. <b>Open →</b> takes you straight
-                          into that merchant's Revenue Playbook. Times are US Eastern; hover a time for your own clock.
-                          One row per <b>call</b>, not per merchant — a merchant worked twice appears twice, marked{" "}
-                          <b>call 1 of 2</b> / <b>call 2 of 2</b> by the clock. Those are separate calls, not a
-                          duplicated row, and <b>Length</b> is usually where the difference shows: a callback that
-                          runs thirteen minutes is a different event from the twenty-five seconds that earned it.
+                          {positiveRows.length.toLocaleString()} merchant
+                          {positiveRows.length === 1 ? "" : "s"} carried a positive disposition in this range, newest
+                          first inside each type. <b>Open →</b> takes you straight into that merchant's Revenue
+                          Playbook. Times are US Eastern; hover a time for your own clock.
+                          {" "}One row per <b>merchant per disposition</b>, not per call: a merchant called back
+                          twice is <b>one</b> callback, because a setter who works one merchant four times has not
+                          produced four opportunities.
+                          {positiveCallsFolded > 0 ? (
+                            <>
+                              {" "}
+                              <b className="text-gray-500 dark:text-gray-300">
+                                {positiveCallsFolded.toLocaleString()} repeat call
+                                {positiveCallsFolded === 1 ? " was" : "s were"} folded into a merchant already listed
+                              </b>{" "}
+                              — nothing was discarded: the surviving row is the <b>latest</b> call, says{" "}
+                              <b>{"\u201cN calls\u201d"}</b>, and opens to show every call with its own time and
+                              length. Where a folded call ran longer, the row prints that length too.
+                            </>
+                          ) : (
+                            <> No merchant was worked twice in this range, so nothing is folded here.</>
+                          )}
                         </p>
                         <p className="text-xs text-gray-400">
                           <b className="text-gray-500 dark:text-gray-300">Business</b>,{" "}
@@ -4623,6 +4972,23 @@ export default function SetterPerformancePage() {
                         <div className="flex flex-wrap gap-1.5">
                           {[
                             { label: "sent", n: applicationRows.length, tone: "count" as const },
+                            // SIGNED SITS BEFORE STATEMENTS because that is the
+                            // order of the chase: nobody looks at bank
+                            // statements on an application nobody signed.
+                            {
+                              label: "signed",
+                              n: applicationSignatureCounts?.signed ?? 0,
+                              tone: "count" as const,
+                            },
+                            // UNREADABLE IS ITS OWN CHIP. "signed 0" with three
+                            // unknowns behind it would read as three refusals.
+                            ...(applicationSignatureCounts && applicationSignatureCounts.unknown > 0
+                              ? [{
+                                  label: "signature unknown",
+                                  n: applicationSignatureCounts.unknown,
+                                  tone: "unknown" as const,
+                                }]
+                              : []),
                             {
                               label: "with statements",
                               n: applicationRows.filter(dealReachedStatements).length,
@@ -4636,12 +5002,17 @@ export default function SetterPerformancePage() {
                             <span
                               key={k.label}
                               className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
-                                k.tone === "excluded"
+                                k.tone === "excluded" || k.tone === "unknown"
                                   ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
                                   : k.n > 0
                                     ? RAG_CHIP.green
                                     : RAG_CHIP.none
                               }`}
+                              title={
+                                k.tone === "unknown"
+                                  ? "We could not establish whether these were signed — a failed read, a merchant with no VibeReach contact record, or a signature sweep that has not covered them yet. NOT a claim that the merchant refused to sign."
+                                  : undefined
+                              }
                             >
                               {k.label}
                               <b className="tabular-nums">{k.n.toLocaleString()}</b>
@@ -4809,6 +5180,13 @@ export default function SetterPerformancePage() {
                                 <th className={TH}>Phone</th>
                                 <th className={TH}>Amount requested</th>
                                 <th className={TH}>Monthly revenue</th>
+                                {/* SIGNED BEFORE STATEMENTS — signature comes
+                                    first in the chase, and an unsigned
+                                    application is where the deal is actually
+                                    stuck. */}
+                                <th className={TH} title="Did the merchant SIGN the funding application (04B MCA PREFILL / 04C MCA PARTIAL / MCA_Merchant_Funding_Application)? The Broker Compensation Disclosure is a different document and never counts as signed here.">
+                                  Signed
+                                </th>
                                 <th className={TH}>Statements</th>
                                 <th className={TH} />
                               </tr>
@@ -4823,6 +5201,8 @@ export default function SetterPerformancePage() {
                                 const business = d.customer?.business_name?.trim() || null;
                                 const statements = dealReachedStatements(d);
                                 const alsoDispositioned = positiveCallMatch(d);
+                                const callState = applicationCallState(d);
+                                const signature = signatureFor(d);
                                 return (
                                   <tr key={d.id} className={TR}>
                                     <td
@@ -4855,6 +5235,40 @@ export default function SetterPerformancePage() {
                                           >
                                             also on a call ↑
                                           </button>
+                                        )}
+                                        {/* ── THE GAP, NAMED ON THE ROW ──────
+                                            The application is real. The call is
+                                            real. Nobody dispositioned it, so it
+                                            earns no conversation and no positive
+                                            — which is why this merchant is here
+                                            and not in the table above. Amber,
+                                            never red: this is a coaching note
+                                            about logging, not a bad outcome. */}
+                                        {!alsoDispositioned && callState.kind === "undispositioned" && (
+                                          <span
+                                            className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+                                            title={
+                                              `The application went out, but the ${callState.calls === 1 ? "call" : `${callState.calls} calls`} to this merchant in this range ` +
+                                              `${callState.calls === 1 ? "was" : "were"} never dispositioned` +
+                                              (callState.latest ? ` (last one ${etStamp(callState.latest.started_at)} ET)` : "") +
+                                              `. The application is real; the call earns no conversation and no positive-disposition credit, ` +
+                                              `so this merchant appears here and nowhere in Positive dispositions. Coach the logging — the work happened.`
+                                            }
+                                          >
+                                            no disposition on the call ⚠
+                                          </span>
+                                        )}
+                                        {/* The setter DID log the call — it just
+                                            wasn't a positive. Saying "no
+                                            disposition" here would be a lie
+                                            about someone who did the thing. */}
+                                        {!alsoDispositioned && callState.kind === "dispositioned" && callState.latest?.disposition && (
+                                          <span
+                                            className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400"
+                                            title={`The call to this merchant in this range was dispositioned "${callState.latest.disposition}" — logged, just not a positive disposition, so this merchant is not in the table above.`}
+                                          >
+                                            call: {callState.latest.disposition}
+                                          </span>
                                         )}
                                       </div>
                                     </td>
@@ -4901,6 +5315,13 @@ export default function SetterPerformancePage() {
                                           —
                                         </span>
                                       )}
+                                    </td>
+                                    <td className={TD}>
+                                      <ApplicationSignatureBadge
+                                        signature={signature}
+                                        sentAt={d.application_sent_at}
+                                        size="xs"
+                                      />
                                     </td>
                                     <td className={TD}>
                                       <span
@@ -4957,6 +5378,18 @@ export default function SetterPerformancePage() {
                           attribution the rung uses, which is not necessarily whoever pressed send; the{" "}
                           <b>Apps sent</b> column on the setter table is the who-pressed-send figure. Times are
                           US Eastern; hover a time for your own clock.
+                          {" "}<b className="text-gray-500 dark:text-gray-300">Signed</b> is the merchant's signature
+                          on the funding application itself — <b>04B MCA PREFILL</b>, <b>04C MCA PARTIAL</b> or{" "}
+                          <b>MCA_Merchant_Funding_Application</b>. The <b>Broker Compensation Disclosure</b> is a
+                          separate one-page document and never counts here: a merchant who signs only that has{" "}
+                          <b>not</b> signed the application.{" "}
+                          <b className="text-gray-500 dark:text-gray-300">Signature unknown</b> means the verdict
+                          could not be established — a failed read, or a merchant the hourly signature sweep has not
+                          covered — and is <b>never</b> the same claim as "not signed".{" "}
+                          <b className="text-amber-600 dark:text-amber-400">no disposition on the call ⚠</b> marks a
+                          merchant whose calls in this range were never dispositioned: the application is real, but
+                          the call earns no conversation and no positive-disposition credit, which is why they appear
+                          here and not in <b>Positive dispositions</b> above.
                           {productiveTruncated && (
                             <span className="text-amber-600 dark:text-amber-400">
                               {" "}This range hit the {PRODUCTIVE_DEAL_CAP.toLocaleString()}-deal read cap, so
@@ -4986,7 +5419,7 @@ export default function SetterPerformancePage() {
                           <span className="font-semibold text-gray-900 dark:text-white">The tail is thin.</span>{" "}
                           <b className="text-gray-900 dark:text-white">{funnel.conversations.toLocaleString()}</b> calls were
                           dispositioned as a real conversation, and <b className="text-gray-900 dark:text-white">{funnel.positives.toLocaleString()}</b>{" "}
-                          calls carried a positive disposition ({POSITIVE_DISPOSITIONS.join(", ")}) — that is{" "}
+                          <b className="text-gray-900 dark:text-white">merchants</b> carried a positive disposition ({POSITIVE_DISPOSITIONS.join(", ")}) — that is{" "}
                           <b className="text-gray-900 dark:text-white">
                             {funnel.scoredDials > 0 ? ((funnel.positives / funnel.scoredDials) * 100).toFixed(2) : "—"}%
                           </b>{" "}
@@ -5092,7 +5525,7 @@ export default function SetterPerformancePage() {
                             <th className={TH_NUM} title="Dials in range on the WAVV side — context, never added to the pipeline columns">
                               Dials
                             </th>
-                            <th className={TH_NUM} title="Positive dispositions the setter LOGGED — the dial-side score">
+                            <th className={TH_NUM} title="MERCHANTS the setter logged a positive disposition on — the dial-side score. Merchants, not calls: a merchant called back twice is one positive.">
                               Positives logged
                             </th>
                             <th className={`${TH_NUM} ${GROUP_EDGE}`} title="Distinct deals with at least one stage stamp in this range">
@@ -5187,7 +5620,7 @@ export default function SetterPerformancePage() {
               rangeLabel={rangeLabelText}
               basis={{
                 contact_rate: `${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.scoredDials.toLocaleString()} WAVV dials · per dial — real conversations reaching a decision-maker, not raw pickups`,
-                app_per_conversation: `${applicationDispositions.toLocaleString()} app dispositions ÷ ${funnel.conversations.toLocaleString()} conversations`,
+                app_per_conversation: `${applicationDispositions.toLocaleString()} merchants app-dispositioned ÷ ${funnel.conversations.toLocaleString()} conversations`,
                 app_to_fund_cold: productiveTotals
                   ? `${productiveTotals.funded.toLocaleString()} funded ÷ ${productiveTotals.appsSent.toLocaleString()} apps sent (in-range stamps, different deals)`
                   : "pipeline unreadable",
@@ -6639,7 +7072,7 @@ const SETTER_COLUMNS: { key: SortKey | null; label: string; align: string; help?
   { key: "human",         label: "Humans",    align: "text-right", help: "Answered and not a voicemail/no-answer. WAVV's human flag is NOT used — it marks voicemails as human." },
   { key: null,            label: "Human %",   align: "text-right", help: "Humans ÷ connects" },
   { key: "conversations", label: "Convos",    align: "text-right", help: CONVERSATION_HELP },
-  { key: "positives",     label: "Positive",  align: "text-right", help: "Interested · Appointment Set · Full Application · Callback" },
+  { key: "positives",     label: "Positive",  align: "text-right", help: "MERCHANTS this setter got a positive disposition from (Interested · Appointment Set · Partial Application · Full Application · Full App + Statements · Callback), not calls — one merchant called back twice counts once. Folded within THIS setter's own work, so a merchant two setters both reached counts for each of them, and this column can sum higher than the combined funnel's Positives rung." },
   { key: "appointments",  label: "Appts",     align: "text-right", help: "Deals in THIS SETTER'S BOOK (assigned to them) with an appointment booked in this range", groupStart: true },
   { key: "appsSent",      label: "Apps sent", align: "text-right", help: "Applications THIS SETTER SENT in this range — keyed on who pressed send (deals.application_sent_by), not on who the deal is assigned to. An \u2248N note means N of them have a sender we reconstructed from the activity log after the fact rather than recorded at the time; treat those as our best reading, not as proof." },
   { key: "appsSigned",    label: "Signed",    align: "text-right", help: "Of the applications this setter sent in range, how many the merchant actually SIGNED. Sending is not the outcome — a sent application nobody signed is a deal stopped dead. \"?N\" means N of their sends have a signature state we could not read; \u2014 means the signature ledger itself was unreadable." },
@@ -6675,7 +7108,7 @@ function FunnelCard({
   icon?: boolean;
   headerRight?: ReactNode;
   /** When set, the bottom "Positive dispositions" count becomes a jump link to
-   *  the list of those exact calls. */
+   *  the list of those exact merchants (each one openable to its calls). */
   onPositivesClick?: () => void;
   /** When set, the "Applications" count becomes a jump link to the list of the
    *  deals that rung counted — the drill-down it spent months without. */
@@ -6730,9 +7163,9 @@ function FunnelCard({
               ? {
                   positives: {
                     onJump: onPositivesClick,
-                    title: "Jump to every positive-disposition call in this range",
+                    title: "Jump to every merchant with a positive disposition in this range — and, on a merchant worked more than once, every call behind them",
                     linkLabel: (n: number) =>
-                      n === 1 ? "see the 1 call →" : `see all ${n.toLocaleString()} calls →`,
+                      n === 1 ? "see the 1 merchant →" : `see all ${n.toLocaleString()} merchants →`,
                   },
                 }
               : {}),
