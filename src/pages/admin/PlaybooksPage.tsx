@@ -1872,6 +1872,11 @@ function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
  * already refuses to turn a failed read into an empty list. This carries that
  * answer to the receipt rather than computing a second, weaker one.
  */
+/** ghl-docs-status serves an isolate-local cache of this age, so any answer may
+ *  describe the world up to this long ago. A claim of ABSENCE has to subtract it
+ *  before it can be trusted. */
+const DOC_READ_CACHE_MS = 60_000;
+
 type DocEvidence =
   | { kind: "checking" }
   /** VERIFIED SENT. We read the merchant's documents back out of GHL and these
@@ -1881,9 +1886,11 @@ type DocEvidence =
    *  that claim would go wrong (the rule is SQL's `is_application_doc_name`,
    *  deliberately not mirrored here). */
   | { kind: "sent"; names: string[] }
-  /** NEVER SENT — and this rung is only reachable from a read that was both
-   *  COMPLETE and scoped to the merchant's whole contact SET. */
-  | { kind: "none" }
+  /** NEVER SENT — reachable only from a read that was COMPLETE, scoped to the
+   *  merchant's whole contact SET, and NEWER THAN ANY SEND IT WOULD DENY.
+   *  `asOf` is when the answer arrived; ghl-docs-status serves a ≤60s cache, so
+   *  the real knowledge cutoff is `asOf - DOC_READ_CACHE_MS`. */
+  | { kind: "none"; asOf: number }
   /** CANNOT VERIFY. A failed crawl, a truncated one, an unidentifiable
    *  merchant, or a read that could only see ONE of several contacts. A zero we
    *  cannot prove is unknown, never zero. */
@@ -1957,7 +1964,7 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
           ? { kind: "sent", names: state.docs.map((d) => d.name) }
           : state.caveat
             ? { kind: "cannot_verify", why: state.caveat }
-            : { kind: "none" },
+            : { kind: "none", asOf: Date.now() },
       );
       setDocs(state.docs);
       setUploads((data as GhlDocsStatus)?.uploads ?? []);
@@ -5145,7 +5152,30 @@ function StepCard({
             So the receipt now renders off `docEvidence`, which comes from the
             read that actually looked at the merchant's documents. Four states,
             and three of them are not "sent". */}
-        {step.stageKey === "application_sent" && done && docEvidence.kind === "none" && (
+        {/* ── A STALE COMPLETE READ IS STILL A WRONG PRESENT-TENSE ANSWER ──
+            ghl-docs-status serves a ≤60s cache, so an answer that found nothing
+            may simply predate the send it is about to deny. This panel is a
+            mount-time reader and deliberately keeps that cache (the crawl is
+            expensive and the account is capped) — but the moment its output
+            started feeding "no document was ever sent", the cache became an
+            accusation risk, which is exactly the test src/lib/ghlDocs.ts sets.
+            So rather than pay for a fresh crawl on every mount, a send that
+            could have happened INSIDE the cache window demotes the claim to
+            "cannot verify". Joyce's stamp is hours old and still reads "never
+            sent"; a send from thirty seconds ago does not. */}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "none" &&
+          doneAt !== null && Date.parse(doneAt) > docEvidence.asOf - DOC_READ_CACHE_MS && (
+          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 px-3 py-2 text-xs">
+            <b className="text-amber-700 dark:text-amber-300">Sent moments ago — we cannot confirm it yet.</b>{" "}
+            <span className="text-amber-700/90 dark:text-amber-300/90">
+              The document list we hold may be up to a minute old, which is older than this send, so its silence
+              proves nothing. <b>Refresh the live status above</b> in a moment. This is <b>not</b> a claim that
+              nothing was sent.
+            </span>
+          </div>
+        )}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "none" &&
+          !(doneAt !== null && Date.parse(doneAt) > docEvidence.asOf - DOC_READ_CACHE_MS) && (
           <div className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 px-3 py-2 text-xs space-y-1.5">
             <div className="font-semibold text-red-700 dark:text-red-300">
               ⚠ The stage was moved{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — but <u>no document was ever sent</u>.

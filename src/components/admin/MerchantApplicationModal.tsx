@@ -317,7 +317,24 @@ export default function MerchantApplicationModal({
   const [prefilled, setPrefilled] = useState(0);
   // What GHL ACTUALLY sent, read back after the send. Never assumed — only reported.
   const [sendResult, setSendResult] = useState<
-    { verification: "confirmed" | "unconfirmed"; template: string | null; expected: string } | null
+    {
+      verification: "confirmed" | "unconfirmed";
+      template: string | null;
+      expected: string;
+      /** The merchant's OWN link to the document that was just minted, so a
+       *  setter can text it without leaving this modal — the owner had a merchant
+       *  on the phone and had to ask a colleague for it because no surface gave
+       *  it to him.
+       *
+       *  ⚠ BEARER LINK. Whoever holds this URL can open and SIGN the document.
+       *  Staff-only affordance: never logged, never rendered on a merchant-facing
+       *  surface.
+       *
+       *  Carried ONLY on a confirmed verification. A link offered off an
+       *  unverified send is worse than no link — the setter texts it, it 404s in
+       *  front of the merchant, and the app has lied twice. */
+      signingUrl: string | null;
+    } | null
   >(null);
   // GHL sent the WRONG template. The document is already with the merchant and we
   // cannot recall it — so we lock the send buttons rather than let a retry mint a
@@ -969,11 +986,17 @@ export default function MerchantApplicationModal({
       verification?: "confirmed" | "unconfirmed";
       verified_template?: string | null;
       expected_template?: string;
+      signing_url?: string | null;
     };
+    const confirmed = p.verification === "confirmed";
     setSendResult({
-      verification: p.verification === "confirmed" ? "confirmed" : "unconfirmed",
+      verification: confirmed ? "confirmed" : "unconfirmed",
       template: p.verified_template ?? null,
       expected: p.expected_template ?? "the application",
+      // Gated on the READ-BACK, not on the enrolment's 200. The server only
+      // builds signing_url from the recipient of a document it actually found,
+      // and this refuses to carry one on any other verdict.
+      signingUrl: confirmed ? p.signing_url ?? null : null,
     });
     setBusy(null);
   }
@@ -1566,16 +1589,63 @@ export default function MerchantApplicationModal({
                 <p className="mt-0.5 text-[12px] text-emerald-700/80 dark:text-emerald-400/80">
                   Read back from GHL after the send. The merchant has the right document.
                 </p>
+                {/* ── THE LINK, RIGHT HERE ────────────────────────────────
+                    Owner, 2026-09-18: "anytime an application is sent - make
+                    sure the link to the application link pops up so the setters
+                    can text them that application link." He had a merchant on
+                    the phone and had to ask a colleague for it, because the
+                    value was already on the wire and the UI threw it away.
+
+                    Same affordance as AdHocSendMenu's post-send note — one tap,
+                    straight to the clipboard, because the next thing that
+                    happens is a paste into a text message.
+
+                    ⚠ BEARER LINK: anyone holding it can sign. Staff surface
+                    only; it is never logged and never leaves this panel. */}
+                {sendResult.signingUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(sendResult.signingUrl!);
+                      setToast("📋 Signing link copied — paste it into a text to the merchant.");
+                      setTimeout(() => setToast(null), 30000);
+                    }}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue/50 bg-white dark:bg-gray-900 px-2.5 py-1.5 text-[13px] font-semibold text-ocean-blue hover:bg-ocean-blue/5"
+                    title="Copies this merchant's own signing link for the document GHL just confirmed. Safe to text them."
+                  >
+                    📋 Copy their signing link
+                  </button>
+                )}
+                {/* Confirmed, but GHL gave us no per-recipient link. Say so —
+                    silence here would read as "there is no link to send". */}
+                {!sendResult.signingUrl && (
+                  <p className="mt-1.5 text-[11px] text-emerald-700/70 dark:text-emerald-400/70">
+                    GHL confirmed the document but returned no per-recipient signing link — copy it from{" "}
+                    <b>Their signing links</b> on the deal, or from GHL → Documents &amp; Contracts.
+                  </p>
+                )}
               </div>
             ) : (
               <div className="mb-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
                 <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
                   Sent — awaiting confirmation
                 </p>
+                {/* ── THIS PANEL USED TO STATE A CAUSE IT NEVER CHECKED ───
+                    It said "GHL had not created the document yet" and "this is
+                    usually just GHL being slow". Neither was verified. The
+                    verify reads ONE unpaged page of the location's documents,
+                    so a document that exists but fell outside that page is
+                    indistinguishable here from one that was never created —
+                    and the closer was told the second thing. Say what we know:
+                    we could not confirm it. No signing link is offered on this
+                    path, because a link we cannot verify 404s in front of the
+                    merchant. */}
                 <p className="mt-0.5 text-[12px] text-amber-800/90 dark:text-amber-300/90">
-                  The merchant was enrolled, but GHL had not created the document yet when we checked
-                  (expected <b>{sendResult.expected}</b>). This is usually just GHL being slow. Confirm it
-                  landed in GHL → Documents &amp; Contracts.
+                  The merchant was enrolled, but we <b>could not confirm</b> the document within the time we
+                  waited (expected <b>{sendResult.expected}</b>). That is <b>unknown</b> — it may well have been
+                  created and simply not be visible to our check yet. Confirm it in{" "}
+                  <b>GHL → Documents &amp; Contracts</b> before telling the merchant anything, and do not
+                  re-send until you have looked.
                 </p>
               </div>
             )
