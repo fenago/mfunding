@@ -43,6 +43,39 @@ export interface DealApplicationStatus {
   app_signed_checked_at: string | null;
   disclosure_signed_at: string | null;
   disclosure_state: "signed" | "not_signed" | "unchecked";
+  /**
+   * WAS A DOCUMENT ACTUALLY SENT — read back out of GHL, not inferred from this
+   * row. It cannot be inferred: Joyce Derian (MF-2026-0363) carries an assigned
+   * closer, so `app_sent_attribution` reads 'assumed_owner' for her exactly as it
+   * does for a genuine send, while she has no document at all.
+   *
+   * Rank order, and only the last one licenses a "never sent" claim:
+   *   has_evidence        a document was read back
+   *   unknown_unreadable  no complete document crawl has ever run
+   *   unknown_stale       the send POST-DATES the evidence — our blind spot
+   *   never_sent          a complete, current, set-scoped read found nothing
+   */
+  send_evidence: "has_evidence" | "never_sent" | "unknown_stale" | "unknown_unreadable";
+  send_evidence_docs: number;
+  /** When the document index this verdict came from was last known complete. */
+  send_evidence_checked_at: string | null;
+  send_evidence_age_seconds: number | null;
+}
+
+/** What <ApplicationSignatureBadge> takes. Four verdicts collapse to three here,
+ *  and BOTH unknowns collapse to "unknown" on purpose: the cost of an
+ *  unnecessary "unknown" is a shrug, and the cost of a wrong "none" is every
+ *  badge on the page accusing a merchant of ignoring an application we never
+ *  sent them. */
+export type BadgeSendEvidence = "confirmed" | "none" | "unknown";
+
+export function badgeSendEvidence(
+  row: DealApplicationStatus | null | undefined,
+): BadgeSendEvidence {
+  if (!row) return "unknown";
+  if (row.send_evidence === "has_evidence") return "confirmed";
+  if (row.send_evidence === "never_sent") return "none";
+  return "unknown";
 }
 
 type State =
@@ -62,6 +95,22 @@ export interface ApplicationSignatures {
    * date, and an "UNSIGNED" badge would be about an application nobody sent.
    */
   sentAtFor: (dealId: string | null | undefined) => string | null;
+  /** Was a document actually sent? See DealApplicationStatus.send_evidence. */
+  sendEvidenceFor: (dealId: string | null | undefined) => BadgeSendEvidence;
+  /**
+   * EVERYTHING <ApplicationSignatureBadge> needs, as one object:
+   *   <ApplicationSignatureBadge {...sigs.badgePropsFor(deal.id)} />
+   *
+   * Prefer this over passing `signature` and `sentAt` by hand. Passing a send
+   * date WITHOUT the send evidence is what produced red "UNSIGNED" on a merchant
+   * who was never sent anything — the stamp is present and the document is not —
+   * and there is no way to make that mistake through this bundle.
+   */
+  badgePropsFor: (dealId: string | null | undefined) => {
+    signature: SignatureState;
+    sentAt: string | null;
+    sendEvidence: BadgeSendEvidence;
+  };
   loading: boolean;
   /** Set when the read failed — surfaces may show one banner instead of N chips. */
   error: string | null;
@@ -159,10 +208,26 @@ export default function useApplicationSignatures(
     [statusFor],
   );
 
+  const sendEvidenceFor = useCallback(
+    (dealId: string | null | undefined): BadgeSendEvidence => badgeSendEvidence(statusFor(dealId)),
+    [statusFor],
+  );
+
+  const badgePropsFor = useCallback(
+    (dealId: string | null | undefined) => ({
+      signature: signatureFor(dealId),
+      sentAt: sentAtFor(dealId),
+      sendEvidence: sendEvidenceFor(dealId),
+    }),
+    [signatureFor, sentAtFor, sendEvidenceFor],
+  );
+
   return {
     signatureFor,
     statusFor,
     sentAtFor,
+    sendEvidenceFor,
+    badgePropsFor,
     loading: state.kind === "loading" || state.kind === "idle",
     error: state.kind === "error" ? state.message : null,
     reload: () => void load(),
