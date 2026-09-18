@@ -1322,6 +1322,19 @@ function hms(totalSeconds: number): string {
     : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
+/** THE CONVERSATION BAR, in seconds — a defined concept in this system, not a
+ *  number picked for this table.
+ *
+ *  `is_conversation` on deal_call_events (20260916j): a WAVV row counts as a
+ *  real two-way conversation when it is outbound, ran >= 120s, and its outcome
+ *  is not VOICEMAIL. `deals.spoke_at` (20260722) stamps on the same 120s bar,
+ *  described there as "twice the contact bar" — contacted_at's looser 30s.
+ *
+ *  Used here to WEIGHT a duration, so the bold means "this call met the
+ *  conversation bar" rather than "this looked long". If the bar moves, this
+ *  moves with it — which is the point of naming it instead of typing a number. */
+const CONVERSATION_SECONDS = 120;
+
 /** A call's length for a READER: "25s", "13m 01s", "1h 02m".
  *
  *  hms() above is the spreadsheet form ("0:25", "13:01") and stays where it is
@@ -4367,7 +4380,25 @@ export default function SetterPerformancePage() {
                                   </td>
                                   {/* null seconds = the dialer reported no
                                       length. "—", never "0s": a call of unknown
-                                      length is not a call that lasted nothing. */}
+                                      length is not a call that lasted nothing.
+
+                                      BOLD AT 120s, AND THAT NUMBER IS NOT A
+                                      TASTE. 120s is this system's conversation
+                                      bar: is_conversation on deal_call_events
+                                      (WAVV: outbound, >=120s, outcome <>
+                                      VOICEMAIL) and the rule that stamps
+                                      deals.spoke_at. So the weight means "this
+                                      call met the conversation bar", and if that
+                                      bar moves, this follows it.
+
+                                      DELIBERATELY DURATION ALONE — the voicemail
+                                      half of is_conversation is NOT applied, and
+                                      must not be "completed" later. In this
+                                      table the disposition column already says
+                                      what happened, and a long voicemail drawn
+                                      plain beside a shorter live call drawn bold
+                                      would confuse rather than clarify. The bar
+                                      is the threshold here, not the predicate. */}
                                   <td className={TD_NUM}>
                                     {r.seconds === null ? (
                                       <span
@@ -4379,11 +4410,16 @@ export default function SetterPerformancePage() {
                                     ) : (
                                       <span
                                         className={
-                                          r.seconds >= 180
+                                          r.seconds >= CONVERSATION_SECONDS
                                             ? "font-semibold text-gray-900 dark:text-white"
                                             : "text-gray-700 dark:text-gray-200"
                                         }
-                                        title={`${r.seconds.toLocaleString()} seconds`}
+                                        title={
+                                          `${r.seconds.toLocaleString()} seconds — ` +
+                                          (r.seconds >= CONVERSATION_SECONDS
+                                            ? `at or past the ${CONVERSATION_SECONDS}s conversation bar (the same bar as is_conversation and deals.spoke_at)`
+                                            : `under the ${CONVERSATION_SECONDS}s conversation bar`)
+                                        }
                                       >
                                         {durationText(r.seconds)}
                                       </span>
