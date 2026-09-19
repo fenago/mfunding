@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon, StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
-import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
+import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, fetchSendEvidence, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useDealPins } from "../../hooks/useDealPins";
 import useIsProcessor from "../../hooks/useIsProcessor";
@@ -94,6 +94,12 @@ function daysPastPromise(promised: string, now: number): number | null {
 // Exported for tests: the precedence rules here (especially the email-clock-vs-
 // callback guard below) are behavior we need to be able to prove without a browser.
 export function classify(deal: QueueDeal, now: number): Urgency | null {
+  // ⚠ `?? []` ON A FAILED READ IS AN ACCUSATION. If the submissions embed didn't
+  // come back, an empty array makes `anyResponded` false, which becomes "Submitted
+  // 48h+ ago, still silent" — aimed at a FUNDER, a business relationship rather
+  // than a merchant. So keep "we couldn't read it" (undefined) distinct from "we
+  // read it and there are none" (an array), and let only the latter accuse anyone.
+  const subsReadable = Array.isArray(deal.submissions);
   const subs = deal.submissions ?? [];
   const responded = subs.filter((s) => s.response_at);
   const anyResponded = responded.length > 0;
@@ -382,14 +388,20 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
     docs_collected: "docs_collected_at",
     bank_statements: "bank_statements_at",
   };
-  if (deal.status in staleCol) {
+  // ⚠ These are stage timestamps, and `deals_stamp_stage_timestamps` can back-fill
+  // them from a single status write — so a card DRAGGED in GHL starts this 3-day
+  // chase clock on work that may never have happened. Where we have evidence that
+  // nothing was actually sent, the clock is measuring the wrong thing entirely and
+  // the case below issues the real instruction ("send the application") instead of
+  // chasing stips for a document the merchant never received.
+  if (deal.status in staleCol && !(deal.status === "application_sent" && deal.send_evidence === "never_sent")) {
     const ts = deal[staleCol[deal.status]] as string | null;
     if (ts && now - Date.parse(ts) > 3 * DAY) {
       return { rank: 4, badge: "⏰ Docs stale", why: "No movement in 3+ days — chase the stips.", since: ts, tone: "red" };
     }
   }
   // 4 — submitted 48h+ ago and no funder has responded yet.
-  if (deal.status === "submitted_to_funder" && deal.submitted_at && !anyResponded && now - Date.parse(deal.submitted_at) > 2 * DAY) {
+  if (deal.status === "submitted_to_funder" && deal.submitted_at && subsReadable && !anyResponded && now - Date.parse(deal.submitted_at) > 2 * DAY) {
     return { rank: 5, badge: "📤 Nudge funders", why: "Submitted 48h+ ago, still silent — nudge them.", since: deal.submitted_at, tone: "blue" };
   }
   // 5 — a new lead. It surfaces IMMEDIATELY: a just-created lead is the very
@@ -426,8 +438,38 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
       return { rank: 7, badge: "☎️ Qualify this lead", why: "You've made contact — run the 3 qualifiers and move them forward.", since, tone: "blue" };
     case "qualifying":
       return { rank: 7, badge: "📋 Send the application", why: "Qualified — get the app + upload link out while they're warm.", since, tone: "blue" };
-    case "application_sent":
-      return { rank: 7, badge: "✍️ Chase the signed app", why: "Application sent — nudge them to sign so you can package it.", since, tone: "blue" };
+    // ── THE INSTRUCTION HAS TO MATCH WHAT ACTUALLY HAPPENED ──────────────────
+    // This case is where a false claim stops being a screen and becomes a phone
+    // call. It used to read `status === "application_sent"` and NOTHING else — no
+    // document evidence, no phantom check — so MF-2026-0363 (Joyce Derian) would
+    // have put "chase her for the signature" on a setter's day for an application
+    // she was never sent. The stamp came from a card being dragged in GHL 27
+    // seconds after a draft was opened; no document was ever created.
+    //
+    // `send_evidence` is the ONE definition (deal_send_evidence(), shared with the
+    // eight badge surfaces) — never a local rule. undefined = nobody asked.
+    case "application_sent": {
+      switch (deal.send_evidence) {
+        // Nothing was sent. The work isn't chasing a signature, it's SENDING the
+        // application — a different action, so it gets a different card rather
+        // than a softened version of the wrong one.
+        case "never_sent":
+          return {
+            rank: 7, badge: "📤 Send the application", tone: "amber", since,
+            why: "The stage says application sent, but no document ever reached this merchant — send it before chasing anything.",
+          };
+        // We asked and could not establish it. Do NOT silently pick either task:
+        // telling someone to chase is as wrong as telling them to re-send.
+        case "unknown_stale":
+        case "unknown_unreadable":
+          return {
+            rank: 7, badge: "✍️ Chase the signed app", tone: "blue", since,
+            why: "Application sent — nudge them to sign. (We could not verify the document itself; check before telling them it was sent.)",
+          };
+        default:
+          return { rank: 7, badge: "✍️ Chase the signed app", why: "Application sent — nudge them to sign so you can package it.", since, tone: "blue" };
+      }
+    }
     case "docs_collected":
     case "bank_statements":
       return { rank: 7, badge: "📎 Collect the stips", why: "Docs started — get the rest (bank statements/ID) and submit.", since, tone: "blue" };
@@ -1219,6 +1261,21 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
               }
               setCloserNames((prev) => ({ ...prev, ...map }));
             });
+        }
+        // Did a document ACTUALLY reach the merchant? Only deals sitting at
+        // application_sent can produce the "chase the signature" instruction, so
+        // only they are worth asking about — one RPC, scoped to those ids.
+        //
+        // MERGED ONTO THE DEALS, not held beside them, so classify() stays a pure
+        // function of a deal and keeps its exported-for-tests shape.
+        const appIds = d.filter((x) => x.status === "application_sent").map((x) => x.id);
+        if (appIds.length > 0) {
+          void fetchSendEvidence(appIds).then((ev) => {
+            if (ev.size === 0) return; // asked and got nothing → leave undefined
+            setDeals((prev) =>
+              prev.map((x) => (ev.has(x.id) ? { ...x, send_evidence: ev.get(x.id) } : x)),
+            );
+          });
         }
         // Only live transfers can carry a handoff flag — keep the read cheap.
         const ltIds = d.filter((x) => x.lead_source === "live_transfer").map((x) => x.id);

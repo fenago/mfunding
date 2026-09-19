@@ -115,6 +115,40 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
 /** A queue deal carries just enough submission data to rank funder-reply urgency. */
 export interface QueueDeal extends DealWithCustomer {
   submissions?: { response_at: string | null; status: string }[];
+  /**
+   * Did a document ACTUALLY go to this merchant — read back from GHL, not inferred
+   * from `application_sent_at`. Sourced from `deal_application_status().send_evidence`
+   * via `fetchSendEvidence()`; the four verdicts are the ones `deal_send_evidence()`
+   * defines: has_evidence / never_sent / unknown_stale / unknown_unreadable.
+   *
+   * ⚠ OPTIONAL WITH NO DEFAULT, and `undefined` is NOT `"unknown_*"`. Absent means
+   * "this queue hasn't asked" → legacy ranking, unchanged. A verdict means we asked.
+   * Collapsing the two would silently rewrite every card in the queue the first time
+   * the lookup failed, which is the bug this field exists to prevent.
+   */
+  send_evidence?: string | null;
+}
+
+/**
+ * Send evidence for a set of deals, keyed by deal id.
+ *
+ * Best-effort BY DESIGN: on failure this returns an EMPTY map, so every caller
+ * reads `undefined` — "we didn't ask" — rather than a verdict. It must never
+ * manufacture `never_sent` out of its own failure, because downstream that becomes
+ * an instruction to a setter about a merchant.
+ */
+export async function fetchSendEvidence(dealIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (dealIds.length === 0) return out;
+  const { data, error } = await supabase.rpc("deal_application_status", { p_deal_ids: dealIds });
+  if (error) {
+    console.error("Error fetching send evidence:", error);
+    return out;
+  }
+  for (const r of (data as { deal_id: string; send_evidence: string | null }[] | null) ?? []) {
+    if (r.send_evidence) out.set(r.deal_id, r.send_evidence);
+  }
+  return out;
 }
 
 // Terminal / done statuses the "My Day" queue never surfaces (both pipelines).

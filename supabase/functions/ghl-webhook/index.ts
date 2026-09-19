@@ -1702,13 +1702,40 @@ async function createCommissionForFundedDeal(
     const { data: existing } = await db.from("commissions").select("id").eq("deal_id", deal.id).limit(1);
     if (existing && existing.length > 0) return;
 
-    // Funded amount: explicit amount_funded, else the opportunity's monetaryValue,
-    // else the requested amount. If none are usable, flag for manual review rather
-    // than writing a zero-amount commission.
-    const amountFunded = firstPositive(deal.amount_funded, monetaryFallback, deal.amount_requested);
+    // ── MONEY IS CREATED FROM amount_funded, AND FROM NOTHING ELSE ───────────
+    //
+    // This used to be `firstPositive(amount_funded, monetaryValue, amount_requested)`.
+    // Both fallbacks are the same number wearing different hats: GHL's monetaryValue
+    // is what THIS FILE writes into `amount_requested` (see the create/update paths
+    // above), and amount_requested is what the MERCHANT ASKED FOR — a wish recorded
+    // before any funder saw the file. Either one turned a $50,000 request into a
+    // $4,000 gross / ~$1,400 closer payable INDISTINGUISHABLE in the commissions
+    // table from a real one, while `deals.amount_funded` stayed NULL and nothing
+    // ever compared the two.
+    //
+    // The in-app path has always refused to guess — dealService.ts:
+    //   `if (!deal.amount_funded || deal.amount_funded <= 0) return null`
+    // Same business event, two different rules, and the LOOSER one was the
+    // unattended path nobody was watching. Now they are one rule.
+    //
+    // Owner ruling 2026-09-19 ("you decide"): the commission still fires on a card
+    // drag — that is how this business records a funding and CLAUDE.md requires it —
+    // but the AMOUNT must come from a funder actually paying. Safe to tighten now
+    // rather than later: at the time of this change there were 0 funded deals and
+    // 0 commission rows in the entire book, so no existing workflow depends on the
+    // guess. The first real funding gets the correct rule instead of inheriting it.
+    const amountFunded = firstPositive(deal.amount_funded);
     if (amountFunded == null) {
+      // NOT a silent skip, and not an error either. A funded deal with no funded
+      // amount is a real event that needs a person: the deal stays funded, the
+      // commission waits, and the note names the REMEDY rather than the failure.
       await log(db, "deal", deal.id, "commission-needs-review", {
-        reason: "deal funded via GHL stage mirror but no amount_funded / monetaryValue / amount_requested to base commission on",
+        reason: "Deal moved to Funded in GHL, but the deal carries no amount_funded. No commission was created. "
+          + "The merchant's requested amount and the opportunity's monetary value are deliberately NOT used as a substitute — "
+          + "both are what was ASKED FOR, not what a funder paid. "
+          + "Set the funded amount on the deal here and the commission will be created from it.",
+        amount_requested_ignored: deal.amount_requested ?? null,
+        monetary_value_ignored: monetaryFallback,
       });
       return;
     }
