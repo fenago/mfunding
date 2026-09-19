@@ -5253,10 +5253,34 @@ function StepCard({
             does not name WHICH documents unless it counted them — the old line
             asserted "app + disclosure + upload link" on every deal regardless of
             what was really there. */}
+        {/* ── DOCUMENTS WENT OUT, BUT NONE OF THEM IS THE APPLICATION ──────
+            The combination `docEvidence.kind === "sent"` AND
+            `appVerdict === "never_sent"` is the one this panel does the most
+            damage on, because it looks like the success case: a green box, a
+            date, and a list of real document names. It is exactly the
+            "signed only the Broker Compensation Disclosure" shape — two
+            merchants in this book have done precisely that — and it used to
+            fall into the neutral branch, leaving a tired reader to notice by
+            scanning names that the one document that matters is missing.
+
+            never_sent is the most-guarded verdict there is (a COMPLETE read,
+            scoped to the merchant's whole contact set, fresher than the send
+            signal, with is_application_doc_name applied in SQL), so when it
+            says the application is absent it has earned the right to say so
+            out loud rather than hint. Amber, not red: documents really did go
+            out and the merchant really did receive something. */}
         {step.stageKey === "application_sent" && done && docEvidence.kind === "sent" && (
-          <div className="mt-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs space-y-1.5">
+          <div className={`mt-3 rounded-md border px-3 py-2 text-xs space-y-1.5 ${
+            appVerdict === "never_sent"
+              ? "bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700"
+              : "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800"
+          }`}>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="font-medium text-emerald-700 dark:text-emerald-300">
+              <span className={`font-medium ${
+                appVerdict === "never_sent"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : "text-emerald-700 dark:text-emerald-300"
+              }`}>
                 {/* NAMES, NOT A TEMPLATE. The old line said "app + disclosure +
                     upload link" on every deal. This prints what GHL actually
                     handed back, which is the same standard the send modal holds
@@ -5276,6 +5300,8 @@ function StepCard({
                     is never allowed to become a new failure mode on a bad one. */}
                 {appVerdict === "has_evidence"
                   ? <>✅ <b>Application sent</b> to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — confirmed against GHL:{" "}</>
+                  : appVerdict === "never_sent"
+                  ? <>⚠ <b>The funding application was NOT sent.</b> Documents did go out{doneAt ? ` ${fmtWhen(doneAt)}` : ""}, but the application is not among them:{" "}</>
                   : <>📨 Sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — read back from GHL:{" "}</>}
                 <b>{docEvidence.names.join(", ")}</b>
               </span>
@@ -5303,6 +5329,12 @@ function StepCard({
                 <>
                   The funding application <b>is</b> among them — checked by name across every contact this merchant
                   is known by, not by eye.
+                </>
+              ) : appVerdict === "never_sent" ? (
+                <>
+                  Checked by name across every contact this merchant is known by: <b>no funding application</b>. A
+                  disclosure or upload link on its own is not the application and cannot be signed in its place —{" "}
+                  <b>send the application before chasing a signature</b>.
                 </>
               ) : (
                 <>
