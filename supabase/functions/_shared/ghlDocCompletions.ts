@@ -41,11 +41,12 @@
 //   undefined and a document that matches nobody.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { type GhlConfig, ghlFetch } from "./ghl.ts";
+import { type GhlConfig } from "./ghl.ts";
+import { crawlDocuments, DOC_PAGE as SHARED_DOC_PAGE } from "./ghlProposalDocs.ts";
 import { recordMerchantContacts } from "./merchantIdentity.ts";
 
 /** GHL caps the proposals list at 21 per page (422 above it). */
-export const DOC_PAGE = 21;
+export const DOC_PAGE = SHARED_DOC_PAGE;
 
 /**
  * A completion we only just learned about may be months old. Announcing those on
@@ -116,32 +117,17 @@ export async function crawlCompletedDocs(
   cfg: GhlConfig,
   opts: { maxPages: number },
 ): Promise<CrawlResult> {
-  const out: CrawlResult = { docs: [], reportedTotal: null, ghlCalls: 0, complete: false, error: null, dailyRemaining: null };
-
-  for (let page = 0; page < opts.maxPages; page++) {
-    const res = await ghlFetch<{ documents?: ProposalDoc[]; total?: number }>(
-      cfg,
-      "GET",
-      `/proposals/document?locationId=${cfg.locationId}&limit=${DOC_PAGE}&skip=${page * DOC_PAGE}&status=completed`,
-    );
-    out.ghlCalls++;
-    if (res.rate?.dailyRemaining != null) out.dailyRemaining = res.rate.dailyRemaining;
-    if (!res.ok) {
-      // UNREADABLE. Keep what we already have — a signature we can see is still
-      // worth recording — but the crawl is not complete, so absence proves nothing.
-      out.error = `documents page ${page} failed (${res.status}): ${res.error ?? ""}`;
-      return out;
-    }
-    const got = res.data?.documents ?? [];
-    if (typeof res.data?.total === "number") out.reportedTotal = res.data.total;
-    out.docs.push(...got);
-    if (got.length === 0) { out.complete = true; return out; }
-    if (out.reportedTotal !== null && out.docs.length >= out.reportedTotal) { out.complete = true; return out; }
-  }
-
-  // Ran out of pages before reaching `total`. Deliberate for the hook, a fault
-  // for the sweep — either way it is NOT a complete read and says so.
-  return out;
+  // Delegates to the one reader of this endpoint. This used to be its own copy of
+  // the paging loop — one of three — and the copies agreed only by coincidence.
+  const c = await crawlDocuments<ProposalDoc>(cfg, { maxPages: opts.maxPages, status: "completed" });
+  return {
+    docs: c.docs,
+    reportedTotal: c.reportedTotal,
+    ghlCalls: c.ghlCalls,
+    complete: c.complete,
+    error: c.error,
+    dailyRemaining: c.dailyRemaining,
+  };
 }
 
 /** One row per COMPLETED CONTACT RECIPIENT. A staff countersigner (entityName

@@ -34,6 +34,7 @@ import {
   recipientMatchesMerchant, type MerchantIdentity,
 } from "../_shared/merchantIdentity.ts";
 import { indexDocumentRecipients, type IndexableDoc } from "../_shared/documentIndex.ts";
+import { crawlDocuments } from "../_shared/ghlProposalDocs.ts";
 
 /** Cap on how many of a merchant's contacts we will read uploads from. One GHL
  *  call each; a merchant with one contact (the normal case) costs exactly what
@@ -220,8 +221,9 @@ Deno.serve(async (req) => {
     // never looked far enough back to find it.
     //
     // `limit` caps at 21 (422 above) and `skip=N` works, so the set is walkable.
-    // 268 documents is 13 calls; the cap below bounds it as the account grows.
-    const PAGE = 21;
+    // 284 documents is 14 calls; the cap below bounds it as the account grows.
+    // The paging itself lives in _shared/ghlProposalDocs.ts — this used to be one
+    // of three hand-written copies of that loop.
     const MAX_PAGES = 30; // 630 documents — raise with the account, not silently
     let rawDocs: Record<string, unknown>[] = [];
     let docsTotal: number | null = null;
@@ -242,23 +244,18 @@ Deno.serve(async (req) => {
       docsFromCache = true;
     }
 
-    for (let page = 0; !docsFromCache && page < MAX_PAGES; page++) {
-      const res = await ghlFetch<{ documents?: Record<string, unknown>[]; total?: number }>(
-        cfg,
-        "GET",
-        `/proposals/document?locationId=${cfg.locationId}&limit=${PAGE}&skip=${page * PAGE}`,
-      );
-      if (!res.ok) {
-        // UNREADABLE. Keep what we have (a link we can see is still usable), but
-        // the crawl did not complete, so absence proves nothing downstream.
-        documentsError = `docs list failed (${res.status}): ${res.error ?? ""}`;
-        break;
-      }
-      const got = res.data?.documents ?? [];
-      if (typeof res.data?.total === "number") docsTotal = res.data.total;
-      rawDocs.push(...got);
-      if (got.length === 0) { docsCrawlComplete = true; break; }
-      if (docsTotal !== null && rawDocs.length >= docsTotal) { docsCrawlComplete = true; break; }
+    // The one reader of /proposals/document (see _shared/ghlProposalDocs.ts for
+    // what this endpoint actually supports, and for why no reader here may depend
+    // on document ORDER — sortBy is rejected outright, so newest-first is a
+    // behaviour we cannot request and are not promised).
+    if (!docsFromCache) {
+      const crawl = await crawlDocuments<Record<string, unknown>>(cfg, { maxPages: MAX_PAGES });
+      rawDocs = crawl.docs;
+      docsTotal = crawl.reportedTotal;
+      docsCrawlComplete = crawl.complete;
+      // UNREADABLE keeps whatever we got (a link we can see is still usable) but
+      // never counts as complete, so absence proves nothing downstream.
+      if (crawl.error) documentsError = crawl.error;
     }
     if (!documentsError && !docsCrawlComplete) {
       documentsError = `docs list truncated at ${rawDocs.length} of ${docsTotal ?? "?"} (raise MAX_PAGES)`;

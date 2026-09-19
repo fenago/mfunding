@@ -50,40 +50,8 @@ import {
   crawlCompletedDocs, flattenCompletions, recordCompletions,
   DOC_PAGE, type ProposalDoc,
 } from "../_shared/ghlDocCompletions.ts";
-import { ghlFetch } from "../_shared/ghl.ts";
 import { indexDocumentRecipients } from "../_shared/documentIndex.ts";
-
-/**
- * Crawl EVERY document, not just the completed ones — the evidence half of
- * "was an application actually sent?". Mirrors crawlCompletedDocs' contract
- * exactly, including the part that matters most: `complete` is true ONLY when the
- * fetch count reached the reported total, so a caller can never mistake a short
- * read for an empty account.
- */
-async function crawlAllDocs(
-  cfg: Parameters<typeof ghlFetch>[0],
-  maxPages: number,
-): Promise<{ docs: ProposalDoc[]; reportedTotal: number | null; complete: boolean; error: string | null }> {
-  const out: { docs: ProposalDoc[]; reportedTotal: number | null; complete: boolean; error: string | null } =
-    { docs: [], reportedTotal: null, complete: false, error: null };
-  for (let page = 0; page < maxPages; page++) {
-    const res = await ghlFetch<{ documents?: ProposalDoc[]; total?: number }>(
-      cfg, "GET",
-      `/proposals/document?locationId=${cfg.locationId}&limit=${DOC_PAGE}&skip=${page * DOC_PAGE}`,
-    );
-    if (!res.ok) {
-      out.error = `document index page ${page} failed (${res.status}): ${res.error ?? ""}`;
-      return out;
-    }
-    const got = res.data?.documents ?? [];
-    if (typeof res.data?.total === "number") out.reportedTotal = res.data.total;
-    out.docs.push(...got);
-    if (got.length === 0) { out.complete = true; return out; }
-    if (out.reportedTotal !== null && out.docs.length >= out.reportedTotal) { out.complete = true; return out; }
-  }
-  out.error = `document index stopped at ${out.docs.length} of ${out.reportedTotal ?? "?"} after ${maxPages} pages`;
-  return out;
-}
+import { crawlDocuments } from "../_shared/ghlProposalDocs.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -199,7 +167,7 @@ Deno.serve(async (req) => {
     let indexed = 0;
     let indexComplete: boolean | null = null;
     if (url.searchParams.get("full") === "1") {
-      const all = await crawlAllDocs(cfg, MAX_PAGES);
+      const all = await crawlDocuments(cfg, { maxPages: MAX_PAGES });
       indexComplete = all.complete && !all.error;
       // ONE writer for the index, shared with ghl-docs-status — which now writes
       // it on every staff/portal read, so the index tracks reality between these

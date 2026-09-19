@@ -6,15 +6,31 @@
 // merchants. The ghl-webhook PUSH path captures opens only when a GHL "Email Events"
 // workflow is wired to fire; this sweep is the PULL safety net that works regardless.
 //
-// WHAT IT DOES (every 15 min, via pg_cron — same cadence as check-email-bounces):
-//   1. Picks open-deal, campaign-attributed merchants with a GHL contact, un-opened
-//      first (so we don't burn API calls re-checking leads already known to have
-//      opened), capped per run.
+// WHAT IT DOES (every 6h via pg_cron — 4 passes of 90 covers all ~346 eligible
+// merchants once a day):
+//   1. Picks candidates LEAST-RECENTLY-CHECKED first (pick_email_open_candidates):
+//      campaign-attributed merchants with a GHL contact and an email address,
+//      terminal deals included. Rotation is what guarantees coverage — see below.
 //   2. For each, lists their RECENT (<=14 days) OUTBOUND email records, skipping any
 //      already recorded as "opened" (terminal for our purpose — record-once).
 //   3. Reads each remaining record's status and persists it via sync_email_open_status
 //      into email_open_events + the customers.email_last_opened_at aggregate the audit
 //      reads. Idempotent; never double-counts with the webhook path.
+//   4. Stamps customers.email_open_checked_at per contact, whether or not anything was
+//      found. That is both the rotation watermark AND the audit's freshness signal: a
+//      lead with no open and no check is UNKNOWN, not zero.
+//
+// WHY THE ROTATION: this sweep wrote its last row on 2026-09-10 and nothing for the
+// eight days after. It ordered candidates un-opened-first and sliced to 40, so a
+// merchant who never opens sorted to the front FOREVER — the same head of the list was
+// re-polled every run and the tail was never reached. It also excluded terminal deals,
+// hiding 197 of 345 campaign merchants from the collector while they still counted in
+// the audit's denominator. Never reintroduce either: order by the watermark, and let
+// the whole eligible book take its turn.
+//
+// A run is time-budgeted and simply stops when the budget is spent. Because every
+// contact is stamped as it is processed, the next run resumes at the oldest watermark
+// instead of restarting at the same head.
 //
 // It NEVER sends anything and NEVER touches GHL workflows — read-only against GHL,
 // writes only our own tables. Internal observability; no merchant-facing copy.
@@ -26,13 +42,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, getEmailRecord, type GhlConfig } from "../_shared/ghl.ts";
 
-const DEFAULT_LIMIT = 20;              // merchants per run
+const DEFAULT_LIMIT = 90;              // merchants per run
 const MAX_EMAILS_PER_CONTACT = 6;      // cap record fetches per merchant
 const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000; // only emails from the last 14 days
 const PACE_MS = 200;                   // GHL rate-limit courtesy
-
-// Deals in these states are done/dead — not "open" merchants worth polling.
-const TERMINAL_DEAL_STATUSES = ["declined", "dead", "nurture"];
+const TIME_BUDGET_MS = 110_000;        // stop cleanly well inside the edge-runtime wall
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -106,14 +120,24 @@ Deno.serve(async (req) => {
   try { cfg = await getGhlConfig(db); }
   catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
 
-  // ── Who to poll: open-deal, campaign-attributed merchants with a GHL contact ──
-  const candidates = await pickMerchants(db, limit, onlyContactId);
+  // ── Who to poll: least-recently-checked campaign merchants (see header) ──
+  let candidates: Merchant[];
+  try {
+    candidates = await pickMerchants(db, limit, onlyContactId);
+  } catch (e) {
+    // An unreadable candidate list is NOT an empty one — say so rather than
+    // returning a clean zero the caller would read as "nothing to do".
+    return json({ error: `candidate selection failed: ${e instanceof Error ? e.message : String(e)}` }, 500);
+  }
 
-  const since = Date.now() - LOOKBACK_MS;
+  const startedAt = Date.now();
+  const since = startedAt - LOOKBACK_MS;
   let contactsChecked = 0, emailsFetched = 0, opensFound = 0, delivered = 0, skippedOpened = 0;
   const errors: string[] = [];
+  let budgetSpent = false;
 
   for (const c of candidates) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) { budgetSpent = true; break; }
     contactsChecked++;
     try {
       // Emails we've already recorded as opened for this contact — never re-fetch them.
@@ -142,11 +166,24 @@ Deno.serve(async (req) => {
         else if (status === "delivered") delivered++;
         await sleep(PACE_MS);
       }
+      // Looked at, and the result is recorded — stamp the watermark so this contact
+      // goes to the back of the queue and the next run advances instead of restarting
+      // here. Only on a clean pass: a contact we failed to READ keeps its old
+      // watermark so it is retried, never silently marked as covered.
+      const { error: stampErr } = await db.from("customers")
+        .update({ email_open_checked_at: new Date().toISOString() })
+        .eq("id", c.customer_id);
+      if (stampErr) errors.push(`stamp ${c.customer_id}: ${stampErr.message}`);
     } catch (e) {
       errors.push(`${c.ghl_contact_id}: ${e instanceof Error ? e.message : String(e)}`);
     }
     await sleep(PACE_MS);
   }
+
+  // Coverage of the whole eligible book, so the caller can tell a real zero from an
+  // unfinished sweep. Unreadable → null, never a reassuring number.
+  const { data: cov } = await db.rpc("email_open_sweep_status");
+  const coverage = Array.isArray(cov) ? cov[0] ?? null : cov ?? null;
 
   return json({
     ok: true,
@@ -156,50 +193,33 @@ Deno.serve(async (req) => {
     opensFound,
     delivered,
     skippedAlreadyOpened: skippedOpened,
+    // True when the run stopped on its time budget: the remaining candidates are
+    // UNCHECKED, not open-free. The next run picks them up by watermark.
+    budgetSpent,
+    remaining: candidates.length - contactsChecked,
+    coverage,
     errors: errors.slice(0, 20),
   });
 });
 
 interface Merchant { customer_id: string; ghl_contact_id: string }
 
-// Distinct open-deal merchants with a GHL contact, un-opened FIRST so a run spends
-// its budget on leads whose open state we don't yet know.
+// Campaign merchants with a contact and an email, LEAST-RECENTLY-CHECKED first, via
+// pick_email_open_candidates. The ordering is the whole point: it is what makes the
+// sweep reach the entire book instead of re-polling one pinned head of the list.
+// Throws on a read failure so the caller reports UNREADABLE rather than "no candidates".
 async function pickMerchants(db: SupabaseClient, limit: number, onlyContactId: string | null): Promise<Merchant[]> {
   if (onlyContactId) {
-    const { data } = await db.from("customers").select("id, ghl_contact_id")
+    const { data, error } = await db.from("customers").select("id, ghl_contact_id")
       .eq("ghl_contact_id", onlyContactId).maybeSingle();
+    if (error) throw new Error(error.message);
     const row = data as { id: string; ghl_contact_id: string | null } | null;
     return row?.ghl_contact_id ? [{ customer_id: row.id, ghl_contact_id: row.ghl_contact_id }] : [];
   }
 
-  const { data: deals } = await db.from("deals")
-    .select("customer_id, ghl_contact_id, created_at, status")
-    .not("campaign_id", "is", null).not("ghl_contact_id", "is", null)
-    .order("created_at", { ascending: false }).limit(400);
-
-  // Distinct by contact, dropping terminal deals, newest first.
-  const seen = new Set<string>();
-  const pool: Merchant[] = [];
-  for (const d of (deals ?? []) as Array<{ customer_id: string | null; ghl_contact_id: string | null; status: string }>) {
-    if (!d.customer_id || !d.ghl_contact_id) continue;
-    if (TERMINAL_DEAL_STATUSES.includes(d.status)) continue;
-    if (seen.has(d.ghl_contact_id)) continue;
-    seen.add(d.ghl_contact_id);
-    pool.push({ customer_id: d.customer_id, ghl_contact_id: d.ghl_contact_id });
-  }
-  if (pool.length === 0) return [];
-
-  // Un-opened first: fetch which candidate customers already have an open on record.
-  const { data: custs } = await db.from("customers")
-    .select("id, email_last_opened_at").in("id", pool.map((p) => p.customer_id));
-  const openedAt = new Map<string, string | null>();
-  for (const c of (custs ?? []) as Array<{ id: string; email_last_opened_at: string | null }>) {
-    openedAt.set(c.id, c.email_last_opened_at);
-  }
-  pool.sort((a, b) => {
-    const ao = openedAt.get(a.customer_id) ? 1 : 0;
-    const bo = openedAt.get(b.customer_id) ? 1 : 0;
-    return ao - bo; // unopened (0) before opened (1); stable otherwise keeps recency
-  });
-  return pool.slice(0, limit);
+  const { data, error } = await db.rpc("pick_email_open_candidates", { p_limit: limit });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as Array<{ customer_id: string; ghl_contact_id: string }>)
+    .filter((r) => r.customer_id && r.ghl_contact_id)
+    .map((r) => ({ customer_id: r.customer_id, ghl_contact_id: r.ghl_contact_id }));
 }
