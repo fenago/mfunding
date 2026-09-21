@@ -13,6 +13,7 @@ import {
 } from "../../services/aiUnderwritingService";
 import { updateDealStatus } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
+import useIsProcessor from "@/hooks/useIsProcessor";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import type { DealWithCustomer } from "../../types/deals";
@@ -114,7 +115,12 @@ function ProfileStrip({ p }: { p: UWProfile }) {
 
 export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }: Props) {
   const { isAdmin, isSuperAdmin } = useUserProfile();
-  const canRun = isAdmin || isSuperAdmin;
+  // The SECOND underwriting surface, carrying the identical gate AIUnderwritingPanel
+  // had. Fixing one and not the other is how a processor gets the run button on one
+  // screen and "ask an admin" on the next. underwrite-deal permits processors
+  // server-side (is_processor is checked before the ownership test).
+  const { isProcessor } = useIsProcessor();
+  const canRun = isAdmin || isSuperAdmin || isProcessor;
 
   const [result, setResult] = useState<UWResult | null>(null);
   const [ai, setAi] = useState<DealUnderwriting | null>(null);
