@@ -33,6 +33,7 @@ import { reconcileDocumentType } from "../_shared/docClassify.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import { getPlaidSettings } from "../_shared/plaid.ts";
+import { loadMerchantIdentity } from "../_shared/merchantIdentity.ts";
 import { BANK_STATEMENTS_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
 
 // ── PROVIDER-FAILURE PREDICATE ───────────────────────────────────────────────
@@ -776,21 +777,45 @@ Deno.serve(async (req) => {
     // EMPTY for every real merchant, so underwriting 422'd on every genuine deal.
     // When we find nothing locally, pull the files across (read-only against GHL,
     // idempotent on external_ref) and re-read, so "Run underwriting" simply works.
+    // ⚠ A MERCHANT IS A SET OF GHL CONTACTS, NOT A POINTER.
+    // This used to read `cust.ghl_contact_id` — the single primary pointer — and
+    // ingest from that one contact only. Miami Concierge Network (MF-2026-0385)
+    // is the case that proves it: his primary is rq8qq3plrBT1YIbiqjtL and ALL of
+    // his files — seven Chase PDFs plus ID, voided check and business licence —
+    // sit on his SECOND contact, O0BD4Uc3iJJcO91ipz1N. So this function ingested
+    // from an empty contact, found nothing, and told the owner "nothing found on
+    // the merchant's GoHighLevel contact" on a screen whose own document panel
+    // listed thirteen files two inches above it. The panel searched the set; this
+    // searched one. Same defect as the signing links, one function over.
     let ingestNote: string | null = null;
-    const ghlContactId = (cust.ghl_contact_id as string | null | undefined) ?? null;
-    if (bankDocs.length === 0 && ghlContactId) {
-      try {
-        const res = await ingestGhlDocuments(db, deal.customer_id as string, ghlContactId);
-        console.log(
-          `[underwrite-deal] GHL ingest for deal ${deal.deal_number}: found=${res.found} synced=${res.synced} skipped=${res.skipped} failed=${res.failed} bank=${res.bankStatementsAdded}`,
-        );
-        if (res.synced > 0) {
-          ingestNote = `Imported ${res.synced} document(s) the merchant uploaded in GoHighLevel.`;
-          docs = await loadDocs();
-          bankDocs = docs.filter((d) => d.document_type === "bank_statement");
+    const identity = await loadMerchantIdentity(db, {
+      customerId: deal.customer_id as string,
+      dealId,
+    });
+    // Union of the merchant's contact set and the legacy pointer — the pointer is
+    // normally a member, but if the identity read came back unreadable we would
+    // rather search the one contact we do have than search nothing.
+    const legacyPointer = (cust.ghl_contact_id as string | null | undefined) ?? null;
+    const contactIds = [...new Set([...identity.contactIds, legacyPointer].filter((v): v is string => !!v))];
+    let ingestFailures = 0;
+    if (bankDocs.length === 0 && contactIds.length > 0) {
+      for (const contactId of contactIds) {
+        try {
+          const res = await ingestGhlDocuments(db, deal.customer_id as string, contactId);
+          console.log(
+            `[underwrite-deal] GHL ingest for deal ${deal.deal_number} contact ${contactId}: found=${res.found} synced=${res.synced} skipped=${res.skipped} failed=${res.failed} bank=${res.bankStatementsAdded}`,
+          );
+          if (res.synced > 0) ingestNote = `Imported document(s) the merchant uploaded in GoHighLevel.`;
+        } catch (e) {
+          // COUNTED, never swallowed. A contact we failed to read is a hole in the
+          // search, and the refusal below must not call that "nothing found".
+          ingestFailures++;
+          console.warn(`[underwrite-deal] GHL ingest failed for contact ${contactId}:`, e instanceof Error ? e.message : e);
         }
-      } catch (e) {
-        console.warn("[underwrite-deal] GHL ingest failed:", e instanceof Error ? e.message : e);
+      }
+      if (ingestNote) {
+        docs = await loadDocs();
+        bankDocs = docs.filter((d) => d.document_type === "bank_statement");
       }
     }
 
@@ -837,11 +862,39 @@ Deno.serve(async (req) => {
     }
 
     if (bankDocs.length === 0 && allPlaidStatements.length === 0) {
+      // ── DOES THIS SENTENCE CLAIM MORE THAN THE SEARCH EARNED? ──────────────
+      // "Nothing found" is only sayable when we actually searched everywhere a
+      // statement can live. Three things can make that false, and each one gets
+      // its own sentence rather than being rounded down into the confident one:
+      //   · the identity read failed  → we don't know which contacts to search
+      //   · the identity is partial   → we searched a NARROWER set than the merchant
+      //   · a contact read threw      → a hole in an otherwise complete search
+      // The owner hit the confident version on a deal with 13 files on screen.
+      const searchWasComplete = identity.readable && !identity.partial && ingestFailures === 0;
+      const where = contactIds.length > 1
+        ? `all ${contactIds.length} of the merchant's VibeReach contacts`
+        : "the merchant's VibeReach contact";
+      let error: string;
+      if (!searchWasComplete) {
+        const why = !identity.readable
+          ? (identity.unreadableReason ?? "we could not establish which VibeReach contacts belong to this merchant")
+          : identity.partial
+          ? (identity.scopeNote ?? "this contact could not be tied to exactly one merchant, so we searched a narrower set")
+          : `${ingestFailures} of ${contactIds.length} contact read(s) failed`;
+        error = `We could not complete the search for bank statements (${why}), so this is NOT a statement that none exist. `
+          + `Check the documents panel above — if files are listed there, they are real and the read is what failed. `
+          + `Re-run in a moment, or attach the statements to this deal directly.`;
+      } else if (contactIds.length > 0) {
+        error = `No bank statements found for this deal — searched our storage, ${where}, and any connected bank feed.`;
+      } else {
+        error = "No bank statements on file for this deal yet, and no connected bank feed. "
+          + "This merchant has no VibeReach contact linked, so there was nowhere else to look.";
+      }
       return json({
-        error: ghlContactId
-          ? "No bank statements on file for this deal yet — nothing found in our storage, on the merchant's GoHighLevel contact, or from a connected bank feed."
-          : "No bank statements on file for this deal yet, and no connected bank feed.",
+        error,
         dealId,
+        searched_contacts: contactIds.length,
+        search_complete: searchWasComplete,
       }, 422);
     }
 
