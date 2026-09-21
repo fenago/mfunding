@@ -19,6 +19,7 @@ import {
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
+import useIsProcessor from "@/hooks/useIsProcessor";
 import DealAssistant from "../admin/DealAssistant";
 
 interface Props {
@@ -208,7 +209,17 @@ function ContextEditor({ dealId, canEdit }: { dealId: string; canEdit: boolean }
 
 export default function AIUnderwritingPanel({ dealId }: Props) {
   const { isAdmin, isSuperAdmin } = useUserProfile();
-  const canRun = isAdmin || isSuperAdmin;
+  // PROCESSORS RUN UNDERWRITING TOO. Packaging a file — statements in, funder
+  // fit out — is the processor's job, and the edge function has permitted them
+  // since 2026-09-16 (it checks is_processor BEFORE the ownership test). This
+  // client gate was the only thing still telling them to "ask an admin", on a
+  // deal they are the assigned worker for.
+  //
+  // Reading an existing run is the more expensive half of the bug: a processor
+  // who cannot SEE a completed result has no option but to spend another one.
+  // Owner, 9/21: "I don't want to pay for tokens every time."
+  const { isProcessor } = useIsProcessor();
+  const canRun = isAdmin || isSuperAdmin || isProcessor;
 
   const [history, setHistory] = useState<DealUnderwriting[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1065,7 +1076,10 @@ function RecommendedFundersSection({
   note: string | null;
 }) {
   const { isAdmin, isSuperAdmin } = useUserProfile();
-  const canLink = isAdmin || isSuperAdmin;
+  // Same reasoning as canRun above: a processor packaging the file is exactly
+  // who acts on "send this deal to".
+  const { isProcessor } = useIsProcessor();
+  const canLink = isAdmin || isSuperAdmin || isProcessor;
   // Nothing to show and nothing to explain — stay silent rather than render an
   // empty shell (older/partial runs).
   if (funders.length === 0 && !note) return null;
