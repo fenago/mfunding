@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon, StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
 import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, fetchSendEvidence, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
@@ -1224,7 +1224,23 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // still hiding the rest of the board from her. Regular closers stay walled.
   const { isProcessor } = useIsProcessor();
   const canToggle = isAdmin || isProcessor;
-  const [scope, setScope] = useState<"mine" | "all">(isSuperAdmin ? "all" : "mine");
+  // DEFAULT ALL FOR PROCESSORS, not just super_admin. Granting the toggle and
+  // then landing them on "Mine" is a capability nobody discovers: a processor's
+  // own book is nearly empty, so the board opens looking like there is no work
+  // and the whole-board access reads as "I don't have access to those merchants"
+  // (owner, 9/21). The toggle still exists — they can narrow to Mine — but the
+  // default now matches the job. Regular closers are unchanged and stay walled.
+  const [scope, setScope] = useState<"mine" | "all">(isSuperAdmin || isProcessor ? "all" : "mine");
+  // isProcessor arrives asynchronously (an RPC), so the first render can be
+  // "mine" before we know. Promote once, and only upward — never stomp a scope
+  // the user has since chosen for themselves.
+  const promotedRef = useRef(false);
+  useEffect(() => {
+    if (isProcessor && !promotedRef.current) {
+      promotedRef.current = true;
+      setScope("all");
+    }
+  }, [isProcessor]);
   const [query, setQuery] = useState("");
   const [deals, setDeals] = useState<QueueDeal[]>([]);
   const [loading, setLoading] = useState(true);

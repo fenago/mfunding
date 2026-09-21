@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
+import useIsProcessor from "@/hooks/useIsProcessor";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   MapIcon,
@@ -4753,15 +4754,48 @@ function ResumePicker({ pipeline, onPick }: { pipeline: "mca" | "vcf"; onPick: (
   const [deals, setDeals] = useState<DealWithCustomer[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  // A PROCESSOR WORKS ANY MERCHANT, INCLUDING A PARKED ONE.
+  //
+  // This list used to drop nurture / declined / dead / funded for everybody, so
+  // the only merchants reachable from the Revenue Playbook were the in-progress
+  // ones. For a closer that is right — it is a work queue. For a processor it is
+  // the whole point of the role: chasing an application on a merchant somebody
+  // parked is exactly their job, and those deals were unreachable here even
+  // though RLS has granted processors the whole board since 20260830z.
+  // Owner, 9/21: "The processor role should have access to every merchant in the
+  // revenue playbook… They should be able to go into the revenue playbook and
+  // access any merchant."
+  const { isProcessor } = useIsProcessor();
 
   useEffect(() => {
     if (!open || deals.length) return;
     setLoading(true);
     getAllDeals({ deal_type: pipeline === "vcf" ? "vcf" : "mca" })
-      .then((d) => setDeals(d.filter((x) => !TERMINAL.includes(x.status) && x.status !== "funded" && x.status !== "restructure_executed")))
+      .then((d) => setDeals(isProcessor
+        ? d
+        : d.filter((x) => !TERMINAL.includes(x.status) && x.status !== "funded" && x.status !== "restructure_executed")))
       .catch(() => setDeals([]))
       .finally(() => setLoading(false));
-  }, [open, pipeline, deals.length]);
+  }, [open, pipeline, deals.length, isProcessor]);
+
+  // Re-fetch if the capability resolves after the list loaded — otherwise a
+  // processor who opened the picker fast keeps the narrowed list and has no way
+  // to tell that it is narrowed.
+  useEffect(() => { if (isProcessor) setDeals([]); }, [isProcessor]);
+
+  // Searching matters more than scrolling once the parked merchants are in:
+  // "access any merchant" means being able to FIND one, and the whole book is
+  // several hundred rows. Matches business name, contact name and deal number.
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const matched = needle
+      ? deals.filter((d) =>
+          `${d.customer?.business_name ?? ""} ${d.customer?.first_name ?? ""} ${d.customer?.last_name ?? ""} ${d.deal_number ?? ""}`
+            .toLowerCase().includes(needle))
+      : deals;
+    return { rows: matched.slice(0, 200), total: matched.length };
+  }, [deals, q]);
 
   // refetch when the pipeline changes
   useEffect(() => {
@@ -4775,18 +4809,52 @@ function ResumePicker({ pipeline, onPick }: { pipeline: "mca" | "vcf"; onPick: (
         onClick={() => setOpen((o) => !o)}
         className="w-full px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-200 flex items-center justify-between"
       >
-        <span>…or resume an in-progress {pipeline.toUpperCase()} lead</span>
+        <span>
+          {isProcessor
+            ? `…or open ANY ${pipeline.toUpperCase()} merchant`
+            : `…or resume an in-progress ${pipeline.toUpperCase()} lead`}
+        </span>
         <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} />
       </button>
       {open && (
         <div className="px-4 pb-4">
+          {/* The search IS the access. With parked merchants included this is the
+              whole book, and scrolling several hundred rows is not "being able to
+              open any merchant". */}
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search business, contact or deal number…"
+            className="mb-3 w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-400"
+          />
+          {isProcessor && (
+            <p className="mb-2 text-[11px] text-gray-500 dark:text-gray-400">
+              Processor access: this lists <b>every</b> {pipeline.toUpperCase()} merchant, including ones parked in
+              nurture, dead or already funded — not just in-progress work.
+            </p>
+          )}
           {loading ? (
             <p className="text-sm text-gray-400">Loading…</p>
           ) : deals.length === 0 ? (
-            <p className="text-sm text-gray-400">No in-progress {pipeline.toUpperCase()} leads right now.</p>
+            <p className="text-sm text-gray-400">
+              {isProcessor ? `No ${pipeline.toUpperCase()} merchants found.` : `No in-progress ${pipeline.toUpperCase()} leads right now.`}
+            </p>
+          ) : shown.rows.length === 0 ? (
+            <p className="text-sm text-gray-400">
+              Nothing matches “{q.trim()}” in {deals.length} {pipeline.toUpperCase()} merchant{deals.length === 1 ? "" : "s"}.
+            </p>
           ) : (
+            <>
+            {/* A truncated list must SAY it is truncated — a merchant missing from
+                a silently-capped list reads exactly like a merchant you cannot
+                reach, which is the complaint this change exists to answer. */}
+            {shown.total > shown.rows.length && (
+              <p className="mb-2 text-[11px] text-amber-700 dark:text-amber-400">
+                Showing the first {shown.rows.length} of {shown.total} matches — keep typing to narrow it.
+              </p>
+            )}
             <ul className="max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-              {deals.map((d) => {
+              {shown.rows.map((d) => {
                 const cfg = DEAL_STATUS_CONFIG[d.status];
                 return (
                   <li key={d.id}>
@@ -4801,6 +4869,7 @@ function ResumePicker({ pipeline, onPick }: { pipeline: "mca" | "vcf"; onPick: (
                 );
               })}
             </ul>
+            </>
           )}
         </div>
       )}
