@@ -175,7 +175,12 @@ export default function ProcessorPage() {
   const [counts, setCounts] = useState<CountsState>({ kind: "loading" });
   const [list, setList] = useState<ListState>({ kind: "idle" });
   const [pipe, setPipe] = useState<Pipe>("mca");
-  const [view, setView] = useState<"funnel" | "board" | "chase">("funnel");
+  // APPLICATION CHASE IS THE DEFAULT VIEW. Owner, 9/21: "Application Chase is
+  // buried in the UI... when it should be a main view for the processor... this
+  // is her job!" It was third in a row of small text buttons below the
+  // scoreboard and the bucket grid, so the page opened on a funnel overview
+  // instead of the queue she actually works.
+  const [view, setView] = useState<"funnel" | "board" | "chase">("chase");
   const [bucket, setBucket] = useState<BucketKey>("all");
   const [stage, setStage] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
@@ -474,7 +479,7 @@ export default function ProcessorPage() {
           Processor
         </h1>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
+          <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-sm shadow-sm">
             {(["mca", "vcf"] as Pipe[]).map((p) => (
               <button
                 key={p}
@@ -545,6 +550,49 @@ export default function ProcessorPage() {
         </p>
       </div>
 
+      {/* PRIMARY NAVIGATION, ABOVE EVERYTHING. The chase is the job, so the
+          switch to it comes before the scoreboard rather than after it and
+          the bucket grid (owner, 9/21: "buried in the UI"). */}
+      {/* View switch + "By stage" board */}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
+          {(
+            [
+              // FIRST, because it is the job. partial → unsigned → signed →
+              // statements → GO/NO-GO, each bucket naming what she has to chase.
+              { key: "chase", label: "📋 Application chase" },
+              { key: "funnel", label: "Interested → Ready" },
+              { key: "board", label: "Whole board (by stage)" },
+            ] as const
+          ).map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              onClick={() => {
+                setView(v.key);
+                setStage(null);
+              }}
+              className={`px-3 py-1.5 font-semibold ${
+                view === v.key
+                  ? "bg-ocean-blue text-white"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              }`}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+        {view === "board" && stage && (
+          <button
+            type="button"
+            onClick={() => setStage(null)}
+            className="text-[11px] font-semibold text-ocean-blue hover:underline"
+          >
+            Clear stage filter ×
+          </button>
+        )}
+      </div>
+
       {/* Processor scoreboard — what got DONE (today / 7d / 30d), per processor. */}
       <ProcessorScoreboard />
 
@@ -587,45 +635,6 @@ export default function ProcessorPage() {
         </div>
       )}
 
-      {/* View switch + "By stage" board */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
-          {(
-            [
-              { key: "funnel", label: "Interested → Ready" },
-              // The application chase — partial → unsigned → signed → statements
-              // → GO/NO-GO, each bucket naming what she has to chase.
-              { key: "chase", label: "Application chase" },
-              { key: "board", label: "Whole board (by stage)" },
-            ] as const
-          ).map((v) => (
-            <button
-              key={v.key}
-              type="button"
-              onClick={() => {
-                setView(v.key);
-                setStage(null);
-              }}
-              className={`px-3 py-1.5 font-semibold ${
-                view === v.key
-                  ? "bg-ocean-blue text-white"
-                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-              }`}
-            >
-              {v.label}
-            </button>
-          ))}
-        </div>
-        {view === "board" && stage && (
-          <button
-            type="button"
-            onClick={() => setStage(null)}
-            className="text-[11px] font-semibold text-ocean-blue hover:underline"
-          >
-            Clear stage filter ×
-          </button>
-        )}
-      </div>
 
       {/* Board view — the full all-stages histogram (owner still wants it). */}
       {view === "board" && (

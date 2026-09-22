@@ -1385,11 +1385,25 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     // vocabulary the per-setter cards use). Coloured by the industry 2–4%
     // app-per-conversation band, the honest comparison for this numerator.
     {
-      key: "partial_apps", label: "Partial apps", short: "Partial apps",
+      key: "partial_apps", label: "Apps taken on the call", short: "Apps on call",
       help:
-        "MERCHANTS dispositioned as an application actually taken: " +
+        "Applications ACTUALLY TAKEN on a call, counted per merchant per disposition: " +
         APPLICATION_DISPOSITIONS.join(" · ") +
-        ". A subset of Positives — Interested, Callback and Appointment Set never count here — and folded on the same merchant unit, so it can never climb above the rung it is a subset of." + scoredNote,
+        ". A subset of Positives — Interested, Callback and Appointment Set never count here. " +
+        // WHY THIS IS NOT A MERCHANT COUNT, and why the number can exceed the
+        // number of merchants. Owner, 9/21: "i don't understand why this says 3
+        // partial apps and this only shows 1 partial application". The 3 was
+        // right and BOTH labels were wrong: it was called "Partial apps" while
+        // counting all three application dispositions, and its help called the
+        // unit MERCHANTS while the code keys on `merchant|disposition`.
+        // Today: Gani Ahmetaj gave a Partial Application at 13:38 and a Full
+        // Application at 17:21, and Jonathan Kalinoski a Full at 16:25 — three
+        // application events across two merchants. Counting Gani once would
+        // erase a real second event (he upgraded), so the pair is the right
+        // unit; it just has to SAY so. It also makes the number checkable: this
+        // rung always equals the sum of the Full App + Statements, Full
+        // Application and Partial Application chips in Positive dispositions.
+        "A merchant who takes a partial and later a full counts TWICE — two real application events, one merchant — so this equals the sum of the three application chips in Positive dispositions below, and can exceed the number of merchants there." + scoredNote,
       count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.partialApps, f.conversations), targetKey: null,
       benchmark: { id: "app_per_conversation", basis: "step" },
@@ -4934,7 +4948,7 @@ export default function SetterPerformancePage() {
                       id="app_per_conversation"
                       value={industryValues.app_per_conversation ?? null}
                       label="Applications per conversation"
-                      basis={`${applicationDispositions.toLocaleString()} merchant${applicationDispositions === 1 ? "" : "s"} dispositioned ${APPLICATION_DISPOSITIONS.join(" / ")} ÷ ${funnel.conversations.toLocaleString()} conversations. Merchants, not calls — a merchant worked twice is one application here.`}
+                      basis={`${applicationDispositions.toLocaleString()} application${applicationDispositions === 1 ? "" : "s"} taken on a call (${APPLICATION_DISPOSITIONS.join(" / ")}) ÷ ${funnel.conversations.toLocaleString()} conversations. Counted per merchant PER DISPOSITION, not per call: a merchant called twice about the same thing is one, but a merchant who gives a partial and later a full is two real application events.`}
                       caveat={
                         applicationDispositions === 0 && funnel.conversations > 0
                           ? "No application disposition in range — an app taken and logged as something else scores zero here."
