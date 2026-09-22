@@ -29,6 +29,8 @@ interface OriginRow {
   conversations: number;
   long_calls: number;
   positive_merchants: number;
+  wavv_dials: number;
+  ghl_dials: number;
 }
 
 interface Props {
@@ -38,6 +40,10 @@ interface Props {
   setterId?: string | null;
   /** Shown above the table so a reader knows which window they're looking at. */
   rangeLabel?: string;
+  /** Render expanded with no collapse control — for the dedicated Attribution
+   *  tab, where the whole point of the page IS this table. The collapsed form is
+   *  for the Funnel tab, where it is context beside other numbers. */
+  alwaysOpen?: boolean;
 }
 
 const int = (n: number) => n.toLocaleString();
@@ -52,12 +58,18 @@ const LONG_HELP =
   'Calls of 120s or longer. A DURATION, not a conversation \u2014 a long voicemail counts here and not in ' +
   'Conversations. Shown beside it because a list with long calls and no dispositioned conversations is telling ' +
   'you something.';
+const WAVV_HELP =
+  'Dials placed through the WAVV dialer embedded in VibeReach \u2014 the power-dialing lane, mirrored here every 10 minutes.';
+const GHL_HELP =
+  'Click-to-calls placed through GHL / LeadConnector, usually from the Revenue Playbook. These carry NO disposition, ' +
+  'so they are deliberately excluded from the conversation and positive rates on this page rather than scored as zeros. ' +
+  'A large number here beside zero conversations is a reporting artifact, not a performance signal.';
 const POS_HELP =
   'Distinct MERCHANTS carrying a positive disposition. One merchant with two positive dispositions counts ONCE ' +
   'here \u2014 the unit of a positive is the merchant, not the call \u2014 which is why this can read lower than ' +
   'the per-disposition chips above.';
 
-export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Props) {
+export default function DialOriginsPanel({ from, to, setterId, rangeLabel, alwaysOpen }: Props) {
   const [rows, setRows] = useState<OriginRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,7 +105,8 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
   // ask occasionally, not a number you watch all day, and it was pushing the
   // funnel totals below the fold. The headline still rides on the closed header
   // so the one fact worth seeing every time is visible without expanding.
-  const [open, setOpen] = useState(false);
+  const [openState, setOpen] = useState(false);
+  const open = alwaysOpen || openState;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
@@ -157,6 +170,8 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
                   <th className="py-2 pr-3 font-semibold">Origin</th>
                   <th className="py-2 px-2 text-right font-semibold">Dials</th>
                   <th className="py-2 px-2 text-right font-semibold">Merchants</th>
+                  <th className="py-2 px-2 text-right font-semibold" title={WAVV_HELP}>WAVV</th>
+                  <th className="py-2 px-2 text-right font-semibold" title={GHL_HELP}>GHL click</th>
                   <th className="py-2 px-2 text-right font-semibold" title={CONV_HELP}>Conversations</th>
                   <th className="py-2 px-2 text-right font-semibold" title={LONG_HELP}>120s+</th>
                   <th className="py-2 pl-2 text-right font-semibold" title={POS_HELP}>Positive merchants</th>
@@ -180,6 +195,8 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
                     </td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-700 dark:text-gray-200">{int(r.dials)}</td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{int(r.unique_contacts)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-gray-700 dark:text-gray-200">{int(r.wavv_dials)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{r.ghl_dials > 0 ? int(r.ghl_dials) : "—"}</td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-700 dark:text-gray-200">{int(r.conversations)}</td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{int(r.long_calls)}</td>
                     <td className={`py-2 pl-2 text-right tabular-nums font-semibold ${

@@ -88,6 +88,7 @@ import {
   PlayIcon,
   DocumentTextIcon,
   FunnelIcon,
+  MapPinIcon,
   ShieldCheckIcon,
   ChartBarIcon,
   ArrowTrendingUpIcon,
@@ -1945,9 +1946,17 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations" | "audit";
+type TabId = "funnel" | "attribution" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations" | "audit";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean; superOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
+  // WHERE THE WORK CAME FROM. Sits immediately right of Funnel because it
+  // answers the question the funnel raises and cannot answer itself: these
+  // 1,130 dials came from WHERE, and which of those origins actually converts.
+  // Two dimensions on one table — lead ORIGIN (UCC / Aged / Synergy live
+  // transfer / real-time / self-sourced) and the DIALER that placed the call
+  // (WAVV vs a GHL click-to-call), which the owner named together and which are
+  // different questions.
+  { id: "attribution",    label: "Attribution",    icon: MapPinIcon },
   // Right of Funnel (owner-specified): the setter's single-merchant working
   // surface — opens ONE merchant into the ops console (deep-linked from a contact
   // link, or searched by business / name / phone / email). Renders outside the
@@ -6170,6 +6179,46 @@ export default function SetterPerformancePage() {
           )}
 
           {/* ═══════════════ SETTERS ═══════════════ */}
+          {/* ═══════════════ ATTRIBUTION ═══════════════ */}
+          {tab === "attribution" && (
+            <div className="space-y-5">
+              {/* Deliberately NOT inside the emptyRange gate. Origin is read from
+                  deals and the Lead Machine as well as the dial mirror, so a range
+                  with no mirrored dials can still be a real question — and "no
+                  dials" must not blank the panel that would explain why. */}
+              <DialOriginsPanel
+                from={range.from}
+                to={range.to}
+                rangeLabel={rangeLabelText}
+                alwaysOpen
+              />
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 sm:p-5 text-xs text-gray-600 dark:text-gray-300 space-y-2">
+                <p className="font-semibold text-gray-900 dark:text-white">How a dial gets attributed</p>
+                <p>
+                  Two rungs, strongest first. If the dialled contact has a <b>deal</b>, its lead source is the
+                  answer. Otherwise we look the contact up in the <b>Lead Machine</b> and use the batch it was
+                  pushed from. If neither knows it, the row says <b>unattributed</b> — never folded into a
+                  named origin to make the table look complete.
+                </p>
+                <p>
+                  <b>One exception, and it matters.</b> <code>ghl_other</code> is what VibeReach stamps when it
+                  does not know a source, so it is skipped and the Lead Machine is asked instead. 57 of 58
+                  such deals turn out to be list leads. Without that skip, a cold lead that CONVERTED reported
+                  its origin as “created in VibeReach” — because converting is what creates the deal that then
+                  says <code>ghl_other</code>, so the bug hid exactly the leads worth crediting.
+                </p>
+                <p>
+                  <b>Origin and dialer are different questions.</b> UCC / Aged / Synergy live transfer /
+                  real-time / PH-sourced is where the LEAD came from. <b>WAVV</b> and <b>GHL click</b> are which
+                  dialer placed the call. A GHL click-to-call carries no disposition, so those dials are
+                  excluded from the conversation and positive rates across this page rather than scored as
+                  zeros.
+                </p>
+              </div>
+            </div>
+          )}
+
+
           {tab === "setters" && (
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
               <div className="space-y-4">
