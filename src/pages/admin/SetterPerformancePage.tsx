@@ -3024,9 +3024,14 @@ export default function SetterPerformancePage() {
   // The 180s dedupe rule is NOT what this is: that stops ONE physical call being
   // counted twice from two sources. These are separate calls, deliberately kept.
   interface PositiveRow {
-    /** merchant|disposition — the same key the funnel counts. */
+    /** THE MERCHANT. One row each, whatever they were dispositioned. */
     key: string;
+    /** The LATEST disposition — what this merchant most recently became. */
     disposition: string;
+    /** Every distinct disposition this merchant carried in range, oldest first.
+     *  Length > 1 means they PROGRESSED (partial at 1:38, full at 5:21) and the
+     *  row shows the journey rather than appearing twice. */
+    dispositions: string[];
     /** Every call in the fold, oldest first. Length 1 on most rows. */
     calls: SetterCall[];
     /** The call this row renders: the latest one. */
@@ -3050,7 +3055,19 @@ export default function SetterPerformancePage() {
       // row would group under "null" and the list would disagree with the number
       // above it — the precise class of silent disagreement this page keeps
       // paying for.
-      const key = `${merchantKey(r)}|${dispositionOf(r)}`;
+      // ONE ROW PER MERCHANT. Owner, 9/22: "I don't like that red wing cafe is
+      // in here twice" — Gani Ahmetaj took a Partial Application at 1:38 PM and
+      // a Full Application at 5:21 PM, so a merchant|disposition key printed the
+      // same business on two rows. Both facts are real and neither is dropped:
+      // the row now carries the LATEST disposition, names the progression beside
+      // it, and the existing call expander still lists every call with its own
+      // time, length and disposition.
+      //
+      // The funnel's "Apps taken on the call" rung still counts merchant ×
+      // disposition, because a partial upgraded to a full IS two application
+      // events. So that rung can read higher than the number of rows here, and
+      // its help says so. Two questions, two units, both stated.
+      const key = merchantKey(r);
       const list = groups.get(key);
       if (list) list.push(r);
       else groups.set(key, [r]);
@@ -3064,9 +3081,15 @@ export default function SetterPerformancePage() {
         if (c.seconds === null) continue;
         if (!longest || c.seconds > (longest.seconds ?? -1)) longest = c;
       }
+      const seen: string[] = [];
+      for (const c of calls) {
+        const d = dispositionOf(c);
+        if (d && !seen.includes(d)) seen.push(d);
+      }
       rows.push({
         key,
         disposition: dispositionOf(lead)!,
+        dispositions: seen,
         calls,
         lead,
         longerThanLead:
@@ -5184,7 +5207,7 @@ export default function SetterPerformancePage() {
                                           onClick={() => togglePositiveRow(row.key)}
                                           aria-expanded={open}
                                           className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:border-mint-green/50 hover:text-mint-green"
-                                          title={`This merchant was dispositioned "${row.disposition}" on ${row.calls.length} separate calls in this range. They count as ONE positive — the unit is the merchant, not the call — and this row is the latest of them. Click to see every call with its own time and length; nothing was thrown away.`}
+                                          title={`${row.calls.length} calls to this merchant in this range${row.dispositions.length > 1 ? ` (dispositioned ${row.dispositions.join(" → ")})` : ` — all dispositioned "${row.disposition}"`}. They are ONE row because the unit is the merchant, not the call, and this row shows the latest. Click to see every call with its own time, length and disposition; nothing was thrown away.`}
                                         >
                                           {open ? "▾" : "▸"} {row.calls.length} calls
                                         </button>
@@ -5239,6 +5262,20 @@ export default function SetterPerformancePage() {
                                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
                                       {row.disposition}
                                     </span>
+                                    {/* THE PROGRESSION, NOT A SECOND ROW. A merchant
+                                        who gave a partial and later a full used to
+                                        appear twice. They appear once now, and this
+                                        says what they were before — so folding the
+                                        row costs the reader nothing. Earlier values
+                                        only; the chip above is the current one. */}
+                                    {row.dispositions.length > 1 && (
+                                      <span
+                                        className="ml-1.5 text-[11px] text-gray-500 dark:text-gray-400"
+                                        title={`This merchant moved through ${row.dispositions.join(" → ")} in this range. The chip shows where they ended up; the call expander lists each call with its own disposition. The funnel's "Apps taken on the call" counts each of these as a separate application event, which is why that number can exceed the rows here.`}
+                                      >
+                                        was {row.dispositions.slice(0, -1).join(" · ")} →
+                                      </span>
+                                    )}
                                     <DerivedMark call={r} />
                                   </td>
                                   <td className={`${TD} text-right whitespace-nowrap`}>
@@ -5283,8 +5320,10 @@ export default function SetterPerformancePage() {
                                     <td colSpan={10} className="px-3 py-2">
                                       <div className="text-[11px] text-gray-500 dark:text-gray-400">
                                         <b className="text-gray-700 dark:text-gray-200">
-                                          {row.calls.length} calls to {r.contact_name?.trim() || "this merchant"},
-                                          all dispositioned “{row.disposition}”
+                                          {row.calls.length} calls to {r.contact_name?.trim() || "this merchant"}
+                                          {row.dispositions.length > 1
+                                            ? <> — dispositioned “{row.dispositions.join("” → “")}”</>
+                                            : <> — all dispositioned “{row.disposition}”</>}
                                         </b>{" "}
                                         — counted as <b>one</b> positive, because the merchant is the unit. Every
                                         call is here:
@@ -5333,9 +5372,12 @@ export default function SetterPerformancePage() {
                           {positiveRows.length === 1 ? "" : "s"} carried a positive disposition in this range, newest
                           first inside each type. <b>Open →</b> takes you straight into that merchant's Revenue
                           Playbook. Times are US Eastern; hover a time for your own clock.
-                          {" "}One row per <b>merchant per disposition</b>, not per call: a merchant called back
+                          {" "}One row per <b>merchant</b>, not per call and not per disposition: a merchant called back
                           twice is <b>one</b> callback, because a setter who works one merchant four times has not
-                          produced four opportunities.
+                          produced four opportunities. A merchant who <b>progressed</b> — a partial application in
+                          the afternoon, a full one that evening — is also one row, showing where they ended up with
+                          the earlier value beside it. The chips above still count each disposition, so they can
+                          total more than the rows.
                           {positiveCallsFolded > 0 ? (
                             <>
                               {" "}
