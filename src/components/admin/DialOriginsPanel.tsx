@@ -27,6 +27,7 @@ interface OriginRow {
   unique_contacts: number;
   dispositioned: number;
   conversations: number;
+  long_calls: number;
   positive_merchants: number;
 }
 
@@ -40,6 +41,21 @@ interface Props {
 }
 
 const int = (n: number) => n.toLocaleString();
+
+// Column help, kept out of the JSX so the copy can contain quotes and dashes
+// without fighting attribute escaping.
+const CONV_HELP =
+  'Dispositioned as a real conversation \u2014 the SAME rule as the funnel KPI above, so this column sums to it. ' +
+  'Voicemails are excluded whatever their length, and so is WAVV\u2019s literal "None": the basis of the rule is ' +
+  'that a human chose a value after speaking to someone.';
+const LONG_HELP =
+  'Calls of 120s or longer. A DURATION, not a conversation \u2014 a long voicemail counts here and not in ' +
+  'Conversations. Shown beside it because a list with long calls and no dispositioned conversations is telling ' +
+  'you something.';
+const POS_HELP =
+  'Distinct MERCHANTS carrying a positive disposition. One merchant with two positive dispositions counts ONCE ' +
+  'here \u2014 the unit of a positive is the merchant, not the call \u2014 which is why this can read lower than ' +
+  'the per-disposition chips above.';
 
 export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Props) {
   const [rows, setRows] = useState<OriginRow[] | null>(null);
@@ -73,14 +89,35 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
   const coldPositives = (rows ?? []).filter((r) => r.is_cold_outbound).reduce((a, r) => a + r.positive_merchants, 0);
   const coldPct = totalDials > 0 ? Math.round((coldDials / totalDials) * 100) : 0;
 
+  // COLLAPSED BY DEFAULT (owner, 2026-09-21). This is context for a question you
+  // ask occasionally, not a number you watch all day, and it was pushing the
+  // funnel totals below the fold. The headline still rides on the closed header
+  // so the one fact worth seeing every time is visible without expanding.
+  const [open, setOpen] = useState(false);
+
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 sm:p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
-        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-          📍 Where the dials came from
-        </h2>
-        {rangeLabel && <span className="text-xs text-gray-400">{rangeLabel}</span>}
-      </div>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex flex-wrap items-center gap-2 px-4 sm:px-5 py-3 text-left"
+      >
+        <span className={`text-gray-400 text-xs transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+        <h2 className="font-semibold text-gray-900 dark:text-white">📍 Where the dials came from</h2>
+        {/* The one line worth seeing without opening it. */}
+        {!loading && !error && rows && rows.length > 0 && coldDials > 0 && (
+          <span className={`text-xs ${coldPositives === 0 ? "text-amber-700 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>
+            {coldPct}% cold · {int(coldPositives)} positive{coldPositives === 1 ? "" : "s"} from it
+          </span>
+        )}
+        {error && <span className="text-xs text-amber-700 dark:text-amber-400">couldn’t read origins</span>}
+        <span className="ml-auto flex items-center gap-2">
+          {rangeLabel && <span className="text-xs text-gray-400">{rangeLabel}</span>}
+          <span className="text-xs text-gray-400">{open ? "hide" : "show"}</span>
+        </span>
+      </button>
+      {open && (
+      <div className="px-4 sm:px-5 pb-4 sm:pb-5">
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
         Every dial traced to its origin: a <b>deal</b> on the contact gives the lead source, otherwise the
         Lead Machine batch it was pushed from. Anything we cannot trace is listed as{" "}
@@ -120,8 +157,9 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
                   <th className="py-2 pr-3 font-semibold">Origin</th>
                   <th className="py-2 px-2 text-right font-semibold">Dials</th>
                   <th className="py-2 px-2 text-right font-semibold">Merchants</th>
-                  <th className="py-2 px-2 text-right font-semibold">Conversations</th>
-                  <th className="py-2 pl-2 text-right font-semibold">Positives</th>
+                  <th className="py-2 px-2 text-right font-semibold" title={CONV_HELP}>Conversations</th>
+                  <th className="py-2 px-2 text-right font-semibold" title={LONG_HELP}>120s+</th>
+                  <th className="py-2 pl-2 text-right font-semibold" title={POS_HELP}>Positive merchants</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,6 +181,7 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
                     <td className="py-2 px-2 text-right tabular-nums text-gray-700 dark:text-gray-200">{int(r.dials)}</td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{int(r.unique_contacts)}</td>
                     <td className="py-2 px-2 text-right tabular-nums text-gray-700 dark:text-gray-200">{int(r.conversations)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums text-gray-500 dark:text-gray-400">{int(r.long_calls)}</td>
                     <td className={`py-2 pl-2 text-right tabular-nums font-semibold ${
                       r.positive_merchants > 0 ? "text-mint-green" : "text-gray-400"
                     }`}>
@@ -158,7 +197,19 @@ export default function DialOriginsPanel({ from, to, setterId, rangeLabel }: Pro
             you call five times counts once. Cold rows are lists nobody asked us to call; the rest arrived
             from a vendor, a form, or work already in the pipeline.
           </p>
+          {/* The two Synergy products are easy to confuse and cost different
+              money, so the difference is stated here rather than assumed. Taken
+              from live-transfer-intake's own alert copy, not from inference. */}
+          <p className="mt-1.5 text-[11px] text-gray-400">
+            The two Synergy rows are one vendor, two products:{" "}
+            <b>live transfer</b> means the merchant is already on the phone — the email is the record of a
+            call in progress, and there is no clock.{" "}
+            <b>Real-time lead</b> means they have just finished with Synergy and expect a call{" "}
+            <b>within 5 minutes</b> — nothing is booked, so the 5-minute SLA is the whole product.
+          </p>
         </>
+      )}
+      </div>
       )}
     </div>
   );

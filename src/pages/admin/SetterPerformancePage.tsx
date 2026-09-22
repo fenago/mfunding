@@ -77,6 +77,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
+import useDialOrigins, { originBadgeClass } from "@/hooks/useDialOrigins";
 import {
   PhoneIcon,
   ArrowPathIcon,
@@ -3453,6 +3454,17 @@ export default function SetterPerformancePage() {
       .sort((a, b) => (b.application_sent_at ?? "").localeCompare(a.application_sent_at ?? ""));
   }, [productiveDeals, range]);
 
+  // ── WHERE EACH ROW'S LEAD CAME FROM ───────────────────────────────────────
+  // Owner, 9/21: "i need some kind of badge or something to know what is
+  // real-time, live transfer or setter wavv call". A positive disposition means
+  // a different thing per origin, and both tables below were silent about it.
+  // ONE RPC for every contact on screen, across both tables, so the badge costs
+  // one round trip rather than one per row.
+  const { origins } = useDialOrigins(useMemo(() => [
+    ...positiveRows.map((row) => row.lead.contact_id),
+    ...(applicationRows ?? []).map((d) => d.ghl_contact_id ?? null),
+  ], [positiveRows, applicationRows]));
+
   // ── SIGNED COMES BEFORE STATEMENTS ────────────────────────────────────────
   // Owner, 9/18: "we keep talking about full application, partial application,
   // and then we start looking at bank statements. Somewhere in here, we need to
@@ -5120,6 +5132,24 @@ export default function SetterPerformancePage() {
                                   <td className={TD}>
                                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                       <Text value={r.contact_name} />
+                                      {/* WHERE THIS LEAD CAME FROM. A callback off a live transfer and a
+                                          callback off a cold UCC dial are not the same event, and the table
+                                          had no way to say which (owner, 9/21). NO BADGE AT ALL when the
+                                          lookup failed — an absent badge means "not established" and must
+                                          never be dressed up as a known origin; the RPC's own
+                                          "Origin unknown" is the different case where we asked and could
+                                          not trace it. */}
+                                      {(() => {
+                                        const o = origins.get(r.contact_id ?? "");
+                                        return o ? (
+                                          <span
+                                            className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${originBadgeClass(o)}`}
+                                            title={`Lead origin: ${o.short_label}. Traced from a deal on this contact, or the Lead Machine batch it was pushed from.`}
+                                          >
+                                            {o.short_label}
+                                          </span>
+                                        ) : null;
+                                      })()}
                                       {/* The fold, said out loud and openable.
                                           Quiet styling: this is context, not an
                                           alarm — but it must never be possible
@@ -5649,6 +5679,21 @@ export default function SetterPerformancePage() {
                                           so it takes a second line instead. */}
                                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                         <Text value={person} />
+                                        {/* Same origin badge as Positive dispositions — an application sent
+                                            off a live transfer is a different fact from one sent off a cold
+                                            list, and this is the column where that shows. Absent badge =
+                                            lookup failed, never styled as a known origin. */}
+                                        {(() => {
+                                          const o = origins.get(d.ghl_contact_id ?? "");
+                                          return o ? (
+                                            <span
+                                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${originBadgeClass(o)}`}
+                                              title={`Lead origin: ${o.short_label}. Traced from a deal on this contact, or the Lead Machine batch it was pushed from.`}
+                                            >
+                                              {o.short_label}
+                                            </span>
+                                          ) : null;
+                                        })()}
                                         {alsoDispositioned && (
                                           <button
                                             type="button"
