@@ -26,6 +26,7 @@ import GateTracker from "@/components/admin/processor/GateTracker";
 import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
 import ApplicationChaseTab from "@/components/admin/processor/ApplicationChaseTab";
+import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
@@ -47,6 +48,14 @@ import {
 } from "@/components/admin/processor/types";
 
 const LIST_CAP = 500;
+
+// Fixed 30-day window for the dial-origins panel. MODULE-LEVEL AND STABLE on
+// purpose: DialOriginsPanel keys its fetch on the Date identities, so building
+// these inside the component would hand it new objects every render and spin the
+// RPC forever. Computed once at page load, which is the right granularity for a
+// 30-day window anyway.
+const ORIGINS_TO = new Date();
+const ORIGINS_FROM = new Date(ORIGINS_TO.getTime() - 30 * 24 * 60 * 60 * 1000);
 
 type ListState =
   | { kind: "idle" }
@@ -639,6 +648,17 @@ export default function ProcessorPage() {
             onRetry={() => void loadCounts()}
           />
         </div>
+      )}
+
+      {/* WHERE THE WORK CAME FROM (last 30 days, whole floor).
+          A processor is deciding what to chase, and origin is the strongest
+          prior available: over the 30 days to 2026-09-21, cold-list dials were
+          97% of all dialling and produced ZERO positive dispositions, while
+          live transfers, real-time appointments and existing pipeline produced
+          every one. Fixed window on purpose — this page has no date picker, and
+          a silently-scoped number is worse than an explicitly-scoped one. */}
+      {view !== "chase" && (
+        <DialOriginsPanel from={ORIGINS_FROM} to={ORIGINS_TO} rangeLabel="last 30 days · whole floor" />
       )}
 
       {/* 3a. THE APPLICATION CHASE — its own tab, its own queue RPC. */}

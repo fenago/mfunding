@@ -76,6 +76,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import {
   PhoneIcon,
   ArrowPathIcon,
@@ -4720,6 +4721,11 @@ export default function SetterPerformancePage() {
             <div className="space-y-5">
             {emptyRange ? <EmptyRange total={totalRowsEver} /> : (
               <>
+                {/* WHERE THE WORK CAME FROM, above the totals it explains. The
+                    floor's dial count and the floor's positives are two numbers
+                    nobody had a reason to put side by side; this is the row that
+                    says which origins turn one into the other. */}
+                <DialOriginsPanel from={range.from} to={range.to} rangeLabel={rangeLabelText} />
                 {/* Floor totals */}
                 <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                   {[
