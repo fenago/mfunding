@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon, StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
-import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, fetchSendEvidence, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
+import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, fetchSendEvidence, fetchDialOrigins, originKeyToLeadSource, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useDealPins } from "../../hooks/useDealPins";
 import useIsProcessor from "../../hooks/useIsProcessor";
@@ -820,7 +820,12 @@ function QueueCard({
   /** profiles.id → display name, resolved from staff_directory. */
   closerNames: Record<string, string>;
 }) {
-  const src = sourceMeta(deal.lead_source);
+  // TRACED ORIGIN WINS OVER THE COLUMN, because `ghl_other` is not an origin.
+  // Owner, 9/21: "so why isn't this attributed to UCC in the Rev Playbook" —
+  // J&T Wood Grinding's card said "GHL" while the deal is a UCC cold lead from
+  // batch UCC-20260813. Undefined means we did not look it up, which is not the
+  // same as ghl_other, so we fall back to the column and today's behaviour.
+  const src = sourceMeta(deal.traced_origin || deal.lead_source);
   const amount = amountOf(deal);
   const sla = slaMs(u.rank);
   const overdue = sla !== null && now - Date.parse(u.since) > sla;
@@ -1290,6 +1295,24 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
             if (ev.size === 0) return; // asked and got nothing → leave undefined
             setDeals((prev) =>
               prev.map((x) => (ev.has(x.id) ? { ...x, send_evidence: ev.get(x.id) } : x)),
+            );
+          });
+        }
+        // WHERE EACH CARD'S LEAD ACTUALLY CAME FROM. Only asked for deals whose
+        // own column cannot answer (ghl_other / null) — every other deal already
+        // carries a real lead_source and the column is the better authority.
+        const needOrigin = d.filter(
+          (x) => (!x.lead_source || x.lead_source === "ghl_other") && x.ghl_contact_id,
+        );
+        if (needOrigin.length > 0) {
+          void fetchDialOrigins(needOrigin.map((x) => x.ghl_contact_id!)).then((m) => {
+            if (m.size === 0) return; // asked and got nothing -> leave undefined
+            setDeals((prev) =>
+              prev.map((x) =>
+                x.ghl_contact_id && m.has(x.ghl_contact_id)
+                  ? { ...x, traced_origin: originKeyToLeadSource(m.get(x.ghl_contact_id)!) }
+                  : x,
+              ),
             );
           });
         }

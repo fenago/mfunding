@@ -127,6 +127,19 @@ export interface QueueDeal extends DealWithCustomer {
    * the lookup failed, which is the bug this field exists to prevent.
    */
   send_evidence?: string | null;
+  /**
+   * The TRACED lead origin, as a `deals.lead_source`-compatible key, from
+   * `_origin_key_for_contact()`. Set only where it is BETTER than the column:
+   * `deals.lead_source = 'ghl_other'` means "the CRM does not know", and 57 of 58
+   * such deals are in the Lead Machine with a real batch behind them. J&T Wood
+   * Grinding (MF-2026-0402) is a UCC cold lead from batch UCC-20260813 whose card
+   * said "GHL" because the chip read the column instead of the ladder.
+   *
+   * Undefined = not looked up, which is NOT the same as ghl_other. Callers fall
+   * back to `lead_source` so a failed lookup shows today's behaviour, never a
+   * blank or a guess.
+   */
+  traced_origin?: string | null;
 }
 
 /**
@@ -137,6 +150,38 @@ export interface QueueDeal extends DealWithCustomer {
  * manufacture `never_sent` out of its own failure, because downstream that becomes
  * an instruction to a setter about a merchant.
  */
+/** RPC origin key -> deals.lead_source key, so sourceMeta()/SOURCE_MAP stays the
+ *  single owner of every label and tone. `list:ucc` and `ucc_list` are the same
+ *  lead in two life stages and must read identically on a card. */
+export function originKeyToLeadSource(origin: string): string {
+  if (origin === "list:ucc") return "ucc_list";
+  if (origin === "list:aged") return "aged_list";
+  if (origin === "list:unknown") return "web_purchased";
+  if (origin === "unattributed") return "";
+  return origin;
+}
+
+/**
+ * contact id -> traced origin key, for surfaces that show a source chip.
+ * Best-effort: a failed read returns an EMPTY map so callers leave
+ * `traced_origin` undefined and fall back to the column, rather than rendering
+ * a blank chip or inventing an origin.
+ */
+export async function fetchDialOrigins(contactIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const ids = [...new Set(contactIds.filter(Boolean))];
+  if (ids.length === 0) return out;
+  const { data, error } = await supabase.rpc("dial_origin_for_contacts", { p_contact_ids: ids });
+  if (error) {
+    console.error("Error fetching dial origins:", error);
+    return out;
+  }
+  for (const r of (data as { contact_id: string; origin: string }[] | null) ?? []) {
+    if (r.origin) out.set(r.contact_id, r.origin);
+  }
+  return out;
+}
+
 export async function fetchSendEvidence(dealIds: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (dealIds.length === 0) return out;
