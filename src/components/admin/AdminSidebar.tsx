@@ -53,13 +53,11 @@ import {
   UserCircleIcon,
   LifebuoyIcon,
   ClockIcon,
-  DevicePhoneMobileIcon,
   QueueListIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
 import useIsProcessor from "../../hooks/useIsProcessor";
-import { useUnreadSms } from "../../hooks/useUnreadSms";
 import useSignedAppsBadge from "../../hooks/useSignedAppsBadge";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
@@ -124,7 +122,6 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/data-hygiene", // Data Hygiene (roles: ADMIN) — smart lists + skip-trace/enrich/validate; pure closers excluded via roles
   "/admin/setter-performance", // Setter Performance (roles: ADMIN) — WAVV per-rep scorecard; pure closers excluded via roles
-  "/admin/text-messages", // 💬 Text Messages — the shared SMS line's two-way inbox, every staff role
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — the lists→WAVV one-pager, every staff role
   "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
@@ -142,10 +139,19 @@ const navGroups: NavGroup[] = [
     title: "Daily",
     items: [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
-      // Shared company SMS line (two-way). OPS + closer lens — a setter working a
-      // merchant in the Playbook reaches for the text line next. The ops half
-      // lives under System → Text Message Administration.
-      { name: "Text Messages", path: "/admin/text-messages", icon: DevicePhoneMobileIcon, roles: OPS },
+      // ── TEXT MESSAGES: REMOVED FROM THE MENU (owner, 2026-09-22) ──────────
+      // "Please remove text messaging from the menu. I don't want to show it for
+      // anybody." Both the inbox and the System → Text Message Administration
+      // entry are gone from navigation.
+      //
+      // HIDDEN, NOT DELETED. The routes, the pages, `sms-send`, the JMP/XMPP
+      // bridge and every sms_* table are untouched, so /admin/text-messages
+      // still loads for anyone who types it and nothing already sent is lost.
+      // Restoring the menu is re-adding these two lines.
+      //
+      // Context, not the reason: the company SMS line has been policy-blocked by
+      // JMP since 2026-09-03 (190 of 190 outbound refused), so the inbox was
+      // offering staff a send path that cannot deliver.
       // Data Hygiene — smart lists + skip-trace / enrich / phone validation before
       // a book hits the floor. ADMIN (managers); also visible through the lens.
       { name: "Data Hygiene", path: "/admin/data-hygiene", icon: CircleStackIcon, roles: ADMIN },
@@ -261,8 +267,9 @@ const navGroups: NavGroup[] = [
       { name: "Users", path: "/admin/users", icon: UsersIcon, roles: SUPER },
       { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
       { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },
-      // Text Message Administration — bridge health / message log / opt-out audit.
-      { name: "Text Message Administration", path: "/admin/text-messages/admin", icon: DevicePhoneMobileIcon, roles: SUPER },
+      // Text Message Administration (bridge health / message log / opt-out audit)
+      // — removed from the menu with the inbox above, per "not for anybody".
+      // Still reachable at /admin/text-messages/admin.
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
       { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
@@ -320,7 +327,8 @@ export default function AdminSidebar() {
   // Processor capability — gates the "Processor" nav item (processor OR super_admin).
   const { isProcessor } = useIsProcessor();
   // Org-wide unread count for the shared SMS line → badge on "Text Messages".
-  const unreadSms = useUnreadSms();
+  // useUnreadSms() removed with the Text Messages menu entry — the badge it
+  // fed no longer renders anywhere, so polling for it was pure cost.
   // Merchants who SIGNED their application and still owe bank statements →
   // badge on "Processor", the screen where that chase actually happens.
   // Read only for the people who can see the Processor item at all (same gate as
@@ -360,14 +368,6 @@ export default function AdminSidebar() {
    * loaded yet (no value, no error) shows nothing rather than flashing.
    */
   const badgeFor = (path: string): { text: string; title: string; tone: string } | null => {
-    if (path === "/admin/text-messages") {
-      if (unreadSms <= 0) return null;
-      return {
-        text: unreadSms > 99 ? "99+" : String(unreadSms),
-        title: `${unreadSms} unread text${unreadSms === 1 ? "" : "s"}`,
-        tone: "bg-red-500",
-      };
-    }
     if (path === "/admin/processor") {
       if (signedApps.count === null) {
         if (!signedApps.error) return null; // still loading — say nothing
@@ -423,10 +423,7 @@ export default function AdminSidebar() {
       item.path !== "/admin/call-script" &&
       item.path !== "/admin/cheat-sheet" &&
       item.path !== "/admin/calendar" &&
-      item.path !== "/admin/setter-performance" &&
-      // Text Messages: the shared line is how merchants text back. A setter who
-      // can't see the reply can't work it, so it's on the setter's short list.
-      item.path !== "/admin/text-messages"
+      item.path !== "/admin/setter-performance"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.
