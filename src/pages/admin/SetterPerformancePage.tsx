@@ -774,11 +774,27 @@ const POSITIVE_DISPOSITIONS = [
   // string stays so historical rows keep counting. (The GHL tag is still
   // wavv-interested — tag-based stage sync is unaffected by the rename.)
   "Full App + Statements", "Full Application", "Partial Application", "Appointment Set", "Interested", "Callback",
-  // DERIVED ONLY (20260918d). WAVV has never written this string, so a row
-  // carrying it is derived by construction — a second guarantee on top of
-  // disposition_source. Deliberately NOT on APPLICATION_DISPOSITIONS below: the
-  // evidence says an application went OUT, not that a complete one came back,
-  // and the Applications rung already counts that send from application_sent_at.
+  // ── "DERIVED ONLY" EXPIRED 2026-09-25 12:53 ET. READ disposition_source. ──
+  // This line used to say WAVV had never written the string, so a row carrying
+  // it was "derived by construction" — a second guarantee on top of
+  // disposition_source. That guarantee is GONE: Catherine Zaragosa typed
+  // "Application Sent" by hand on a 95-second answered call to William Banker
+  // (wavv_call_id 01a0d97c…, disposition_source 'typed'). WAVV exposes the value
+  // in its picker, so nothing stops the next setter choosing it either. Exactly
+  // one typed row so far; 2 derived rows all-time.
+  //
+  // CONSEQUENCE: provenance on this string comes from disposition_source and
+  // from NOWHERE else. isDerived() already reads that column everywhere, so the
+  // typed row correctly counts as a Positive and as a Conversation today — but
+  // never write a new test that infers "derived" from the string itself.
+  //
+  // It is now ON APPLICATION_DISPOSITIONS below, which it was not before. It was
+  // excluded because the evidence said an application went OUT rather than that
+  // a complete one came back — reasoning written when only a machine could
+  // produce this value. A setter TYPING it is a claim that they took the
+  // application on that call, which is exactly what the "Apps taken on the call"
+  // rung measures, so the exclusion outlived its reason. Derived rows are still
+  // gated out of `appKeys` upstream, so only the typed one counts.
   "Application Sent",
 ];
 
@@ -789,8 +805,24 @@ const POSITIVE_DISPOSITIONS = [
  *  "Appointment Set" are wins, but none of them is an application, and counting
  *  them against a band that means applications would flatter the comparison by
  *  a multiple. "Partial Application" IS an application (a partial went out).
- *  Same string discipline as the list above — exact WAVV values. */
-const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application", "Partial Application"];
+ *  Same string discipline as the list above — exact WAVV values.
+ *
+ *  ── "Application Sent" JOINED THIS LIST 2026-09-27, AND A NUMBER MOVED ─────
+ *  It was excluded on the ground that only the derivation could produce it, so
+ *  it meant "an application went out" rather than "an application was taken on
+ *  the call". A setter typed it by hand on 9/25 (see POSITIVE_DISPOSITIONS),
+ *  which is a claim to have taken the application on that call — the thing this
+ *  list exists to count. Keeping a known-dead exclusion in place to hold a
+ *  number steady is the trade this page keeps paying for, so the exclusion went
+ *  and the move is stated out loud instead: 2026-09-25 rung 1 → 2, last 30 days
+ *  26 → 27. Nothing else in 90 days changes — exactly one typed row exists.
+ *
+ *  DERIVED "Application Sent" IS STILL NOT COUNTED HERE. computeFunnel gates
+ *  `isDerived(r)` out before it ever reaches `appKeys`, and the chips count
+ *  `typedDispositions`, so the 2 derived rows stay beside the numbers rather
+ *  than inside them. Counting evidence instead of typing is a bigger decision
+ *  and is deliberately not being made as a side effect of this one. */
+const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application", "Partial Application", "Application Sent"];
 
 // ── What counts as a real conversation ───────────────────────────────────────
 // NOT duration, and NOT WAVV's `human` flag. Both are unreliable here and the
@@ -810,7 +842,9 @@ const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application", "
 const CONVERSATION_DISPOSITIONS = [
   "Full App + Statements", "Full Application", "Interested", "Not Interested",
   "Appointment Set", "Callback", "Do Not Contact",
-  // Derived, never typed — see POSITIVE_DISPOSITIONS.
+  // Usually derived, but NOT "never typed" any more — a setter typed it once on
+  // 2026-09-25. Either way it belongs here: both provenances mean somebody was
+  // spoken to. See the block on POSITIVE_DISPOSITIONS.
   "Application Sent",
 ];
 const CONVERSATION_HELP =
@@ -854,7 +888,8 @@ function isUndispositioned(r: Pick<SetterCall, "disposition">): boolean {
 // connects and humans need, so it can never outrun either of them. It also
 // throws out the unsafe two-thirds — a pre-filled application can be sent to a
 // merchant nobody ever spoke to, and both refused calls carried a stated ask and
-// revenue on the deal BEFORE any dial. ONE call in 90 days qualifies.
+// revenue on the deal BEFORE any dial. TWO calls all-time qualify (9/08
+// Terrance Smith, 9/24 William Banker) — it was one when this was written.
 //
 // The refusals are visible in v_wavv_call_outcome_links (refusal_reason NULL =
 // derived), and on every row of this view as `outcome_followed_refusal`. The
@@ -1401,10 +1436,22 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
         // Application at 17:21, and Jonathan Kalinoski a Full at 16:25 — three
         // application events across two merchants. Counting Gani once would
         // erase a real second event (he upgraded), so the pair is the right
-        // unit; it just has to SAY so. It also makes the number checkable: this
-        // rung always equals the sum of the Full App + Statements, Full
-        // Application and Partial Application chips in Positive dispositions.
-        "A merchant who takes a partial and later a full counts TWICE — two real application events, one merchant — so this equals the sum of the three application chips in Positive dispositions below, and can exceed the number of merchants there." + scoredNote,
+        // unit; it just has to SAY so.
+        //
+        // ── THE "SUM OF THE CHIPS" CLAIM WAS FALSE WHEN IT WAS WRITTEN ───────
+        // It was added here on 9/21 — the Gani day above — while the chips
+        // counted each merchant ONCE under their LATEST disposition. On that
+        // very day the rung read 3 and the chips summed to 2, and the same
+        // break hit 9/25 (rung 1, chips 0, hiding a 2,614-second Full App +
+        // Statements behind a later Callback) and 9/08. Three of the 21 dialed
+        // days in the last 30.
+        //
+        // The chips now count merchant × disposition too, from the same rows,
+        // the same merchant keyer and the same typed-only gate, so the sentence
+        // below is finally true — and true by construction, not by luck. See
+        // the block on `positiveCounts` for the four things that construction
+        // shares with `appKeys` here.
+        `A merchant who takes a partial and later a full counts TWICE — two real application events, one merchant — so this equals the sum of the ${APPLICATION_DISPOSITIONS.length} application chips in Positive dispositions below, and can exceed the number of merchants there.` + scoredNote,
       count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.partialApps, f.conversations), targetKey: null,
       benchmark: { id: "app_per_conversation", basis: "step" },
@@ -2896,6 +2943,14 @@ export default function SetterPerformancePage() {
   // Built from the SAME aggRows; no extra query.
   const positiveCalls = useMemo(() => {
     const rows = aggRows.filter((r) => {
+      // isScored() FIRST, exactly as computeFunnel gates its own positive
+      // count. GHL rows carry a different disposition vocabulary (no_answer,
+      // voicemail, spoke, callback_set…) so none of them collide with
+      // POSITIVE_DISPOSITIONS today and this filter changes nothing — which is
+      // the point: it is here so a future backfill that starts writing WAVV
+      // strings onto ghl_call_log cannot put a row in this table that the
+      // funnel above it refuses to count.
+      if (!isScored(r)) return false;
       const d = dispositionOf(r);
       return !!d && POSITIVE_DISPOSITIONS.includes(d);
     });
@@ -3032,6 +3087,14 @@ export default function SetterPerformancePage() {
      *  Length > 1 means they PROGRESSED (partial at 1:38, full at 5:21) and the
      *  row shows the journey rather than appearing twice. */
     dispositions: string[];
+    /** The subset of `dispositions` a setter actually TYPED (disposition_source
+     *  'typed'). This is the unit the chips above the table count and the unit
+     *  computeFunnel's `appKeys`/`positiveKeys` count — same rows, same
+     *  merchant key, same typed-only gate — which is what makes the three
+     *  application chips sum to the "Apps taken on the call" rung. Anything in
+     *  `dispositions` but not here is derived, and is counted beside the chip
+     *  rather than inside it, the same way the funnel prints "≈N derived". */
+    typedDispositions: string[];
     /** Every call in the fold, oldest first. Length 1 on most rows. */
     calls: SetterCall[];
     /** The call this row renders: the latest one. */
@@ -3082,14 +3145,20 @@ export default function SetterPerformancePage() {
         if (!longest || c.seconds > (longest.seconds ?? -1)) longest = c;
       }
       const seen: string[] = [];
+      const typedSeen: string[] = [];
       for (const c of calls) {
         const d = dispositionOf(c);
-        if (d && !seen.includes(d)) seen.push(d);
+        if (!d) continue;
+        if (!seen.includes(d)) seen.push(d);
+        // Provenance comes from disposition_source and nowhere else — the
+        // "only a machine writes 'Application Sent'" shortcut expired 9/25.
+        if (!isDerived(c) && !typedSeen.includes(d)) typedSeen.push(d);
       }
       rows.push({
         key,
         disposition: dispositionOf(lead)!,
         dispositions: seen,
+        typedDispositions: typedSeen,
         calls,
         lead,
         longerThanLead:
@@ -3122,12 +3191,62 @@ export default function SetterPerformancePage() {
     });
   }, []);
 
-  /** Chips over the table. MERCHANTS per disposition — the same unit, so the
-   *  chip and the funnel rung can never disagree. */
+  // ── CHIPS COUNT MERCHANT × DISPOSITION, NOT THE MERCHANT'S LATEST ─────────
+  // These chips used to count each merchant ONCE, under `row.disposition` —
+  // the LATEST value the merchant carried — while the "Apps taken on the call"
+  // rung directly above them counted merchant × disposition pairs. A merchant
+  // who gave two different dispositions in a day was therefore one chip and two
+  // rung, and the help text on the rung asserted the two "always" matched.
+  //
+  // It did not. Measured over the 21 dialed days in the last 30, the identity
+  // failed on three of them, always in the same direction — the rung right,
+  // the chips short:
+  //   • 9/25 — Arnold Mech: "Full App + Statements" at 16:02 after a 2,614-second
+  //            call, then "Callback" at 17:28. Latest wins → Full-App chip 0,
+  //            rung 1. The best call of the day read as nothing.
+  //   • 9/21 — Gani Ahmetaj (Partial 13:38 → Full 17:21): rung 3, chips 2. This
+  //            is the very day the old comment was written to explain.
+  //   • 9/08 — Jessie Maxey: "Partial Application" at 11:07, "Callback" at
+  //            16:10. Rung 1, chips 0. Same shape again.
+  // The upgrade is the whole point: a merchant who takes a partial and later a
+  // full produced TWO application events, and hiding the first behind the
+  // second erases the one the setter worked hardest for.
+  //
+  // So a chip counts a merchant once PER DISPOSITION they carried. The rows
+  // below still fold one merchant onto one row, with the progression named on
+  // it — two questions, two units, both stated on the page.
+  //
+  // WHY THE IDENTITY NOW HOLDS BY CONSTRUCTION rather than by observation: the
+  // chip count and computeFunnel's `appKeys` are the same set expression over
+  // the same rows — aggRows, scored (isScored in `positiveCalls`), typed
+  // (`typedDispositions`), keyed `merchant|disposition` with the SAME
+  // makeMerchantKey(aggRows) keyer. Nothing on the chip side can drift without
+  // changing one of those four, and each is a shared helper, not a copy.
+  // Verified as well as reasoned: on all 21 dialed days in the last 30, the
+  // application chips sum to the rung.
+  //
+  // Derived values are counted BESIDE the chip, never inside it — the same rule
+  // the funnel follows at :1165, and the reason the identity survived
+  // "Application Sent" joining APPLICATION_DISPOSITIONS on 9/27. That chip is
+  // now an APPLICATION chip and it is the one disposition the derivation can
+  // produce, so a chip that folded derived rows in would immediately outrun the
+  // rung by the 2 derived rows. It does not, because both sides read
+  // disposition_source: `appKeys` skips derived, `typedDispositions` skips
+  // derived, and the derived pair surfaces as "+N derived" beside the number.
   const positiveCounts = useMemo(() => {
-    const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
-    for (const r of positiveRows) counts.set(r.disposition, (counts.get(r.disposition) ?? 0) + 1);
-    return POSITIVE_DISPOSITIONS.map((d) => ({ disposition: d, count: counts.get(d) ?? 0 }));
+    const typed = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
+    const derived = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
+    for (const row of positiveRows) {
+      for (const d of row.typedDispositions) typed.set(d, (typed.get(d) ?? 0) + 1);
+      for (const d of row.dispositions) {
+        if (!row.typedDispositions.includes(d)) derived.set(d, (derived.get(d) ?? 0) + 1);
+      }
+    }
+    return POSITIVE_DISPOSITIONS.map((d) => ({
+      disposition: d,
+      count: typed.get(d) ?? 0,
+      derived: derived.get(d) ?? 0,
+    }));
   }, [positiveRows]);
 
   /** The funnel's positive bar is a jump link into the list of those exact
@@ -5033,7 +5152,11 @@ export default function SetterPerformancePage() {
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl">
                           Counted by <b>merchant</b>, not by call — one merchant called back twice is <b>one</b>{" "}
                           callback. Every call is still here: a folded row says <b>“N calls”</b> and opens to show
-                          each one.
+                          each one. The <b>chips</b> count a merchant once <b>per disposition</b> they carried, so a
+                          merchant who took a partial in the morning and a full in the afternoon shows under both —
+                          two real events, one row below. That is why the application chips can add up to more
+                          than the number of rows, and why they sum to{" "}
+                          <b>Apps taken on the call</b> in the funnel.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -5043,10 +5166,24 @@ export default function SetterPerformancePage() {
                             className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
                               p.count > 0 ? RAG_CHIP.green : RAG_CHIP.none
                             }`}
-                            title={`${p.count.toLocaleString()} merchant${p.count === 1 ? "" : "s"} dispositioned "${p.disposition}" in this range. Merchants, not calls.`}
+                            title={
+                              `${p.count.toLocaleString()} merchant${p.count === 1 ? "" : "s"} carried "${p.disposition}" in this range — counted once each, however many times they were called. ` +
+                              `A merchant who was dispositioned TWO different ways (a partial in the morning, a full in the afternoon) appears under BOTH chips, because that is two real events; they still get one row in the table below, which names the progression. ` +
+                              (APPLICATION_DISPOSITIONS.includes(p.disposition)
+                                ? `This is one of the ${APPLICATION_DISPOSITIONS.length} application chips, and together they sum to "Apps taken on the call" in the funnel above — same rows, same merchant key, same typed-only rule. `
+                                : "") +
+                              (p.derived > 0
+                                ? `${p.derived.toLocaleString()} more ${p.derived === 1 ? "is" : "are"} DERIVED — inferred from an application the setter sent after an answered call they never dispositioned — and ${p.derived === 1 ? "is" : "are"} deliberately NOT in the number on this chip.`
+                                : "")
+                            }
                           >
                             {p.disposition}
                             <b className="tabular-nums">{p.count.toLocaleString()}</b>
+                            {p.derived > 0 && (
+                              <b className="tabular-nums text-amber-600 dark:text-amber-400">
+                                +{p.derived.toLocaleString()} derived
+                              </b>
+                            )}
                           </span>
                         ))}
                       </div>
