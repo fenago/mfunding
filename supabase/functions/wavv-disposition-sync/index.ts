@@ -115,6 +115,45 @@ for (const m of MAPPING) {
   }
 }
 
+// ── STAGE ORDER, SO A DISPOSITION CANNOT DEMOTE A DEAL. ─────────────────────
+// Every stage this function can target, in pipeline order. Mirrors
+// public.deals_stage_rank() and the MCA pipeline's stage list.
+//
+// The move test below was pure equality — skip if the card is ALREADY at the
+// target — which is idempotent but not monotone. A `wavv-callback` on a
+// merchant who has already been sent an application maps to Contacted and, with
+// only an equality check, drags the card two rungs down. The app then mirrors
+// that card move back into deals.status through ghl-webhook, so one voicemail
+// disposition can undo a real application send.
+//
+// A disposition reports what happened on ONE phone call. It is not a verdict on
+// everything the deal has already achieved, so it may raise the card and never
+// lower it. Unmapped stages (anything past Docs Collected, where dispositions
+// have no business) return undefined and are left strictly alone.
+const STAGE_RANK: Record<string, number> = {
+  [STAGE_NEW_LEAD]: 0,
+  [STAGE_CONTACTED]: 1,
+  [STAGE_QUALIFYING]: 2,
+  [STAGE_APPLICATION_SENT]: 3,
+  [STAGE_DOCS_COLLECTED]: 4,
+};
+
+/**
+ * Would moving this opportunity to `targetStageId` walk it BACKWARD?
+ *
+ * True only when both stages are known rungs and the target is strictly behind.
+ * An unknown current stage (the card sits somewhere deeper in the pipeline than
+ * dispositions ever touch) counts as backward too — a disposition must never
+ * pull a submitted or funded deal back to Contacted.
+ */
+function wouldRetreat(currentStageId: string, targetStageId: string): boolean {
+  const target = STAGE_RANK[targetStageId];
+  if (target === undefined) return false; // not a ranked target; nothing to compare
+  const current = STAGE_RANK[currentStageId];
+  if (current === undefined) return true; // deeper than anything we map — leave it
+  return target < current;
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -249,7 +288,7 @@ Deno.serve(async (req) => {
     const od = track(await ghlFetch<{ opportunities?: Array<{ id: string; pipelineId: string; pipelineStageId: string; status: string }> }>(
       cfg, "GET", `/opportunities/search?location_id=${LOCATION}&contact_id=${contactId}`, undefined, onRL));
     const opps = (od.data?.opportunities ?? []).filter((o) => o.pipelineId === MCA_PIPELINE);
-    const result = { moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0 };
+    const result = { moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0, kept_ahead: 0 };
     for (const tag of tags) {
       const action = MAPPING.find((m) => m.tag === tag)!.action;
       let ok = od.ok;
@@ -262,6 +301,10 @@ Deno.serve(async (req) => {
         for (const o of opps) {
           if (action.kind === "stage") {
             if (o.pipelineStageId === action.stageId) continue;
+            // Forward only — see wouldRetreat(). Counted, not silent: a skip
+            // that leaves no trace is indistinguishable from a move that
+            // didn't happen for some other reason.
+            if (wouldRetreat(o.pipelineStageId, action.stageId)) { result.kept_ahead++; continue; }
             const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { pipelineStageId: action.stageId }, onRL));
             if (r.ok) { result.moved++; o.pipelineStageId = action.stageId; } else { result.errors++; ok = false; }
           } else {
@@ -292,12 +335,14 @@ Deno.serve(async (req) => {
     return json({ ok: true, pushed: contactId, tags, result, daily_remaining: dailyRemaining });
   }
 
-  const stats: Record<string, { processed: number; moved: number; lost: number; dnd: number; tag_removed: number; errors: number; appointment_promised: number }> = {};
+  // kept_ahead: dispositions whose stage was BEHIND where the card already sits,
+  // so the move was refused. A non-zero value here is the guard doing its job.
+  const stats: Record<string, { processed: number; moved: number; lost: number; dnd: number; tag_removed: number; errors: number; appointment_promised: number; kept_ahead: number }> = {};
   let touched = 0;
   let parked = false;
 
   for (const { tag, action } of MAPPING) {
-    const s = (stats[tag] = { processed: 0, moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0 });
+    const s = (stats[tag] = { processed: 0, moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0, kept_ahead: 0 });
     // Drain: always page 1 — processed contacts leave the filter via tag removal.
     // A guard caps runaway loops if tag removal ever silently fails.
     let guard = 0;
@@ -340,6 +385,9 @@ Deno.serve(async (req) => {
           for (const o of opps) {
             if (action.kind === "stage") {
               if (o.pipelineStageId === action.stageId) continue;
+              // Same forward-only rule as the push path — one helper, so the
+              // nightly reconcile can never behave differently from real time.
+              if (wouldRetreat(o.pipelineStageId, action.stageId)) { s.kept_ahead++; continue; }
               const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { pipelineStageId: action.stageId }, onRL));
               if (r.ok) s.moved++; else { s.errors++; ok = false; }
             } else {

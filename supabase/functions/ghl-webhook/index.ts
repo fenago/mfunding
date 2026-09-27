@@ -959,6 +959,51 @@ const TERMINAL_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "re
 // of one of these (see the un-park guard in the stage mirror below).
 const PARKED_STATUSES = ["nurture", "declined", "dead"];
 
+// Stage ORDER, per pipeline. The MCA ladder mirrors public.deals_stage_rank();
+// the VCF ladder mirrors VCF_PIPELINE in src/data/pipelines.ts. Keep all three
+// in step — this is the fifth hand-mirrored copy of the stage order and the
+// first one that decides whether a write happens.
+//
+// WHY THIS EXISTS. The mirror's move test was pure equality (`mapped !==
+// dealStatus`), which cannot tell "the card moved on" from "the card moved
+// BACK". Between 2026-08-03 and 2026-09-25 it accepted 28 backward writes
+// across 22 deals — submitted_to_funder → contacted on MF-2026-0196, and, the
+// day this guard was written, docs_collected → contacted on MF-2026-0422 fifty
+// minutes after that merchant signed his application and emailed his documents
+// in. Those writes were invisible: the direction lived inside a JSON blob under
+// a subject that says nothing about stages, so a reasonable query for backward
+// moves returned an empty set that read as a clean bill of health.
+//
+// EXITS HAVE NO RANK, DELIBERATELY. nurture / declined / dead are not rungs, and
+// GHL losing or parking an opportunity is a legitimate inbound signal. An
+// unranked target therefore passes this guard untouched. Moving a deal OUT of a
+// park is a different question, already answered by the PARKED_STATUSES guard.
+const MCA_STAGE_RANK: Record<string, number> = {
+  new: 0, contacted: 1, qualifying: 2, application_sent: 3, docs_collected: 4,
+  bank_statements: 5, submitted_to_funder: 6, offer_received: 7,
+  offer_presented: 8, offer_accepted: 9, funded: 10, renewal_eligible: 11,
+};
+const VCF_STAGE_RANK: Record<string, number> = {
+  new_distressed: 0, hardship_consult: 1, positions_analysis: 2,
+  strategy_proposal: 3, agreement_sent: 4, submitted_to_vcf: 5,
+  restructure_executed: 6, servicing: 7,
+};
+
+/**
+ * Where a status sits on its OWN ladder, or null when it isn't a rung.
+ *
+ * Returns the ladder alongside the rank so two ranks are never compared across
+ * pipelines — "4" means Docs Collected on MCA and Agreement Sent on VCF, and a
+ * deal that somehow received the other product's status must not be ordered
+ * against it.
+ */
+function stageRank(status: string | null | undefined): { ladder: "mca" | "vcf"; rank: number } | null {
+  if (!status) return null;
+  if (status in MCA_STAGE_RANK) return { ladder: "mca", rank: MCA_STAGE_RANK[status] };
+  if (status in VCF_STAGE_RANK) return { ladder: "vcf", rank: VCF_STAGE_RANK[status] };
+  return null;
+}
+
 /**
  * ADOPT, DON'T DUPLICATE.
  *
@@ -1498,7 +1543,9 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
           subject: "lead:assigned-to-dialer", content: dialerNote, logged_by: dialerId,
         });
       }
-      await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
+      // A birth, not a move: old_status is genuinely null here.
+      await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt },
+        typeof mapped === "string" ? { from: null, to: mapped } : undefined);
       // Receipt: this event MINTED a deal (vs. "adopted" — see adoptOrphanDeal).
       await logEvent(db, evt, evtTypeLabel(evt), "created",
         `deal ${newDeal.deal_number ?? newDeal.id} auto-created for ${dealType} opportunity at stage "${status}" (no existing or adoptable deal for this contact)`);
@@ -1586,6 +1633,52 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     await logEvent(db, evt, evtTypeLabel(evt), "skipped",
       `refused to change parked deal ${d.deal_number ?? dealId} (${dealStatus} → "${mapped}") — a GHL stage echo does not override a deliberate park`);
   }
+  // ── ONLY ADVANCE, NEVER RETREAT. ────────────────────────────────────────
+  // The two guards above refuse specific resurrections. This one refuses the
+  // general case: an echo that would walk a deal DOWN its own ladder.
+  //
+  // A card position is a statement about where someone thinks the deal is. The
+  // merchant's evidence — an application sent, a signature, statements received
+  // — is a statement about what actually happened, and it does not un-happen
+  // when a card moves. So when the two disagree about DIRECTION, the evidence
+  // wins and the echo is refused.
+  //
+  // This does NOT close the door on a genuine correction. Moving a deal back is
+  // a real thing an admin sometimes needs to do; it goes through
+  // updateDealStatus in src/services/dealService.ts, which is admin-gated, logs
+  // `Stage moved backward` with the mover's name, and pushes the corrected
+  // stage out to GHL. That path is untouched. What is blocked here is the
+  // inbound echo, which carries no author and no intent.
+  if (movedStatus) {
+    const from = stageRank(dealStatus);
+    const to = stageRank(mapped as string);
+    // Strictly BEHIND, on the SAME ladder. A tie cannot occur on either ladder
+    // (every rung has a distinct rank) and is allowed through if it somehow
+    // does — this guard exists to stop retreats, not to adjudicate equals.
+    if (from && to && from.ladder === to.ladder && to.rank < from.rank) {
+      movedStatus = false;
+      await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+        `refused to move deal ${d.deal_number ?? dealId} BACKWARD (${dealStatus} → "${mapped}") — ` +
+        `a VibeReach stage echo does not walk a deal down its own ladder. If this deal genuinely belongs ` +
+        `at "${mapped}", change the stage on the deal itself: that path is admin-gated, records who did it, ` +
+        `and pushes the correction back to VibeReach.`);
+      // On the deal timeline too. The sync log answers "what did the webhook
+      // do"; this answers "why is this deal not where the card says", which is
+      // the question the person looking at the deal is actually asking.
+      // The transition columns stay NULL on purpose — nothing moved, and a
+      // refusal must not turn up in a query for stage transitions.
+      await db.from("activity_log").insert({
+        entity_type: "deal", entity_id: dealId, interaction_type: "note",
+        subject: "ghl:stage-echo-refused-backward",
+        content:
+          `The VibeReach card was moved to "${mapped}", which is BEHIND this deal's current stage ` +
+          `(${dealStatus}). The deal was left where it is. Evidence already on this deal put it at ` +
+          `${dealStatus}; a card moving backward is not evidence that any of it was undone. To genuinely ` +
+          `move this deal back, an admin changes the stage here on the deal.`,
+      });
+    }
+  }
+
   // A STAGE MOVE IS SOMEBODY SAYING WHERE THE DEAL IS. FOR ONE COLUMN, THAT IS
   // NOT THE SAME AS EVIDENCE.
   //
@@ -1629,7 +1722,11 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       await logEvent(db, evt, evtTypeLabel(evt), "error", `stage mirror update failed: ${mirrorErr.message}`);
       return;
     }
-    await log(db, "deal", dealId, `ghl:${evtTypeLabel(evt)}`, { from: dealStatus, to: patch.status, evt });
+    // Only claim a transition when one happened: `patch` is also non-empty for
+    // an amount-only update, and a row reading "old_status = contacted,
+    // new_status = null" would be a transition that never occurred.
+    await log(db, "deal", dealId, `ghl:${evtTypeLabel(evt)}`, { from: dealStatus, to: patch.status, evt },
+      typeof patch.status === "string" ? { from: dealStatus, to: patch.status } : undefined);
   }
 
   // The card says Application Sent and we have no send of our own. Say that on
@@ -1872,11 +1969,36 @@ function evtTypeLabel(evt: Record<string, unknown>): string {
   return String(evt.type ?? evt.eventType ?? cd.type ?? "opportunity");
 }
 
-async function log(db: DB, entityType: string, entityId: string, action: string, meta: unknown) {
+/**
+ * Activity-log line for something this webhook did.
+ *
+ * `statuses` populates activity_log.old_status / new_status. Pass it whenever
+ * the write actually moved the deal's stage, and leave it off otherwise.
+ *
+ * WHY IT IS A PARAMETER AND NOT JUST THE JSON. This function used to record a
+ * stage transition ONLY inside `content`, as JSON text, under a subject
+ * (`ghl:OpportunityStageUpdate`) that names the GHL event and not the change.
+ * The transition columns sat empty. The cost was concrete: on 2026-09-26 an
+ * engineer investigating backward stage moves queried old_status / new_status —
+ * the obvious place — got two rows back, both of them the admin gate correctly
+ * recording deliberate human moves, and read that empty result as evidence
+ * there was no problem. There were 28 backward writes hiding in the JSON.
+ * An audit trail nobody can query is not an audit trail.
+ */
+async function log(
+  db: DB,
+  entityType: string,
+  entityId: string,
+  action: string,
+  meta: unknown,
+  statuses?: { from: string | null; to: string },
+) {
   try {
     await db.from("activity_log").insert({
       entity_type: entityType, entity_id: entityId,
       interaction_type: "note", subject: action, content: JSON.stringify(meta),
+      old_status: statuses ? statuses.from : null,
+      new_status: statuses ? statuses.to : null,
     });
   } catch { /* best-effort */ }
 }
