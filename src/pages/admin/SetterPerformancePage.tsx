@@ -5154,8 +5154,8 @@ export default function SetterPerformancePage() {
                           callback. Every call is still here: a folded row says <b>“N calls”</b> and opens to show
                           each one. The <b>chips</b> count a merchant once <b>per disposition</b> they carried, so a
                           merchant who took a partial in the morning and a full in the afternoon shows under both —
-                          two real events, one row below. That is why the application chips can add up to more
-                          than the number of rows, and why they sum to{" "}
+                          two real events, one row below. That is why the {APPLICATION_DISPOSITIONS.length}{" "}
+                          application chips can add up to more than the number of rows, and why they sum to{" "}
                           <b>Apps taken on the call</b> in the funnel.
                         </p>
                       </div>
