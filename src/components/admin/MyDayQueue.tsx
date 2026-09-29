@@ -6,6 +6,8 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import { useDealPins } from "../../hooks/useDealPins";
 import useIsProcessor from "../../hooks/useIsProcessor";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
+import type { LostReason } from "../../types/deals";
+import ParkReasonPicker from "../shared/ParkReasonPicker";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
 import { sourceMeta, SOURCE_TONE_CLASS, type SourceTone } from "../../lib/sourceLabel";
@@ -857,12 +859,14 @@ function QueueCard({
     const t = setTimeout(() => setNurtureArmed(false), 5000);
     return () => clearTimeout(t);
   }, [nurtureArmed]);
-  const moveToNurture = async () => {
-    if (!nurtureArmed) { setNurtureArmed(true); return; }
+  // Arming now reveals the reason picker rather than just waiting for a second
+  // tap: the confirmation IS the reason. A park with no reason recorded is what
+  // left 274 deals unexplainable.
+  const moveToNurture = async (reason: LostReason) => {
     setNurtureArmed(false);
     setBusy("nurture");
     try {
-      await updateDealStatus(deal.id, "nurture");
+      await updateDealStatus(deal.id, "nurture", reason);
       onTouched();
     } finally {
       setBusy(null);
@@ -1077,15 +1081,25 @@ function QueueCard({
           "close it" is the primary action, another dial is the exception. */}
       {u.nurtureFlag && (
         <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() => void moveToNurture()}
-            className="w-full px-2 py-1.5 rounded-md text-[11px] font-bold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-60 transition-colors"
-            title="Terminal move: leaves My Day; the long-term email sequence takes over"
-          >
-            {busy === "nurture" ? "Moving…" : nurtureArmed ? "⚠️ Tap again to confirm — they leave My Day" : "🏁 Move to long-term nurture"}
-          </button>
+          {nurtureArmed ? (
+            <ParkReasonPicker
+              label="They leave My Day. Why?"
+              confirmLabel="Move to nurture"
+              busy={busy === "nurture"}
+              onCancel={() => setNurtureArmed(false)}
+              onConfirm={(reason) => void moveToNurture(reason)}
+            />
+          ) : (
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => setNurtureArmed(true)}
+              className="w-full px-2 py-1.5 rounded-md text-[11px] font-bold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-60 transition-colors"
+              title="Terminal move: leaves My Day; the long-term email sequence takes over"
+            >
+              {busy === "nurture" ? "Moving…" : "🏁 Move to long-term nurture"}
+            </button>
+          )}
         </div>
       )}
 

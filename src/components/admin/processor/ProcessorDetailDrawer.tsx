@@ -18,6 +18,7 @@ import {
 import { CheckIcon } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
+import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import { dateTimeET } from "@/utils/time";
 import { openGhlUploadViaProxy } from "@/lib/ghlDocs";
 import {
@@ -1224,38 +1225,40 @@ export default function ProcessorDetailDrawer({
                     : "Do Not Contact — take them off the list"}
               </button>
             )}
-            <button
-              type="button"
-              disabled={actionBusy === "nurture"}
-              onClick={() => {
-                if (nurtureArmed) {
+            {nurtureArmed ? (
+              <ParkReasonPicker
+                label="Why is this being shelved?"
+                confirmLabel="Move to nurture"
+                busy={actionBusy === "nurture"}
+                onCancel={() => setNurtureArmed(false)}
+                onConfirm={(reason) => {
+                  // p_reason is the CODED reason (what analytics counts); the
+                  // typed note rides alongside as p_note. These used to be the
+                  // same field, which is why the coded column stayed empty
+                  // while free text piled up in the activity log.
                   void runRpc(
                     "processor_move_to_nurture",
                     {
                       p_deal_id: dealId,
-                      ...(note.trim() ? { p_reason: note.trim() } : {}),
+                      p_reason: reason,
+                      ...(note.trim() ? { p_note: note.trim() } : {}),
                     },
                     "nurture",
                   );
                   setNurtureArmed(false);
-                } else {
-                  setNurtureArmed(true);
-                  window.setTimeout(() => setNurtureArmed(false), 4000);
-                }
-              }}
-              className={`w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border transition-colors ${
-                nurtureArmed
-                  ? "border-violet-500 bg-violet-100 dark:bg-violet-900/40 text-violet-800 dark:text-violet-200"
-                  : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-300"
-              }`}
-            >
-              <MoonIcon className="w-4 h-4" />
-              {actionBusy === "nurture"
-                ? "Moving…"
-                : nurtureArmed
-                  ? "Click again to confirm — move to long-term nurture"
-                  : "Move to long-term nurture"}
-            </button>
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                disabled={actionBusy === "nurture"}
+                onClick={() => setNurtureArmed(true)}
+                className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border transition-colors border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-300"
+              >
+                <MoonIcon className="w-4 h-4" />
+                {actionBusy === "nurture" ? "Moving…" : "Move to long-term nurture"}
+              </button>
+            )}
           </div>
         )}
       </div>

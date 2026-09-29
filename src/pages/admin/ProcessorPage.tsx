@@ -30,7 +30,8 @@ import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
-import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
+import { DEAL_STATUS_CONFIG, type DealStatus, type LostReason } from "@/types/deals";
+import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import {
   closerLabel,
   hasReachedApplicationSent,
@@ -359,10 +360,11 @@ export default function ProcessorPage() {
     [loadRows],
   );
 
+  // Arming reveals the reason picker; the reason IS the confirmation.
   const armOrFireNurture = useCallback(
-    (dealId: string) => {
+    (dealId: string, reason?: LostReason) => {
       if (armTimer.current) window.clearTimeout(armTimer.current);
-      if (nurtureArmed === dealId) {
+      if (nurtureArmed === dealId && reason) {
         setNurtureArmed(null);
         setRowBusy(dealId);
         setRowErr(null);
@@ -370,6 +372,7 @@ export default function ProcessorPage() {
           try {
             const { error } = await supabase.rpc("processor_move_to_nurture", {
               p_deal_id: dealId,
+              p_reason: reason,
             });
             if (error) throw new Error(error.message);
             // PUSH THE PARK TO GHL. processor_move_to_nurture only writes our own
@@ -1110,7 +1113,7 @@ export default function ProcessorPage() {
                               <button
                                 type="button"
                                 disabled={rowBusy === r.id}
-                                onClick={() => armOrFireNurture(r.id)}
+                                onClick={() => setNurtureArmed(nurtureArmed === r.id ? null : r.id)}
                                 title={
                                   stale
                                     ? "Two weeks up — move to long-term nurture"
@@ -1125,8 +1128,17 @@ export default function ProcessorPage() {
                                 }`}
                               >
                                 <MoonIcon className="w-3 h-3" />
-                                {nurtureArmed === r.id ? "Confirm?" : "Nurture"}
+                                {nurtureArmed === r.id ? "Pick a reason ↓" : "Nurture"}
                               </button>
+                              {nurtureArmed === r.id && (
+                                <div className="mt-2 w-full">
+                                  <ParkReasonPicker
+                                    busy={rowBusy === r.id}
+                                    onCancel={() => setNurtureArmed(null)}
+                                    onConfirm={(reason) => armOrFireNurture(r.id, reason)}
+                                  />
+                                </div>
+                              )}
                             </div>
                           </td>
                         </tr>

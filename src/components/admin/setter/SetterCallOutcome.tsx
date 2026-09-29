@@ -7,7 +7,7 @@ import {
   type ContactOutcome,
 } from "../../../services/dealService";
 import { etDateTimeLocalToUtcIso, etDateTimeLocalValue, tomorrowAtEtIso, dateTimeET } from "../../../utils/time";
-import type { DealWithCustomer, DealStatus } from "../../../types/deals";
+import type { DealWithCustomer, ParkedStatus, LostReason } from "../../../types/deals";
 
 /**
  * SetterCallOutcome — log a call disposition + (optionally) set a callback,
@@ -50,7 +50,11 @@ interface OutcomeDef {
   kind: "attempt" | "park";
   outcome?: ContactOutcome;
   /** Terminal stage for `park` outcomes (updateDealStatus), applied after the log. */
-  stage?: DealStatus;
+  stage?: ParkedStatus;
+  /** Why this outcome parks the deal. Required alongside `stage`: parking without
+   *  a reason is what left 274 nurture deals unexplainable. A disposition that
+   *  parks already knows its own reason, so the setter is never asked. */
+  lostReason?: LostReason;
   activeCls: string;
 }
 
@@ -59,7 +63,7 @@ const OUTCOMES: OutcomeDef[] = [
   { key: "no_answer", label: "No answer", emoji: "📵", kind: "attempt", outcome: "no_answer", activeCls: "border-gray-400 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200" },
   { key: "voicemail", label: "Left voicemail", emoji: "📼", kind: "attempt", outcome: "left_voicemail", activeCls: "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300" },
   { key: "callback", label: "Callback", emoji: "🕐", kind: "attempt", outcome: "callback", activeCls: "border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
-  { key: "not_interested", label: "Not interested", emoji: "🚫", kind: "park", outcome: "not_interested", stage: "nurture", activeCls: "border-rose-500 bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
+  { key: "not_interested", label: "Not interested", emoji: "🚫", kind: "park", outcome: "not_interested", stage: "nurture", lostReason: "merchant_declined", activeCls: "border-rose-500 bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
 ];
 
 const ARM_MS = 5000;
@@ -143,8 +147,11 @@ export default function SetterCallOutcome({
       }
       // …then park. This lands second on purpose: the log advances New → Contacted,
       // and nurture must be the status that survives.
-      if (def.kind === "park" && def.stage) {
-        await updateDealStatus(deal.id, def.stage);
+      // A setter on a live call does not get a dropdown. "Not interested" IS
+      // the reason, so the outcome definition carries it and the park records
+      // it without asking. Mandatory must not mean a modal mid-conversation.
+      if (def.kind === "park" && def.stage && def.lostReason) {
+        await updateDealStatus(deal.id, def.stage, def.lostReason);
       }
 
       // Optional note — needs the customer to hang it off; the disposition itself is

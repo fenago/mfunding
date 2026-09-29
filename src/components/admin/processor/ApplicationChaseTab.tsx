@@ -305,7 +305,13 @@ export default function ApplicationChaseTab({
       setRowErr(null);
       void (async () => {
         try {
-          const { error } = await supabase.rpc("processor_move_to_nurture", { p_deal_id: dealId });
+          // This tab exists for merchants who stopped responding after the
+          // application went out, so the reason is the tab's whole premise.
+          // Asking a processor to restate it on every row would be theatre.
+          const { error } = await supabase.rpc("processor_move_to_nurture", {
+            p_deal_id: dealId,
+            p_reason: "docs_not_provided",
+          });
           if (error) throw new Error(error.message);
           // Push the park to VibeReach, exactly as the Processor board does —
           // best-effort, but the failure is SHOWN so a half-applied park is never

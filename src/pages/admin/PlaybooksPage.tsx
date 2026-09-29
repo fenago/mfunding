@@ -75,8 +75,9 @@ import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 import { hasSignedApplicationOnFile, uploadSignedApplication } from "../../services/signedApplication";
-import type { DealWithCustomer, DealStatus, Deal, Market, ProductInterest } from "../../types/deals";
-import { DEAL_STATUS_CONFIG, MARKET_CONFIG, PRODUCT_INTEREST_OPTIONS } from "../../types/deals";
+import type { DealWithCustomer, DealStatus, Deal, Market, ProductInterest, ParkedStatus, LostReason } from "../../types/deals";
+import { DEAL_STATUS_CONFIG, MARKET_CONFIG, PRODUCT_INTEREST_OPTIONS, isParkedStatus } from "../../types/deals";
+import ParkReasonPicker from "../../components/shared/ParkReasonPicker";
 import { listCampaigns, campaignLabel, type Campaign } from "../../services/campaignService";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
@@ -204,7 +205,14 @@ export default function PlaybooksPage() {
   // Promise-free confirm dialog (replaces window.confirm) — the action lives in
   // onConfirm; the dialog closes itself once it resolves.
   const [confirmState, setConfirmState] = useState<
-    | { title: string; body?: string; confirmLabel: string; onConfirm: () => void | Promise<void> }
+    | {
+        title: string;
+        body?: string;
+        confirmLabel: string;
+        /** Set when the move parks the deal: the dialog then demands a reason. */
+        parkTarget?: ParkedStatus;
+        onConfirm: (lostReason?: LostReason) => void | Promise<void>;
+      }
     | null
   >(null);
   // Focus mode: when a deal is loaded, only the active step is expanded. A closer
@@ -641,9 +649,15 @@ export default function PlaybooksPage() {
         ? "This rewinds the pipeline stage. Nothing is sent to the merchant — no email, no docs, no notification. GHL moves to the earlier stage too, and the rewind is logged."
         : "This updates the deal and fires the GoHighLevel automation for that stage.",
       confirmLabel: isBackward ? "Move it back" : "Move the deal",
-      onConfirm: async () => {
+      parkTarget: isParkedStatus(stageKey as DealStatus) ? (stageKey as ParkedStatus) : undefined,
+      onConfirm: async (lostReason?: LostReason) => {
         try {
-          await updateDealStatus(deal.id, stageKey as DealStatus);
+          if (isParkedStatus(stageKey as DealStatus)) {
+            if (!lostReason) return;
+            await updateDealStatus(deal.id, stageKey as ParkedStatus, lostReason);
+          } else {
+            await updateDealStatus(deal.id, stageKey as Exclude<DealStatus, ParkedStatus>);
+          }
           await refreshDeal(deal.id);
           if (isBackward) {
             notify(`Moved back to ${label} — nothing was sent to the merchant.`);
@@ -826,8 +840,11 @@ export default function PlaybooksPage() {
       let didAdvance = false;
       if (advance && step.stageKey) {
         const tgt = order.indexOf(step.stageKey);
-        if (tgt > currentIdx) {
-          await updateDealStatus(deal.id, step.stageKey as DealStatus);
+        // Forward only — and never into a park. The MCA stage list ends with
+        // nurture, so "tgt > currentIdx" alone would let a playbook step shelve
+        // the merchant as a side effect of advancing them.
+        if (tgt > currentIdx && !isParkedStatus(step.stageKey as DealStatus)) {
+          await updateDealStatus(deal.id, step.stageKey as Exclude<DealStatus, ParkedStatus>);
           didAdvance = true;
         }
       }
@@ -1066,7 +1083,14 @@ export default function PlaybooksPage() {
     const label = DEAL_STATUS_CONFIG[outcome]?.label ?? outcome;
     const name = dealName(deal);
     try {
-      await updateDealStatus(deal.id, outcome);
+      // This dialog has always asked WHY, and wrote the answer to closed_reason —
+      // a nine-value vocabulary parallel to lost_reason's fifteen. Rather than
+      // ask twice, the answer is mapped onto the coded column the analytics read.
+      if (isParkedStatus(outcome)) {
+        await updateDealStatus(deal.id, outcome, closeReasonToLostReason(reason));
+      } else {
+        await updateDealStatus(deal.id, outcome as Exclude<DealStatus, ParkedStatus>);
+      }
       await mustWrite(
         "save deal close reason",
         supabase
@@ -1485,16 +1509,41 @@ export default function PlaybooksPage() {
 
       {/* Confirm dialog — replaces window.confirm for stage moves / doc sends */}
       {confirmState && (
-        <ConfirmDialog
-          title={confirmState.title}
-          body={confirmState.body}
-          confirmLabel={confirmState.confirmLabel}
-          onCancel={() => setConfirmState(null)}
-          onConfirm={async () => {
-            await confirmState.onConfirm();
-            setConfirmState(null);
-          }}
-        />
+        confirmState.parkTarget ? (
+          // Parking asks WHY instead of just "are you sure". The confirmation
+          // and the reason are the same decision, so they are the same step.
+          <ConfirmDialog
+            title={confirmState.title}
+            body={confirmState.body}
+            confirmLabel={confirmState.confirmLabel}
+            onCancel={() => setConfirmState(null)}
+            onConfirm={() => {}}
+            hideConfirm
+          >
+            <ParkReasonPicker
+              label="Why is this being shelved?"
+              confirmLabel={confirmState.confirmLabel}
+              onCancel={() => setConfirmState(null)}
+              onConfirm={(reason) => {
+                void (async () => {
+                  await confirmState.onConfirm(reason);
+                  setConfirmState(null);
+                })();
+              }}
+            />
+          </ConfirmDialog>
+        ) : (
+          <ConfirmDialog
+            title={confirmState.title}
+            body={confirmState.body}
+            confirmLabel={confirmState.confirmLabel}
+            onCancel={() => setConfirmState(null)}
+            onConfirm={async () => {
+              await confirmState.onConfirm();
+              setConfirmState(null);
+            }}
+          />
+        )
       )}
     </div>
   );
@@ -1588,12 +1637,18 @@ function ConfirmDialog({
   confirmLabel,
   onCancel,
   onConfirm,
+  hideConfirm = false,
+  children,
 }: {
   title: string;
   body?: string;
   confirmLabel: string;
   onCancel: () => void;
   onConfirm: () => void | Promise<void>;
+  /** The caller supplies its own confirm control (e.g. the park reason picker,
+   *  where the reason IS the confirmation and a bare "Yes" would skip it). */
+  hideConfirm?: boolean;
+  children?: React.ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -1604,7 +1659,8 @@ function ConfirmDialog({
       >
         <h3 className="text-base font-bold text-gray-900 dark:text-white">{title}</h3>
         {body && <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{body}</p>}
-        <div className="mt-5 flex items-center justify-end gap-2">
+        {children && <div className="mt-4">{children}</div>}
+        <div className={`mt-5 flex items-center justify-end gap-2${hideConfirm ? " hidden" : ""}`}>
           <button
             onClick={onCancel}
             disabled={busy}
@@ -4492,6 +4548,25 @@ const CLOSE_OUTCOMES: { value: DealStatus; label: string; hint: string }[] = [
   { value: "declined", label: "Declined by funders", hint: "Funders passed — the declined sequence works alternatives." },
   { value: "dead", label: "Dead — do not contact", hint: "Closes the file. No further automated outreach." },
 ];
+
+// closed_reason (this dialog's own list) → lost_reason (the coded column that
+// analyticsService and campaignAuditService count). Two vocabularies for one
+// question is a merge nobody has done yet; until then this keeps the coded
+// column populated without a second prompt. Anything unmapped falls to "other"
+// rather than guessing.
+function closeReasonToLostReason(reason: string): LostReason {
+  switch (reason) {
+    case "unresponsive": return "no_contact";
+    case "docs_never_arrived": return "docs_not_provided";
+    case "rate_too_high":
+    case "went_with_competitor": return "merchant_declined";
+    case "not_qualified":
+    case "too_many_positions": return "disqualified";
+    case "funders_declined": return "funders_declined_all";
+    case "bogus_never_requested": return "bogus_lead";
+    default: return "other";
+  }
+}
 
 const CLOSE_REASONS: { value: string; label: string }[] = [
   { value: "unresponsive", label: "Unresponsive" },

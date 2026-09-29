@@ -18,7 +18,8 @@ import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import SchedulePicker from "@/components/admin/processor/SchedulePicker";
 import { addDealNote, updateDealStatus } from "@/services/dealService";
 import { applicationCompleteness } from "@/lib/applicationCompleteness";
-import type { DealWithCustomer } from "@/types/deals";
+import type { DealWithCustomer, LostReason } from "@/types/deals";
+import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import type { PlaybookLookup } from "@/hooks/usePlaybookContact";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
@@ -469,14 +470,15 @@ export default function SetterDealList({
     void load();
   };
 
-  const armOrFireNurture = (dealId: string) => {
-    if (nurtureArmed === dealId) {
+  // The armed state now shows the reason picker; confirming IS picking a reason.
+  const armOrFireNurture = (dealId: string, reason?: LostReason) => {
+    if (nurtureArmed === dealId && reason) {
       setNurtureArmed(null);
       setRowBusy(dealId);
       setRowErr(null);
       void (async () => {
         try {
-          await updateDealStatus(dealId, "nurture");
+          await updateDealStatus(dealId, "nurture", reason);
           void load();
         } catch (e) {
           setRowErr(e instanceof Error ? e.message : "Couldn't move to nurture.");
@@ -864,7 +866,7 @@ export default function SetterDealList({
                     <button
                       type="button"
                       disabled={rowBusy === r.id}
-                      onClick={() => armOrFireNurture(r.id)}
+                      onClick={() => setNurtureArmed(nurtureArmed === r.id ? null : r.id)}
                       title={stale ? "Two weeks up — move to long-term nurture" : "Move to long-term nurture"}
                       className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors ${
                         nurtureArmed === r.id
@@ -875,9 +877,19 @@ export default function SetterDealList({
                       }`}
                     >
                       <MoonIcon className="w-3 h-3" />
-                      {nurtureArmed === r.id ? "Confirm?" : "Nurture"}
+                      {nurtureArmed === r.id ? "Pick a reason ↓" : "Nurture"}
                     </button>
                   </div>
+
+                  {nurtureArmed === r.id && (
+                    <div className="mt-2">
+                      <ParkReasonPicker
+                        busy={rowBusy === r.id}
+                        onCancel={() => setNurtureArmed(null)}
+                        onConfirm={(reason) => armOrFireNurture(r.id, reason)}
+                      />
+                    </div>
+                  )}
 
                   {/* Inline quick-note editor */}
                   {notesFor === r.id && (

@@ -479,12 +479,14 @@ const LOSS_REASON_LABELS: Record<string, string> = {
   routed_to_vcf: "Routed to VCF",
   opted_out: "Opted out (DNC)",
   prohibited_industry: "Prohibited industry",
+  business_closed: "Business is closing",
+  bogus_lead: "Never requested info (bad lead)",
   duplicate: "Duplicate",
   other: "Other",
   unspecified: "Unspecified",
 };
 // Recoverable losses (work them via reactivation) vs truly dead.
-const NON_RECOVERABLE = new Set(["opted_out", "prohibited_industry", "duplicate"]);
+const NON_RECOVERABLE = new Set(["opted_out", "prohibited_industry", "duplicate", "business_closed", "bogus_lead"]);
 
 /** Loss-reason breakdown for non-funded deals (declined / dead / nurture). */
 export async function fetchLossReasonBreakdown(dateRange?: DateRange): Promise<LossReasonRow[]> {

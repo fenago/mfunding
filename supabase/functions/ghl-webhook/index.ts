@@ -946,7 +946,7 @@ async function triggerUnderwriting(customerId: string): Promise<void> {
 // Everything the stage-mirror reads off a deal. ONE definition so the adopt path
 // and the by-opportunity-id lookup can never return different shapes.
 const DEAL_MIRROR_COLS =
-  "id, status, customer_id, deal_number, amount_funded, amount_requested, assigned_closer_id, is_renewal, lead_source, ghl_opportunity_id, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, declined_at, nurture_at";
+  "id, status, customer_id, deal_number, amount_funded, amount_requested, assigned_closer_id, is_renewal, lead_source, ghl_opportunity_id, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, declined_at, nurture_at, lost_reason";
 
 // Deal statuses that mean "this cycle is over" — mirrors CLOSED_STATUSES in
 // playbook-open-contact. A finished deal is never adopted onto a live
@@ -1713,6 +1713,16 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     if (mapped === "funded" && d.amount_funded == null && monetary != null) {
       patch.amount_funded = monetary;
     }
+    // A CARD DRAGGED TO NURTURE IN VIBEREACH PARKS A DEAL WITH NOBODY TO ASK.
+    // Every park inside the app now demands a reason, but this path never
+    // touches the app: someone moves the opportunity in GHL and the deal parks
+    // here. Leaving lost_reason NULL would make it indistinguishable from our
+    // own paths failing to record one — which is exactly how 274 deals became
+    // unexplainable without anyone noticing. So it is recorded as 'other' and
+    // the note below says plainly that no human gave a reason HERE.
+    if (PARKED_STATUSES.includes(mapped as string) && !d.lost_reason) {
+      patch.lost_reason = "other";
+    }
   }
   if (monetary != null) patch.amount_requested = monetary;
 
@@ -1727,6 +1737,21 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     // new_status = null" would be a transition that never occurred.
     await log(db, "deal", dealId, `ghl:${evtTypeLabel(evt)}`, { from: dealStatus, to: patch.status, evt },
       typeof patch.status === "string" ? { from: dealStatus, to: patch.status } : undefined);
+  }
+
+  // Provenance for the park above. A reason of 'other' written by this mirror
+  // means "nobody was asked", which is a different fact from a person choosing
+  // Other, and the timeline is where that distinction has to live.
+  if (patch.lost_reason === "other") {
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: dealId, interaction_type: "note",
+      subject: "ghl:parked-without-a-reason",
+      content:
+        `This deal was parked ("${mapped}") because the VibeReach card was moved there, not by anyone ` +
+        `working in this app — so nobody was asked why. lost_reason is recorded as "other" to keep it ` +
+        `distinguishable from a park where we simply failed to capture the reason. If you know why this ` +
+        `merchant was shelved, set it on the deal so the number means something.`,
+    });
   }
 
   // The card says Application Sent and we have no send of our own. Say that on

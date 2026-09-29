@@ -14,8 +14,6 @@ import {
 import { updateDealStatus } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import useIsProcessor from "@/hooks/useIsProcessor";
-import supabase from "../../supabase";
-import { mustWrite } from "@/supabase/writes";
 import type { DealWithCustomer } from "../../types/deals";
 
 interface Props {
@@ -185,8 +183,11 @@ export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }
       const a = await saveAssessment({ dealId: deal.id, bankAnalysisId: bankId, result, decision });
       setSaved(a);
       if (decision === "declined") {
-        await updateDealStatus(deal.id, "declined"); // also syncs GHL -> Lost
-        await mustWrite("set deal lost reason", supabase.from("deals").update({ lost_reason: "bank_data_fail" }).eq("id", deal.id));
+        // The reason rides along with the status now, in one write. It used to
+        // be a second update immediately after, which meant a deal could sit
+        // declined-with-no-reason if that write failed. This path already knows
+        // its own reason, so nobody is asked to pick one.
+        await updateDealStatus(deal.id, "declined", "bank_data_fail"); // also syncs GHL -> Lost
       }
       onDecision?.();
     } finally {

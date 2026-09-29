@@ -12,8 +12,10 @@ import type {
   UpdateDealData,
   DealFilters,
   ProductInterest,
+  ParkedStatus,
+  LostReason,
 } from "../types/deals";
-import { PRODUCT_INTEREST_OPTIONS } from "../types/deals";
+import { PRODUCT_INTEREST_OPTIONS, isParkedStatus } from "../types/deals";
 import { calculateCommission, createCommission } from "./commissionService";
 import { syncDealToGHL } from "./ghlService";
 import { COMMISSION_DEFAULTS, expectedCommissionInPlay, resolveCommissionLeadSource } from "../types/commissions";
@@ -719,7 +721,39 @@ export async function updateDealProducts(
   return { products: unique, ghlWarning };
 }
 
-export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {
+/**
+ * Move a deal to a new status.
+ *
+ * PARKING REQUIRES A REASON, AND THE COMPILER ENFORCES IT.
+ *
+ * deals.lost_reason was NULL on all 274 nurture deals, and the cause was this
+ * signature: it had no reason parameter, so none of the six call sites that
+ * park a deal could have recorded one. The owner asked twice why a particular
+ * deal was parked and the answer both times was "nothing was written down".
+ *
+ * A runtime check would not have fixed it — a caller that can compile without
+ * a reason eventually ships without one. So the overloads below make the
+ * reason part of the type: parking without one does not build.
+ *
+ * A caller holding a dynamic DealStatus (a stage picker, the detail-page
+ * dropdown) matches neither overload and must branch on isParkedStatus() to
+ * collect a reason first. That friction is the point — those are exactly the
+ * screens where a human is choosing to shelve a merchant.
+ */
+export async function updateDealStatus(
+  id: string,
+  newStatus: ParkedStatus,
+  lostReason: LostReason,
+): Promise<Deal>;
+export async function updateDealStatus(
+  id: string,
+  newStatus: Exclude<DealStatus, ParkedStatus>,
+): Promise<Deal>;
+export async function updateDealStatus(
+  id: string,
+  newStatus: DealStatus,
+  lostReason?: LostReason,
+): Promise<Deal> {
   const { data: cur } = await supabase.from("deals").select("status, deal_type").eq("id", id).single();
   const curStatus = cur?.status as DealStatus | undefined;
 
@@ -809,6 +843,13 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   const advancing = fromRank !== -1 && toRank !== -1 && toRank > fromRank;
   if (advancing || PARKED_STATUSES.includes(newStatus)) {
     updateData.callback_at = null;
+  }
+
+  // The reason goes in the same write as the park, so a deal can never exist in
+  // a parked state without one. Only set on the way IN — reviving a deal keeps
+  // the reason it was parked for, which is the history of why it was shelved.
+  if (lostReason && isParkedStatus(newStatus)) {
+    updateData.lost_reason = lostReason;
   }
 
   const rows = await mustWrite<Deal>("update deal status", supabase.from("deals").update(updateData).eq("id", id));
@@ -930,6 +971,11 @@ export async function ensureDealStageAtLeast(
     if (toIdx === -1 || fromIdx === -1) return;
     if (toIdx <= fromIdx) return;
 
+    // "Ensure at least this stage" never parks a deal. The MCA pipeline list
+    // ends with nurture, so a caller passing it would otherwise shelve the
+    // merchant as a side effect of a forward-only helper.
+    if (isParkedStatus(effectiveTarget)) return;
+
     await updateDealStatus(deal.id, effectiveTarget);
   } catch (e) {
     // The setter's actual action already succeeded — auto-advance is a courtesy.
@@ -997,6 +1043,10 @@ export async function reactivateDeal(id: string): Promise<Deal> {
   }
 
   const fromStatus = deal.status as DealStatus;
+  // Reviving into a parked status is a contradiction, and it is reachable:
+  // previous_status is itself 'nurture' on deals that were parked twice, so
+  // restoring it blindly would "reactivate" a deal straight back onto the bench.
+  if (isParkedStatus(target)) target = "qualifying";
   const updated = await updateDealStatus(id, target);
 
   // Log the re-engagement so the deal history shows it was pulled back off the

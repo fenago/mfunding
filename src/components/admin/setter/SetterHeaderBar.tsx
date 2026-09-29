@@ -3,7 +3,9 @@ import { UserIcon, BuildingOfficeIcon, PhoneIcon, EnvelopeIcon } from "@heroicon
 import PipelineFlow from "../../shared/PipelineFlow";
 import { updateDealStatus } from "../../../services/dealService";
 import { PIPELINES } from "../../../data/pipelines";
-import type { DealWithCustomer, DealStatus } from "../../../types/deals";
+import type { DealWithCustomer, DealStatus, ParkedStatus, LostReason } from "../../../types/deals";
+import { isParkedStatus } from "../../../types/deals";
+import ParkReasonPicker from "../../shared/ParkReasonPicker";
 
 /**
  * SetterHeaderBar — the trimmed "who + where in the pipeline" header for the
@@ -62,13 +64,20 @@ export default function SetterHeaderBar({
     setPending({ stageKey, backward });
   }
 
-  async function applyMove() {
+  async function applyMove(lostReason?: LostReason) {
     if (!pending) return;
     const { stageKey, backward } = pending;
     const label = stageLabel(pipeline, stageKey);
     setBusy(true);
     try {
-      await updateDealStatus(deal.id, stageKey as DealStatus);
+      // Parking is the one move that needs a reason, and the compiler enforces
+      // the split rather than trusting this branch to be right.
+      if (isParkedStatus(stageKey as DealStatus)) {
+        if (!lostReason) return;
+        await updateDealStatus(deal.id, stageKey as ParkedStatus, lostReason);
+      } else {
+        await updateDealStatus(deal.id, stageKey as Exclude<DealStatus, ParkedStatus>);
+      }
       onRefresh();
       if (backward) {
         notify(`Moved back to ${label} — nothing was sent to the merchant.`, "ok");
@@ -147,24 +156,36 @@ export default function SetterHeaderBar({
               ? "This rewinds the pipeline stage. Nothing is sent to the merchant — no email, no docs, no notification. GHL moves to the earlier stage too."
               : "This updates the deal and fires the GoHighLevel automation for that stage."}
           </div>
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void applyMove()}
-              disabled={busy}
-              className="px-3 py-1 rounded-lg text-xs font-semibold text-white bg-ocean-blue hover:bg-ocean-blue/90 disabled:opacity-50"
-            >
-              {busy ? "Moving…" : pending.backward ? "Move it back" : "Move the deal"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPending(null)}
-              disabled={busy}
-              className="px-3 py-1 rounded-lg text-xs font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
-            >
-              Cancel
-            </button>
-          </div>
+          {isParkedStatus(pending.stageKey as DealStatus) ? (
+            <div className="mt-2">
+              <ParkReasonPicker
+                label="Why is this being shelved?"
+                confirmLabel="Park the deal"
+                busy={busy}
+                onCancel={() => setPending(null)}
+                onConfirm={(reason) => void applyMove(reason)}
+              />
+            </div>
+          ) : (
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void applyMove()}
+                disabled={busy}
+                className="px-3 py-1 rounded-lg text-xs font-semibold text-white bg-ocean-blue hover:bg-ocean-blue/90 disabled:opacity-50"
+              >
+                {busy ? "Moving…" : pending.backward ? "Move it back" : "Move the deal"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPending(null)}
+                disabled={busy}
+                className="px-3 py-1 rounded-lg text-xs font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

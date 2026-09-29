@@ -21,7 +21,9 @@ import { useUserProfile } from "../../../context/UserProfileContext";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import { tagFundersForSubmission } from "../../../services/ghlService";
-import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus } from "../../../types/deals";
+import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus, ParkedStatus, LostReason } from "../../../types/deals";
+import { isParkedStatus } from "../../../types/deals";
+import ParkReasonPicker from "../../../components/shared/ParkReasonPicker";
 import {
   DEAL_STATUS_CONFIG,
   DEAL_TYPE_CONFIG,
@@ -184,10 +186,21 @@ export default function DealDetailPage() {
     setDocuments(data || []);
   };
 
-  const handleStatusChange = async (newStatus: DealStatus) => {
+  // Clicking a parked stage on the pipeline opens the reason picker instead of
+  // moving straight away — the reason is part of the decision, not paperwork
+  // after it. Everything else moves as before.
+  const [pendingPark, setPendingPark] = useState<ParkedStatus | null>(null);
+
+  const handleStatusChange = async (newStatus: DealStatus, lostReason?: LostReason) => {
     if (!id) return;
+    if (isParkedStatus(newStatus) && !lostReason) {
+      setPendingPark(newStatus);
+      return;
+    }
     try {
-      const updated = await updateDealStatus(id, newStatus);
+      const updated = isParkedStatus(newStatus)
+        ? await updateDealStatus(id, newStatus, lostReason as LostReason)
+        : await updateDealStatus(id, newStatus as Exclude<DealStatus, ParkedStatus>);
       setDeal((prev) => (prev ? { ...prev, ...updated } : null));
     } catch (e) {
       // Surface WHY — a silent catch here hid the backward-move gate from admins.
@@ -419,6 +432,20 @@ export default function DealDetailPage() {
           onStageClick={(k) => handleStatusChange(k as DealStatus)}
           terminal={isTerminal}
         />
+        {pendingPark && (
+          <div className="mt-3">
+            <ParkReasonPicker
+              label={`Parking this deal as "${DEAL_STATUS_CONFIG[pendingPark]?.label ?? pendingPark}". Why?`}
+              confirmLabel="Park the deal"
+              onCancel={() => setPendingPark(null)}
+              onConfirm={(reason) => {
+                const target = pendingPark;
+                setPendingPark(null);
+                void handleStatusChange(target, reason);
+              }}
+            />
+          </div>
+        )}
         {isTerminal && (
           <div className="mt-4 flex items-center gap-2">
             <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>

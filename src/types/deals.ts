@@ -25,6 +25,62 @@ export type DealStatus =
   | "declined"
   | "dead";
 
+/**
+ * The three statuses that take a deal off the working board. Parking one is a
+ * decision about a merchant, so it has to come with a reason — see LostReason
+ * and the updateDealStatus overloads in src/services/dealService.ts.
+ */
+export type ParkedStatus = "nurture" | "declined" | "dead";
+
+export const PARKED_STATUSES: readonly ParkedStatus[] = ["nurture", "declined", "dead"] as const;
+
+export function isParkedStatus(s: DealStatus): s is ParkedStatus {
+  return s === "nurture" || s === "declined" || s === "dead";
+}
+
+/**
+ * Why a deal was parked. Mirrors the deals_lost_reason_check CHECK constraint —
+ * text with a CHECK, NOT a Postgres enum, whatever older notes say.
+ *
+ * Kept deliberately short. Across 136 real parks the distribution was ~88
+ * unreachable, 35 declined, and 29 that went dark after the application went
+ * out, so the list below is mostly about making those three easy to pick. A
+ * dropdown where everything lands on "other" records nothing.
+ */
+export type LostReason =
+  | "no_contact"            // never reached them — voicemail, no answer, blocked
+  | "disqualified"          // did not meet criteria
+  | "docs_not_provided"     // app went out, documents never came back
+  | "bank_data_fail"        // bank data could not be read or did not support it
+  | "funders_declined_all"  // submitted, every funder passed
+  | "merchant_declined"     // they said no, or went elsewhere
+  | "offer_expired"
+  | "funding_fell_through"
+  | "routed_to_vcf"
+  | "duplicate"
+  | "opted_out"             // DNC / STOP — written by the DND trigger
+  | "prohibited_industry"
+  | "business_closed"       // the business itself is closing
+  | "bogus_lead"            // merchant denies ever requesting funding info
+  | "other";
+
+/** Picker options, ordered by how often they actually apply. */
+export const LOST_REASON_OPTIONS: { value: LostReason; label: string }[] = [
+  { value: "no_contact", label: "Never reached them" },
+  { value: "docs_not_provided", label: "Went dark after the application" },
+  { value: "merchant_declined", label: "Not interested / went elsewhere" },
+  { value: "disqualified", label: "Doesn't qualify" },
+  { value: "funders_declined_all", label: "All funders declined" },
+  { value: "bank_data_fail", label: "Bank data didn't support it" },
+  { value: "business_closed", label: "Business is closing" },
+  { value: "bogus_lead", label: "Says they never requested info" },
+  { value: "prohibited_industry", label: "Prohibited industry" },
+  { value: "offer_expired", label: "Offer expired" },
+  { value: "funding_fell_through", label: "Funding fell through" },
+  { value: "routed_to_vcf", label: "Routed to debt relief" },
+  { value: "other", label: "Other" },
+];
+
 export type DealType =
   | "mca"
   | "term_loan"
