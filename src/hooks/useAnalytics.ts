@@ -44,6 +44,12 @@ export function useAnalyticsDashboard(dateRange: DateRange) {
   const [fundedTrend, setFundedTrend] = useState<TrendDataPoint[]>([]);
   const [leadSources, setLeadSources] = useState<LeadSourceData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // ⚠ The catch below used to be console.error alone, so a failed load left
+  // every panel empty with nothing on screen saying the numbers were never
+  // fetched. A dashboard that cannot read its sources must say so — "no data"
+  // and "we couldn't load it" are different claims, and only one of them is
+  // about the business.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
     setIsLoading(true);
@@ -63,8 +69,10 @@ export function useAnalyticsDashboard(dateRange: DateRange) {
       setLeadTrend(leads);
       setFundedTrend(funded);
       setLeadSources(sources);
+      setLoadError(null);
     } catch (error) {
       console.error("Error fetching analytics:", error);
+      setLoadError(error instanceof Error ? error.message : "The analytics reads failed.");
     }
     setIsLoading(false);
   }, [dateRange]);
@@ -81,6 +89,7 @@ export function useAnalyticsDashboard(dateRange: DateRange) {
     fundedTrend,
     leadSources,
     isLoading,
+    loadError,
     refetch: fetchAll,
   };
 }
@@ -89,6 +98,10 @@ export function useRealTimeDashboard(autoRefreshMs = 30000) {
   const [todayStats, setTodayStats] = useState<TodayStats | null>(null);
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Same for the realtime strip, and it matters more here: this one
+  // auto-refreshes every 30s, so a silent failure keeps a zeroed board looking
+  // live and current.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -102,8 +115,10 @@ export function useRealTimeDashboard(autoRefreshMs = 30000) {
       setTodayStats(stats);
       setRecentActivity(activity);
       setLastUpdated(new Date());
+      setLoadError(null);
     } catch (error) {
       console.error("Error fetching real-time stats:", error);
+      setLoadError(error instanceof Error ? error.message : "The realtime reads failed.");
     }
     setIsLoading(false);
   }, []);
@@ -127,6 +142,7 @@ export function useRealTimeDashboard(autoRefreshMs = 30000) {
     recentActivity,
     isLoading,
     lastUpdated,
+    loadError,
     refetch: fetchAll,
   };
 }
@@ -139,6 +155,9 @@ export function useDealAnalytics(dateRange: DateRange) {
   const [costPerDealBySource, setCostPerDealBySource] = useState<CostPerFundedDealCard[]>([]);
   const [costPerDealByMarket, setCostPerDealByMarket] = useState<CostPerFundedDealCard[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Deal analytics feeds the ⭐ cost-per-funded-deal cards; an empty card from
+  // a failed read reads as "nothing costs anything".
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
     setIsLoading(true);
@@ -158,8 +177,10 @@ export function useDealAnalytics(dateRange: DateRange) {
       setCloseRateTrend(closeRate);
       setCostPerDealBySource(bySource);
       setCostPerDealByMarket(byMarket);
+      setLoadError(null);
     } catch (error) {
       console.error("Error fetching deal analytics:", error);
+      setLoadError(error instanceof Error ? error.message : "The deal-analytics reads failed.");
     }
     setIsLoading(false);
   }, [dateRange]);
@@ -176,6 +197,7 @@ export function useDealAnalytics(dateRange: DateRange) {
     costPerDealBySource,
     costPerDealByMarket,
     isLoading,
+    loadError,
     refetch: fetchAll,
   };
 }

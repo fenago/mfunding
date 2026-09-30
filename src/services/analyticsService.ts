@@ -18,6 +18,40 @@ import type {
   DealFunnelStage,
 } from "../types/analytics";
 
+/**
+ * WHY EVERY READ IN THIS FILE THROWS INSTEAD OF COALESCING TO ZERO.
+ *
+ * These functions feed the KPI strip, the realtime dashboard and the
+ * cost-per-funded-deal card — the numbers the owner scales or kills a lead
+ * vendor on. Every read here used to end in `?? []` or `|| 0`, which means a
+ * failed read did not look like a failure: it looked like a quiet, plausible
+ * business fact.
+ *
+ * The two that mattered most:
+ *
+ *   `marketing_vendors` failing made total spend $0 — so cost-per-funded-deal
+ *   printed $0 and ROAS printed infinity. A vendor could be scaled on a number
+ *   produced by a read that never happened.
+ *
+ *   The realtime strip's seven counts failing printed "0 leads, 0 live
+ *   transfers, 0 funded today": the whole team's day reported as nothing
+ *   happened, on a dashboard that refreshes every 30 seconds.
+ *
+ * A metric is a claim. An unreadable source cannot produce one, so these throw
+ * and `useAnalytics` surfaces the message — see src/lib/readable.ts for the
+ * general shape and the memory `readers-must-distinguish-unreadable`.
+ */
+function must<T>(res: { data: T | null; error: { message: string } | null }, what: string): T[] extends never[] ? T : T {
+  if (res.error) throw new Error(`Couldn't read ${what} — ${res.error.message}. The figures below would be wrong, so none are shown.`);
+  return res.data as T;
+}
+
+/** Same for a `{ count }` head query. A failed count is not zero. */
+function mustCount(res: { count: number | null; error: { message: string } | null }, what: string): number {
+  if (res.error) throw new Error(`Couldn't count ${what} — ${res.error.message}. The figures below would be wrong, so none are shown.`);
+  return res.count ?? 0;
+}
+
 function toISODate(date: Date): string {
   return date.toISOString();
 }
@@ -103,8 +137,7 @@ export async function fetchKPIMetrics(dateRange?: DateRange): Promise<KPIMetrics
     .from("deals")
     .select("status, amount_funded, amount_requested, created_at, funded_at");
   if (filter) dealsQuery = dealsQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { data: dealsData } = await dealsQuery;
-  const deals = dealsData ?? [];
+  const deals = must(await dealsQuery, "the deals behind these KPIs") ?? [];
 
   const APPROVED_STATUSES = new Set(["offer_received", "offer_presented", "offer_accepted"]);
   // Mid-funnel "pipeline" = in_review (submitted) + approved (offer) analog.
@@ -122,13 +155,18 @@ export async function fetchKPIMetrics(dateRange?: DateRange): Promise<KPIMetrics
   const pipelineDeals = deals.filter((d) => PIPELINE_STATUSES.has(d.status as string));
 
   // Vendor spend/revenue still come from marketing_vendors (the real cost/revenue ledger).
-  const { data: vendorData } = await supabase.from("marketing_vendors").select("total_spend, total_revenue");
+  // ⭐ This is the read that decides cost-per-funded-deal and ROAS. If it fails
+  // and we call spend $0, every vendor looks infinitely profitable.
+  const vendorData = must(
+    await supabase.from("marketing_vendors").select("total_spend, total_revenue"),
+    "vendor spend and revenue (marketing_vendors)",
+  ) ?? [];
 
   const totalLeads = deals.length;
   const totalFunded = fundedDeals.length;
   const totalFundedAmount = fundedDeals.reduce((sum, d) => sum + (d.amount_funded || 0), 0);
-  const totalSpend = vendorData?.reduce((sum, v) => sum + (v.total_spend || 0), 0) || 0;
-  const totalRevenue = vendorData?.reduce((sum, v) => sum + (v.total_revenue || 0), 0) || 0;
+  const totalSpend = vendorData.reduce((sum, v) => sum + (v.total_spend || 0), 0);
+  const totalRevenue = vendorData.reduce((sum, v) => sum + (v.total_revenue || 0), 0);
   const pipelineValue = pipelineDeals.reduce((sum, d) => sum + (d.amount_requested || 0), 0);
 
   const totalDecisions = totalFunded + approvedCount + declinedCount;
@@ -166,21 +204,23 @@ export async function fetchKPIMetrics(dateRange?: DateRange): Promise<KPIMetrics
 }
 
 export async function fetchVendorPerformance(): Promise<VendorPerformance[]> {
-  const { data: vendors } = await supabase
+  const vendors = must(await supabase
     .from("marketing_vendors")
-    .select("id, vendor_name, status, cost_per_lead, total_spend, total_revenue");
+    .select("id, vendor_name, status, cost_per_lead, total_spend, total_revenue"),
+    "the vendor list");
 
   if (!vendors || vendors.length === 0) return [];
 
   const results: VendorPerformance[] = [];
 
   for (const vendor of vendors) {
-    const { data: customers } = await supabase
+    // Per-vendor leads. A failed read here shows THIS vendor with 0 leads and
+    // 0 funded while its neighbours look fine — the most convincing way
+    // possible to get a good vendor cut.
+    const leads = must(await supabase
       .from("customers")
       .select("status, amount_funded, is_live_transfer, created_at, funded_at")
-      .eq("vendor_id", vendor.id);
-
-    const leads = customers || [];
+      .eq("vendor_id", vendor.id), `leads for ${vendor.vendor_name}`) ?? [];
     const funded = leads.filter((c) => c.status === "funded");
     const liveTransfers = leads.filter((c) => c.is_live_transfer);
     const liveTransferFunded = liveTransfers.filter((c) => c.status === "funded");
@@ -283,63 +323,64 @@ export async function fetchTodayStats(): Promise<TodayStats> {
   // "Live transfer" is a lead_source value on the deal (deals has no is_live_transfer flag).
 
   // Fetch today's leads
-  const { count: newLeadsToday } = await supabase
+  const newLeadsToday = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("created_at", todayStart);
+    .gte("created_at", todayStart), "today's new leads");
 
   // Live transfers today
-  const { count: liveTransfersToday } = await supabase
+  const liveTransfersToday = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("created_at", todayStart)
-    .eq("lead_source", "live_transfer");
+    .eq("lead_source", "live_transfer"), "today's live transfers");
 
   // Live transfer conversions (moved past the initial "new" stage)
-  const { count: liveTransferConversions } = await supabase
+  const liveTransferConversions = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("created_at", todayStart)
     .eq("lead_source", "live_transfer")
-    .neq("status", "new");
+    .neq("status", "new"), "today's live-transfer conversions");
 
   // Applications started today
-  const { count: applicationsStartedToday } = await supabase
+  const applicationsStartedToday = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("application_sent_at", todayStart);
+    .gte("application_sent_at", todayStart), "applications started today");
 
   // Deals in review (all time, current state) → submitted to funder
-  const { count: dealsInReview } = await supabase
+  const dealsInReview = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
-    .eq("status", "submitted_to_funder");
+    .eq("status", "submitted_to_funder"), "deals in review");
 
   // Approved today (first offer received today)
-  const { count: dealsApprovedToday } = await supabase
+  const dealsApprovedToday = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("offer_received_at", todayStart);
+    .gte("offer_received_at", todayStart), "deals approved today");
 
   // Funded today
-  const { count: dealsFundedToday } = await supabase
+  const dealsFundedToday = mustCount(await supabase
     .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("funded_at", todayStart);
+    .gte("funded_at", todayStart), "deals funded today");
 
   // Pipeline value (in_review + approved analog)
-  const { data: pipelineData } = await supabase
+  const pipelineData = must(await supabase
     .from("deals")
     .select("amount_requested")
-    .in("status", ["submitted_to_funder", "offer_received", "offer_presented", "offer_accepted"]);
+    .in("status", ["submitted_to_funder", "offer_received", "offer_presented", "offer_accepted"]),
+    "open pipeline value") ?? [];
 
-  const totalPipelineValue = pipelineData?.reduce((sum, d) => sum + (d.amount_requested || 0), 0) || 0;
+  const totalPipelineValue = pipelineData.reduce((sum, d) => sum + (d.amount_requested || 0), 0);
 
   // Hourly breakdown for today
-  const { data: todayLeads } = await supabase
+  const todayLeads = must(await supabase
     .from("deals")
     .select("created_at")
-    .gte("created_at", todayStart);
+    .gte("created_at", todayStart), "today's leads by hour");
 
   const hourlyMap = new Map<number, number>();
   for (let h = 0; h < 24; h++) hourlyMap.set(h, 0);
@@ -356,13 +397,13 @@ export async function fetchTodayStats(): Promise<TodayStats> {
     .sort((a, b) => a.hour - b.hour);
 
   return {
-    newLeadsToday: newLeadsToday || 0,
-    liveTransfersToday: liveTransfersToday || 0,
-    liveTransferConversions: liveTransferConversions || 0,
-    applicationsStartedToday: applicationsStartedToday || 0,
-    dealsInReview: dealsInReview || 0,
-    dealsApprovedToday: dealsApprovedToday || 0,
-    dealsFundedToday: dealsFundedToday || 0,
+    newLeadsToday,
+    liveTransfersToday,
+    liveTransferConversions,
+    applicationsStartedToday,
+    dealsInReview,
+    dealsApprovedToday,
+    dealsFundedToday,
     totalPipelineValue,
     hourlyLeads,
   };
@@ -563,11 +604,14 @@ export async function fetchCostPerFundedDeal(
   groupBy: "source" | "market" = "source"
 ): Promise<CostPerFundedDealCard[]> {
   if (groupBy === "source") {
-    const { data } = await supabase
+    // ⭐ Cost-per-funded-deal is one of the two metrics the business is steered
+    // by. An empty card from a failed read reads as "no lead sources are
+    // costing anything", which is the most flattering possible lie.
+    const data = must(await supabase
       .from("lead_sources")
       .select("name, total_funded, total_spend, cost_per_funded_deal")
       .eq("status", "active")
-      .order("total_funded", { ascending: false });
+      .order("total_funded", { ascending: false }), "lead-source cost per funded deal");
 
     if (!data || data.length === 0) return [];
 
@@ -580,9 +624,9 @@ export async function fetchCostPerFundedDeal(
   }
 
   // Group by market using deals table
-  const { data } = await supabase
+  const data = must(await supabase
     .from("deals")
-    .select("market, amount_funded, status");
+    .select("market, amount_funded, status"), "funded deals by market");
 
   if (!data || data.length === 0) return [];
 
@@ -605,9 +649,12 @@ export async function fetchCostPerFundedDeal(
 }
 
 export async function fetchPipelineVelocity(): Promise<PipelineVelocity[]> {
-  const { data, error } = await supabase.from("v_pipeline_velocity").select("*");
+  // `if (error || !data) return []` — the defect class in its purest form:
+  // the error was in scope, was checked, and was then deliberately rendered
+  // as an empty result.
+  const data = must(await supabase.from("v_pipeline_velocity").select("*"), "pipeline velocity");
 
-  if (error || !data) return [];
+  if (!data) return [];
 
   return data.map((row) => ({
     stageTransition: row.stage_transition,
@@ -678,11 +725,11 @@ export async function fetchMarketPerformance(): Promise<MarketPerformance[]> {
 }
 
 export async function fetchLeadSourceROI(): Promise<LeadSourceROI[]> {
-  const { data } = await supabase
+  const data = must(await supabase
     .from("lead_sources")
     .select("*")
     .eq("status", "active")
-    .order("total_revenue", { ascending: false });
+    .order("total_revenue", { ascending: false }), "lead-source ROI");
 
   if (!data || data.length === 0) return [];
 
@@ -823,14 +870,17 @@ export async function fetchCloseRateTrend(dateRange?: DateRange): Promise<TrendD
 }
 
 export async function fetchRecentActivity(limit = 10): Promise<RecentActivity[]> {
-  const { data } = await supabase
+  // An empty activity feed reads as "nobody did anything". The per-entity name
+  // lookups below are left alone on purpose: they already resolve to "Unknown",
+  // which claims nothing about the record either way.
+  const data = must(await supabase
     .from("activity_log")
     .select(`
       id, entity_type, entity_id, interaction_type, subject, content, created_at,
       profiles:logged_by (first_name, last_name)
     `)
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(limit), "recent activity");
 
   if (!data) return [];
 

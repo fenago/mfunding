@@ -55,6 +55,7 @@ export default function AnalyticsDashboardPage() {
     fundedTrend,
     leadSources,
     isLoading,
+    loadError,
   } = useAnalyticsDashboard(dateRange);
 
   if (isLoading) {
@@ -80,6 +81,18 @@ export default function AnalyticsDashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {loadError && (
+        <div className="rounded-lg border-2 border-rose-400 dark:border-rose-600 bg-rose-50 dark:bg-rose-900/25 px-4 py-3">
+          <p className="text-sm font-semibold text-rose-900 dark:text-rose-200">
+            ⚠ These figures could not be loaded — {loadError}
+          </p>
+          <p className="mt-1 text-xs text-rose-800 dark:text-rose-300">
+            <span className="font-semibold">Nothing below is a business fact right now.</span> A read that failed is not
+            a zero: do not read this as no leads, no spend or no funded deals. Refresh, and if it persists the source is
+            down — check before acting on any number here.
+          </p>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
