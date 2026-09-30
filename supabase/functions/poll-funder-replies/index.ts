@@ -18,7 +18,7 @@ import {
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
-import { attachReplyDeal, captureFunderReply, attachmentCountOf } from "../_shared/funderDecline.ts";
+import { attachReplyDeal, captureFunderReply, attachmentCountOf, noTypedTextNote } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -41,6 +41,18 @@ interface ReplyClassification {
   requested_items: string[];
   offer_terms: null | { amount?: unknown; factor?: unknown; term?: unknown };
   summary: string;
+  /**
+   * HOW this classification was produced — stored on
+   * deal_submissions.response_data.parsed.method so the boards can branch.
+   *
+   * `no_typed_text` is the one that matters: the funder's body was nothing but
+   * quoted history, so nothing was classified and `type` is a DEFAULT, not a
+   * verdict. processor-funders asked for this because without it an
+   * attachment-only reply is indistinguishable from an ordinary one on
+   * FunderResponsesBoard and FunderChaseTab — it renders "✉ Replied", implying
+   * somebody wrote something. Branch on `method`, never on `type`, for that case.
+   */
+  method?: "llm" | "heuristic" | "no_typed_text";
 }
 
 // Ask Claude to structure a funder's reply so the closer sees what's needed
@@ -91,7 +103,7 @@ async function classifyReply(db: SupabaseClient, replyText: string): Promise<Rep
     const offer = type === "offer" && parsed.offer_terms && typeof parsed.offer_terms === "object"
       ? (parsed.offer_terms as ReplyClassification["offer_terms"]) : null;
     const summary = typeof parsed.summary === "string" ? parsed.summary.slice(0, 300) : "";
-    return { type, decline_reason_category: declineCat, requested_items: items, offer_terms: offer, summary };
+    return { type, decline_reason_category: declineCat, requested_items: items, offer_terms: offer, summary, method: "llm" };
   } catch {
     return null;
   }
@@ -119,6 +131,7 @@ function heuristicClassify(replyText: string): ReplyClassification | null {
     requested_items: [],
     offer_terms: null,
     summary: reason ? `Declined — ${reason}` : "Funder declined the submission.",
+    method: "heuristic",
   };
 }
 
@@ -625,7 +638,11 @@ async function applyFunderReply(
   cfg: Awaited<ReturnType<typeof getGhlConfig>>,
   lender: { id: string; company_name: string },
   sub: { id: string; deal_id: string; status: string; response_at: string | null },
-  reply: { text: string; from: string; at: string; eid: string },
+  reply: {
+    text: string; from: string; at: string; eid: string;
+    /** null = not recorded, 0 = none sent. Never conflate them. */
+    attachmentCount?: number | null;
+  },
 ): Promise<string> {
   const { text: replyText, from: replyFrom, at: replyAt, eid: replyEid } = reply;
 
@@ -642,10 +659,32 @@ async function applyFunderReply(
   let classification: ReplyClassification | null = null;
   let applied = "";
   try {
-    classification = await classifyReply(db, replyText);
-    // LLM returned nothing — recover an unambiguous decline deterministically so
-    // the card doesn't stay on a stale earlier classification (see heuristicClassify).
-    if (!classification) classification = heuristicClassify(replyText);
+    // NO TYPED TEXT — do not ask a model to classify a placeholder.
+    //
+    // With the quote-strip guard fixed (`>= 0`), a funder who hits reply,
+    // attaches a file and types nothing now yields an empty body, which the
+    // reader turns into "(reply received — …)". Handing THAT to classifyReply
+    // gets a confident classification of our own placeholder string — the same
+    // failure as classifying our own quoted email, one substitution along.
+    //
+    // Answer it deterministically instead, and mark it `no_typed_text` so the
+    // boards can say "needs a look" rather than rendering a default as a verdict.
+    const noTypedText = !replyText.trim() || replyText.startsWith("(reply received");
+    if (noTypedText) {
+      classification = {
+        type: "other",
+        decline_reason_category: null,
+        requested_items: [],
+        offer_terms: null,
+        summary: noTypedTextNote(reply.attachmentCount),
+        method: "no_typed_text",
+      };
+    } else {
+      classification = await classifyReply(db, replyText);
+      // LLM returned nothing — recover an unambiguous decline deterministically so
+      // the card doesn't stay on a stale earlier classification (see heuristicClassify).
+      if (!classification) classification = heuristicClassify(replyText);
+    }
     if (classification) {
       const patch: Record<string, unknown> = {
         response_type: classification.type,
@@ -881,7 +920,7 @@ Deno.serve(async (req) => {
       if (!text) text = "(reply received — open the conversation to read it)";
       const at = String(e.dateAdded ?? e.date ?? ref.msgDate);
       const fromRaw = String(e.from ?? "");
-      const reply = { text, from: fromRaw, at, eid: ref.eid };
+      const reply = { text, from: fromRaw, at, eid: ref.eid, attachmentCount: attachmentCountOf(e) };
 
       const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName: lender.company_name, emailDate: at });
       markedEids.add(ref.eid); // don't reconsider this record again this run
