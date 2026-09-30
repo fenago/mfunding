@@ -17,7 +17,12 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckIcon } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
-import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
+import {
+  DEAL_STATUS_CONFIG,
+  PARKED_STATUSES,
+  type DealStatus,
+  type DealWithCustomer,
+} from "@/types/deals";
 import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import { dateTimeET } from "@/utils/time";
 import { openGhlUploadViaProxy } from "@/lib/ghlDocs";
@@ -41,6 +46,7 @@ import {
 } from "./types";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import FunderWorkspace from "@/components/admin/FunderWorkspace";
+import FunderPicker from "@/components/admin/FunderPicker";
 import type { SignatureState } from "@/lib/applicationSignature";
 
 // ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
@@ -566,6 +572,22 @@ export default function ProcessorDetailDrawer({
   const decision: "go" | "no_go" | null =
     (qa?.decision as "go" | "no_go" | null) ?? (row?.qa_decision ?? null);
   const canGo = gateApp && gateStmts && allQaTicked;
+
+  // ── Can this deal go out to funders? ──
+  // Gated on SUBMITTABILITY, not on having already been submitted. The previous
+  // `subs.count > 0` meant the picker appeared only after someone had already
+  // submitted somewhere else, so there was no way to make the FIRST submission
+  // from this page — exactly the two states the owner named (Statements In,
+  // GO/NO-GO) showed nothing at all.
+  //
+  // Statements in, or a GO/NO-GO recorded, or already out to someone. Parked
+  // deals are excluded: a nurture/declined/dead deal is not being submitted.
+  // FunderPicker still enforces its own hard gate (no send without the signed
+  // application), so showing it early informs rather than misleads — the
+  // package-on-file ticks are the clearest statement of what is still missing.
+  const parked = !!deal?.status && (PARKED_STATUSES as readonly string[]).includes(deal.status as string);
+  const submittable =
+    !parked && (gateStmts || decision != null || (subs.kind === "ready" && subs.count > 0));
 
   // The REAL deal for the funder panels. processor_deal_detail returns the whole
   // deals row + the whole customers row, so this carries deals.id, customer_id,
@@ -1217,14 +1239,30 @@ export default function ProcessorDetailDrawer({
                 </section>
               ) : subs.kind === "loading" ? (
                 <p className="text-xs text-gray-400">Checking for funder submissions…</p>
-              ) : subs.count > 0 && dealForFunders ? (
+              ) : !dealForFunders || !submittable ? null : subs.count === 0 ? (
+                /* NOTHING HAS GONE OUT YET — the picker is the primary action,
+                   mounted directly rather than through FunderWorkspace, whose
+                   picker is folded into an accordion headed "Submit to MORE
+                   funders". That heading is wrong when the answer is none, and
+                   a collapsed accordion is the wrong weight for the main thing
+                   she came here to do. */
+                <section>
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+                    Funders — nothing has gone out yet
+                  </h3>
+                  <FunderPicker deal={dealForFunders} />
+                </section>
+              ) : (
                 <section>
                   <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
                     Funders — {subs.count} submission{subs.count === 1 ? "" : "s"} out
                   </h3>
-                  <FunderWorkspace deal={dealForFunders} />
+                  {/* The close-out says "every funder declined", which cannot be
+                      true of a deal nobody has submitted — so it rides with the
+                      responses, never with the first-submission picker. */}
+                  <FunderWorkspace deal={dealForFunders} onChanged={onChanged} />
                 </section>
-              ) : null}
+              )}
 
               {/* Full application */}
               <section>
