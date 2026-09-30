@@ -7,6 +7,7 @@ import { mustWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS, SECTION_LABEL, type AppSection } from "@/lib/applicationCompleteness";
 import { applyAppAutofill } from "@/lib/appAutofill";
+import { dealFieldOf } from "@/lib/maskedDeal";
 import { PLAYBOOKS } from "@/data/playbooks";
 
 /**
@@ -63,6 +64,10 @@ export default function QuickAppModal({
   const [existingId, setExistingId] = useState<string | null>(null);
   // The loaded deal — needed for the forward-only stage moves on save/send.
   const [dealObj, setDealObj] = useState<DealWithCustomer | null>(null);
+  // TRUE when the money wall withheld the ask from THIS reader (a processor on a
+  // deal that isn't theirs). Distinct from "the deal has no ask" — the blank box
+  // looks identical either way, which is the whole bug.
+  const [askWithheld, setAskWithheld] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -93,8 +98,15 @@ export default function QuickAppModal({
         const found = await getDealById(dealId);
         if (!found) throw new Error("Couldn't load that deal.");
         setDealObj(found.deal);
-        const { data: appRow } = await supabase
+        // ⚠ THIS READ DECIDES INSERT-vs-UPDATE, SO A FAILED READ MINTS A SECOND
+        // APPLICATION. `existingId` comes from it; null means save() INSERTs. If
+        // the query errors we'd get appRow=null, conclude "no application yet",
+        // and create a duplicate row for a deal that already has one — on the
+        // very table whose duplicates are being investigated elsewhere today.
+        // An unreadable application is not an absent one: fail the modal loudly.
+        const { data: appRow, error: appErr } = await supabase
           .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
+        if (appErr) throw new Error(`Couldn't read this deal's application — ${appErr.message}. Not saving, because a failed read here would create a second application.`);
         if (!alive) return;
         const deal = (found.deal ?? {}) as unknown as Record<string, unknown>;
         const cust = (found.deal?.customer ?? {}) as unknown as Record<string, unknown>;
@@ -109,11 +121,16 @@ export default function QuickAppModal({
         //     read yet". This chip only ever claims the POSITIVE, so it was never
         //     wrong — but reading it through the RPC means it stays right if that
         //     ever changes, and the app now has no direct ledger reads left.
-        const { data: st } = await supabase.rpc("deal_application_status", {
+        // This chip only ever claims the POSITIVE ("signed"), so a failed read
+        // hides it rather than asserting "unsigned" — which is why this one is a
+        // warn and not a throw. Binding the error keeps that deliberate rather
+        // than accidental.
+        const { data: st, error: stErr } = await supabase.rpc("deal_application_status", {
           p_deal_ids: [dealId],
         });
+        if (stErr) console.warn("[QuickApp] signature state unreadable:", stErr.message);
         const row = ((st ?? []) as unknown as { app_signed_state?: string }[])[0];
-        if (alive) setSigned(row?.app_signed_state === "signed");
+        if (alive) setSigned(!stErr && row?.app_signed_state === "signed");
         const seed: Form = {};
         for (const { key } of REQUIRED_APPLICATION_FIELDS) {
           let v = s(app[key]);
@@ -131,7 +148,18 @@ export default function QuickAppModal({
             else if (key === "owner_last_name") v = s(cust.last_name);
             else if (key === "owner_email") v = s(cust.email);
             else if (key === "owner_phone") v = s(cust.phone);
-            else if (key === "amount_requested") v = s(deal.amount_requested);
+            // ⚠ The money wall may have WITHHELD the ask rather than the deal
+            // genuinely not having one — deal_row_for_caller writes JSON null
+            // over it for a processor working someone else's deal. Seeding from
+            // that null produced a blank box indistinguishable from "no ask on
+            // file", and `save()` then wrote amount_requested: null into
+            // mca_applications — the row that reaches funders and e-sign.
+            // dealField() is the only read that can tell the two apart.
+            else if (key === "amount_requested") {
+              const ask = dealFieldOf<number>(found.deal, "amount_requested");
+              if (ask.kind === "withheld") { v = ""; if (alive) setAskWithheld(true); }
+              else v = s(ask.value);
+            }
             else if (key === "use_of_funds") v = s(deal.use_of_funds);
             else if (key === "monthly_revenue") v = s(cust.monthly_revenue);
           }
@@ -190,6 +218,15 @@ export default function QuickAppModal({
         } else {
           row[key] = raw || null;
         }
+      }
+      // ⚠ A WITHHELD ASK MUST NOT BE WRITTEN AS `null`. When the wall hid the
+      // amount from this reader and they didn't type one, we do not know the
+      // value — so we leave the column OUT of the patch entirely rather than
+      // asserting "no ask" onto the row that reaches funders and e-sign. On an
+      // UPDATE that preserves whatever is already stored; on an INSERT the
+      // column simply defaults, which is the honest "we didn't set it".
+      if (askWithheld && !(form.amount_requested ?? "").trim()) {
+        delete row.amount_requested;
       }
       if (existingId) {
         await mustWrite("save application", supabase.from("mca_applications").update(row).eq("id", existingId));
@@ -293,6 +330,17 @@ export default function QuickAppModal({
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               Mandatory fields only — address & phone auto-fill; account/routing/DOB pre-defaulted.
             </p>
+            {/* The ask is HIDDEN, not missing. Without this the empty box reads as
+                "he never said how much", and the application goes to the funder
+                with no amount on it. */}
+            {askWithheld && (
+              <p className="mt-1.5 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-2 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+                <span className="font-bold">Amount requested is hidden</span> — this deal isn&apos;t assigned to you, so
+                the figure isn&apos;t shown. <span className="font-bold">It is not blank because he never said one.</span>{" "}
+                Ask the merchant or the assigned closer and type it in; leaving it empty sends the application with no
+                amount on it.
+              </p>
+            )}
             {/* Live progress as they fill. */}
             <div className="mt-2 flex items-center gap-2">
               <div className="h-1.5 w-40 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">

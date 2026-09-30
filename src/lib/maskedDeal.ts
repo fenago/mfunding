@@ -140,13 +140,38 @@ export function withheldFields(deal: MaskAwareDeal | null | undefined): MaskedKe
 /**
  * The sentence a surface shows in place of a withheld number.
  *
- * Deliberately says WHY it is missing and that it is not a zero — the failure
- * this whole module exists to stop is a blank box reading as "nothing on file".
+ * ── A GUARD THAT ONLY SAYS "NO" TEACHES PEOPLE TO ROUTE AROUND IT ──────────
+ * Three of 2026-09-30's incidents were an agent meeting a refusal that was
+ * doing its job and reaching for a bigger hammer. The first person who hits
+ * `kind: "withheld"` will be tempted to cast past it, `?? 0` it, or open a
+ * second unmasked read — so both of these strings say what to DO instead, not
+ * just that something is missing. Keep it that way if you reword them.
+ *
  * Never includes the value or any hint of its size.
  */
 export function withheldNote(field: MaskedKey): string {
-  return `Hidden — this deal isn't assigned to you, so ${field.replace(/_/g, " ")} isn't shown. This is not "none on file".`;
+  return (
+    `Hidden — this deal isn't assigned to you, so ${field.replace(/_/g, " ")} isn't shown. ` +
+    `This is not "none on file": show a dash, don't compute with it. ` +
+    `Ask the assigned closer or an admin if you need the figure.`
+  );
 }
+
+/**
+ * What a DEVELOPER should do at a call site that just got `withheld`. Exported
+ * so the guidance lives next to the guard rather than in a review comment
+ * somebody has to remember.
+ *
+ * Render `—` (or `withheldNote`) and skip the calculation. Do NOT:
+ *   • `?? 0` / `|| 0` it — that is the exact line that produced every bug this
+ *     module exists to stop; coalescing FIRES on a masked null;
+ *   • cast the deal to reach the raw field;
+ *   • fetch the same deal through another read hoping for a fuller row — if the
+ *     wall withheld it, that is the answer, and routing around it is a
+ *     permissions decision no consumer gets to make on its own.
+ */
+export const WITHHELD_DEV_GUIDANCE =
+  "Render a dash and skip the computation. Do not coalesce (`?? 0` fires on this null), do not cast past it, and do not re-read the deal another way — the wall's answer is the answer.";
 
 /**
  * TRUE when the reader can see enough to do arithmetic on these fields at all.
