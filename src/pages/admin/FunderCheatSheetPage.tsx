@@ -575,7 +575,10 @@ function ContactBlock({
   const email = clean(l.primary_contact_email);
   const phone = clean(l.primary_contact_phone);
   const site = clean(l.website);
-  const people = (l.contacts ?? []).filter((p) => clean(p?.name) || clean(p?.email) || clean(p?.phone));
+  // `contacts` is jsonb — shape-check it rather than trusting the column.
+  const people = (Array.isArray(l.contacts) ? l.contacts : []).filter(
+    (p) => clean(p?.name) || clean(p?.email) || clean(p?.phone),
+  );
   // The primary rep is usually repeated inside `contacts` — don't print them twice.
   const others = people.filter((p) => !email || clean(p.email)?.toLowerCase() !== email.toLowerCase());
 
