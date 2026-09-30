@@ -26,6 +26,7 @@ import GateTracker from "@/components/admin/processor/GateTracker";
 import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
 import ApplicationChaseTab from "@/components/admin/processor/ApplicationChaseTab";
+import FunderChaseTab from "@/components/admin/processor/FunderChaseTab";
 import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
@@ -181,7 +182,7 @@ export default function ProcessorPage() {
   // is her job!" It was third in a row of small text buttons below the
   // scoreboard and the bucket grid, so the page opened on a funnel overview
   // instead of the queue she actually works.
-  const [view, setView] = useState<"funnel" | "board" | "chase">("chase");
+  const [view, setView] = useState<"funnel" | "board" | "chase" | "funders">("chase");
   const [bucket, setBucket] = useState<BucketKey>("all");
   const [stage, setStage] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
@@ -564,6 +565,9 @@ export default function ProcessorPage() {
               // FIRST, because it is the job. partial → unsigned → signed →
               // statements → GO/NO-GO, each bucket naming what she has to chase.
               { key: "chase", label: "📋 Application chase" },
+              // SECOND, because chasing funders is the other half of the job and
+              // it was invisible until now — one row per submission, not per deal.
+              { key: "funders", label: "📨 Funder chase" },
               { key: "funnel", label: "Interested → Ready" },
               { key: "board", label: "Whole board (by stage)" },
             ] as const
@@ -669,11 +673,14 @@ export default function ProcessorPage() {
           live transfers, real-time appointments and existing pipeline produced
           every one. Fixed window on purpose — this page has no date picker, and
           a silently-scoped number is worse than an explicitly-scoped one. */}
-      {view !== "chase" && (
+      {view !== "chase" && view !== "funders" && (
         <DialOriginsPanel from={ORIGINS_FROM} to={ORIGINS_TO} rangeLabel="last 30 days · whole floor" />
       )}
 
       {/* 3a. THE APPLICATION CHASE — its own tab, its own queue RPC. */}
+      {/* 3a-ii. THE FUNDER CHASE — flat queue, one row per submission. */}
+      {view === "funders" && <FunderChaseTab />}
+
       {view === "chase" && (
         <ApplicationChaseTab
           onOpen={setSelectedDealId}
@@ -683,7 +690,7 @@ export default function ProcessorPage() {
       )}
 
       {/* 3b. The lead list */}
-      {view !== "chase" && (
+      {view !== "chase" && view !== "funders" && (
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         {/* Controls */}
         <div className="flex flex-wrap items-center gap-2 mb-3">

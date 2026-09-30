@@ -32,12 +32,32 @@ import {
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
-import { mustWrite, tryWrite } from "@/supabase/writes";
+import { mustWrite } from "@/supabase/writes";
 import { updateSubmission } from "../../services/dealService";
 import { useSession } from "../../context/SessionContext";
 import { useUserProfile } from "../../context/UserProfileContext";
 import type { DealWithCustomer } from "../../types/deals";
 import ConfirmModal from "../shared/ConfirmModal";
+// The shared definitions of what a submission MEANS and what the actions WRITE.
+// The flat chase queue (FunderChaseTab) runs on this same module, so a status
+// chip or a logged offer can never mean two different things on two screens.
+import {
+  burden,
+  freqOf,
+  funderMessagePrefill,
+  isLive,
+  logDealActivity,
+  logOffer as logOfferShared,
+  markFunderDeclined as markFunderDeclinedShared,
+  messageFunder,
+  money,
+  paybackOf,
+  paymentOf,
+  relTime,
+  stateOf,
+  validateOffer,
+  type Frequency,
+} from "@/lib/funderSubmissions";
 
 // No concrete "Bank Statements & Documents Upload" form URL is stored in the repo
 // or DB yet, so stip-request prefills use this placeholder — the closer swaps in
@@ -66,16 +86,12 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-type Frequency = "daily" | "weekly";
-const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly: 4.33 };
 
 // Ad-hoc funder-message uploads: what the dropzone accepts.
 const ADHOC_ALLOWED_EXT = ["pdf", "png", "jpg", "jpeg", "heic", "csv", "xls", "xlsx", "doc", "docx"];
 const ADHOC_MAX_FILES = 8;
 const ADHOC_MAX_BYTES = 20 * 1024 * 1024; // 20MB per file
 
-const money = (n: number | null | undefined) =>
-  n == null ? "—" : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
 // "👀 Opened <Mon D, h:mm AM>" — shown on a sent trail entry once GHL reports the
 // recipient opened (or clicked) it (poll-funder-replies phase 3 stamps [opened:…]).
@@ -88,28 +104,7 @@ function OpenedChip({ at }: { at: string | null }) {
   );
 }
 
-// Compact "3h ago" / "2d ago".
-function relTime(iso: string | null): string {
-  if (!iso) return "";
-  const diff = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(diff)) return "";
-  const min = Math.round(diff / 60000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.round(hr / 24);
-  return `${day}d ago`;
-}
 
-// Merchant-side monthly burden of an offer + its share of monthly revenue.
-// amber when the pull eats >15% of revenue (a common affordability red line).
-function burden(payment: number | null, freq: Frequency, monthlyRevenue: number | null | undefined) {
-  if (!payment) return null;
-  const monthly = payment * PAYMENTS_PER_MONTH[freq];
-  const pct = monthlyRevenue ? (monthly / monthlyRevenue) * 100 : null;
-  return { monthly, pct, hot: pct != null && pct > 15 };
-}
 
 interface SubRow {
   id: string;
@@ -161,40 +156,8 @@ interface EmailView {
   text: string;
 }
 
-type StateKey = "awaiting" | "replied" | "offer" | "accepted" | "merchant_declined" | "funder_declined" | "withdrawn";
 
-// One place the card's badge + accents come from, derived from the row's status
-// and which economics fields are populated.
-function stateOf(s: SubRow): { key: StateKey; emoji: string; label: string; cls: string } {
-  if (s.status === "withdrawn")
-    return { key: "withdrawn", emoji: "↩", label: "Withdrawn", cls: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300" };
-  if (s.status === "offer_accepted")
-    return { key: "accepted", emoji: "✅", label: "Accepted", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" };
-  if (s.status === "offer_declined")
-    return { key: "merchant_declined", emoji: "🙅", label: "Merchant declined", cls: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" };
-  if (s.status === "declined")
-    return { key: "funder_declined", emoji: "❌", label: "Funder declined", cls: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" };
-  if (s.offerAmount != null || s.status === "offer_made" || s.status === "approved")
-    return { key: "offer", emoji: "💰", label: "Offer", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" };
-  if (s.responseAt)
-    return { key: "replied", emoji: "✉", label: "Replied", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" };
-  return { key: "awaiting", emoji: "⏳", label: "Awaiting", cls: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300" };
-}
 
-const freqOf = (s: SubRow): Frequency => (s.weeklyPayment != null ? "weekly" : "daily");
-const paymentOf = (s: SubRow) => (s.weeklyPayment != null ? s.weeklyPayment : s.dailyPayment);
-const paybackOf = (s: SubRow) => s.totalPayback ?? (s.offerAmount != null && s.factorRate != null ? Math.round(s.offerAmount * s.factorRate) : null);
-
-// A submission counts as "on the board" once it actually went out (or came back).
-// Failed/never-sent rows (pending with no timestamp/response) are hidden.
-function isLive(s: SubRow): boolean {
-  return (
-    !!s.submittedAt ||
-    !!s.responseAt ||
-    s.offerAmount != null ||
-    ["submitted", "under_review", "approved", "offer_made", "offer_accepted", "offer_declined", "declined", "withdrawn"].includes(s.status)
-  );
-}
 
 // Small pop-over listing a funder's saved contacts. Clicking one calls onPick with
 // its email so the caller can append it to the CC or BCC field. Empty state nudges
@@ -335,21 +298,13 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // Prefill for a message TO the funder. Stip-request cards get a "here are the
   // requested items" draft; everything else a neutral follow-up. Fully editable.
   function funderPrefillFor(s: SubRow): { subject: string; body: string } {
-    const business = deal.customer?.business_name || "the merchant";
-    const dealNo = deal.deal_number || "—";
-    const signoff = `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding · (954) 737-5692`;
-    if (s.responseType === "stip_request") {
-      const items = s.requestedItems.length ? s.requestedItems.join(", ") : "the requested items";
-      return {
-        subject: `Re: ${business} — requested items`,
-        body: `Hi — please find the requested ${items} attached for ${business} (Deal ${dealNo}). ` +
-          `Let us know if anything else is needed.\n\n${signoff}`,
-      };
-    }
-    return {
-      subject: `Re: ${business} — Deal ${dealNo}`,
-      body: `Hi — following up on ${business} (Deal ${dealNo}). [write your message here]\n\n${signoff}`,
-    };
+    return funderMessagePrefill({
+      businessName: deal.customer?.business_name,
+      dealNumber: deal.deal_number,
+      senderName: closerName,
+      responseType: s.responseType,
+      requestedItems: s.requestedItems,
+    });
   }
 
   async function openFunderMessage(s: SubRow) {
@@ -489,21 +444,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     setMsgBusy(true);
     setMsgError(null);
     try {
-      const documentIds = Object.entries(selectedDocIds).filter(([, v]) => v).map(([k]) => k);
-      const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
-        body: {
-          action: "message_funder",
-          dealId: deal.id,
-          lenderId: msgLender.id,
-          subject: msgSubject.trim(),
-          body: msgBody.trim(),
-          cc: msgCc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
-          bcc: msgBcc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
-          attachments: { documentIds },
-        },
+      await messageFunder({
+        dealId: deal.id,
+        lenderId: msgLender.id,
+        subject: msgSubject,
+        body: msgBody,
+        cc: msgCc,
+        bcc: msgBcc,
+        documentIds: Object.entries(selectedDocIds).filter(([, v]) => v).map(([k]) => k),
       });
-      if (fnErr) throw fnErr;
-      if (data?.error) throw new Error(data.error);
       setMsgOpen(false);
       setMsgToast("Message sent to the funder.");
       void loadSentLog();
@@ -687,12 +636,14 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
     // The trail is nice-to-have so we never THROW here — tryWrite surfaces any
     // RLS denial / bad-constraint failure to the console without blocking.
-    await tryWrite("deal activity log", supabase.from("activity_log").insert({
-      entity_type: "deal", entity_id: deal.id,
-      interaction_type, subject, content,
-      new_status: newStatus ?? null,
-      logged_by: session?.user?.id ?? null,
-    }));
+    await logDealActivity({
+      dealId: deal.id,
+      userId: session?.user?.id,
+      interactionType: interaction_type,
+      subject,
+      content,
+      newStatus,
+    });
   }
 
   // Save a free-form note tied to THIS funder card. The `funder:note — <name>`
@@ -725,33 +676,24 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   }
 
   async function saveOffer(s: SubRow) {
-    const amount = parseFloat(offerForm.amount);
-    const factor = parseFloat(offerForm.factor);
-    if (!Number.isFinite(amount) || amount <= 0) { setOfferError("Enter the advance amount."); return; }
-    if (!Number.isFinite(factor) || factor <= 0) { setOfferError("Enter the factor rate (e.g. 1.3)."); return; }
-    const term = offerForm.term ? parseInt(offerForm.term, 10) : null;
-    const payment = offerForm.payment ? parseFloat(offerForm.payment) : null;
-    const totalPayback = Math.round(amount * factor);
-    const daily = offerForm.frequency === "daily" ? payment : null;
-    const weekly = offerForm.frequency === "weekly" ? payment : null;
+    const invalid = validateOffer(offerForm);
+    if (invalid) { setOfferError(invalid); return; }
     setRowBusy(s.id);
     setOfferError(null);
     try {
-      await updateSubmission(s.id, {
-        status: "offer_made",
-        offer_amount: amount,
-        factor_rate: factor,
-        term_months: term,
-        daily_payment: daily,
-        weekly_payment: weekly,
-        total_payback: totalPayback,
+      await logOfferShared({
+        submissionId: s.id,
+        dealId: deal.id,
+        lenderName: s.lenderName,
+        userId: session?.user?.id,
+        offer: {
+          amount: parseFloat(offerForm.amount),
+          factor: parseFloat(offerForm.factor),
+          term: offerForm.term ? parseInt(offerForm.term, 10) : null,
+          payment: offerForm.payment ? parseFloat(offerForm.payment) : null,
+          frequency: offerForm.frequency,
+        },
       });
-      await logActivity(
-        "offer_received",
-        `Offer logged — ${s.lenderName}`,
-        `${s.lenderName} offered ${money(amount)} at ${factor} factor (${money(totalPayback)} payback)${payment ? `, ${money(payment)} ${offerForm.frequency}` : ""}${term ? `, ${term} mo` : ""}.`,
-        "offer_made",
-      );
       setOfferFormFor(null);
       await load();
     } catch (e) {
@@ -764,8 +706,13 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   async function markFunderDeclined(s: SubRow) {
     setRowBusy(s.id);
     try {
-      await updateSubmission(s.id, { status: "declined", decline_reason: declineReason.trim() || null });
-      await logActivity("note", `Funder declined — ${s.lenderName}`, `${s.lenderName} declined the deal${declineReason.trim() ? `: ${declineReason.trim()}` : "."}`, "declined");
+      await markFunderDeclinedShared({
+        submissionId: s.id,
+        dealId: deal.id,
+        lenderName: s.lenderName,
+        userId: session?.user?.id,
+        reason: declineReason,
+      });
       setDeclineFor(null);
       setDeclineReason("");
       await load();
