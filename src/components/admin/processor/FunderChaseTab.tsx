@@ -38,6 +38,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import FunderWorkspace from "@/components/admin/FunderWorkspace";
+import DeclineCloseOut from "@/components/admin/DeclineCloseOut";
 import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import {
   CHASE_TONE_CLS,
@@ -83,6 +84,8 @@ interface DealGroup {
   /** Most recent SEND. Distinct from lastTouchAt (which a reply also moves):
    *  "newest submitted" must mean when we last put the package out. */
   newestSubmittedAt: string | null;
+  doNotContact: boolean;
+  firstName: string | null;
   /** Any funder past its own quoted turnaround. Drives the row's red border
    *  and its clock tone only — WHICH funder, and by how long, is said on that
    *  funder's own line (FunderLine), not summarised up here. */
@@ -220,6 +223,7 @@ export default function FunderChaseTab() {
   // ONE open at a time — this is a list you scan, not a set of panels you leave
   // lying open. Filter and sort are separate state, so opening never moves the list.
   const [openId, setOpenId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -315,7 +319,9 @@ export default function FunderChaseTab() {
         return q != null && h != null && h > q;
       });
 
-      const cust = d.customer as { business_name?: string | null; first_name?: string | null; last_name?: string | null } | undefined;
+      const cust = d.customer as
+        | { business_name?: string | null; first_name?: string | null; last_name?: string | null; do_not_contact?: boolean | null }
+        | undefined;
       groups.push({
         dealId: d.id,
         deal: d,
@@ -327,6 +333,8 @@ export default function FunderChaseTab() {
         dealNumber: d.deal_number ?? null,
         status: (d.status as string | null) ?? null,
         amountRequested: (d.amount_requested as number | null) ?? null,
+        doNotContact: !!cust?.do_not_contact,
+        firstName: cust?.first_name ?? null,
         subs,
         lastTouchAt,
         newestSubmittedAt,
@@ -498,6 +506,12 @@ export default function FunderChaseTab() {
         </div>
       </div>
 
+      {toast && (
+        <div className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+          {toast}
+        </div>
+      )}
+
       {state.kind === "loading" ? (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
           <span className="loading loading-spinner loading-sm" /> Loading the funder queue…
@@ -577,12 +591,38 @@ export default function FunderChaseTab() {
                 </div>
               )}
 
+              {/* ── Close-out: tell the merchant everyone passed, then park ──
+                  Same component the Playbook's FunderWorkspace mounts. The
+                  guard rows are handed down so it doesn't re-query what this
+                  tab already loaded. */}
+              <div className="px-3 pb-2">
+                <DeclineCloseOut
+                  deal={g.deal}
+                  rows={g.subs.map((x) => ({
+                    lenderName: x.lenderName,
+                    status: x.status,
+                    submittedAt: x.submittedAt,
+                    responseAt: x.responseAt,
+                    offerAmount: x.offerAmount,
+                    factorRate: x.factorRate,
+                    dailyPayment: x.dailyPayment,
+                    weeklyPayment: x.weeklyPayment,
+                    totalPayback: x.totalPayback,
+                  }))}
+                  onDone={() => {
+                    void load();
+                    setToast(`${g.businessName} — closed out.`);
+                    setTimeout(() => setToast(null), 6000);
+                  }}
+                />
+              </div>
+
               {/* ── The full panel, identical to the Playbook's Step 7 ──
                   Mounted only when open: FunderWorkspace mounts FunderPicker,
                   which scores the whole funder network per deal. */}
               {isOpen && (
                 <div className="px-3 pb-3 border-t border-gray-100 dark:border-gray-700/60">
-                  <FunderWorkspace deal={g.deal} />
+                  <FunderWorkspace deal={g.deal} showCloseOut={false} onChanged={() => void load()} />
                 </div>
               )}
             </div>

@@ -11,7 +11,8 @@
 // differs legitimately between a card and a table row; the MEANING does not.
 import supabase from "../supabase";
 import { tryWrite } from "@/supabase/writes";
-import { updateSubmission } from "../services/dealService";
+import { updateDealStatus, updateSubmission } from "../services/dealService";
+import type { LostReason } from "../types/deals";
 
 export type Frequency = "daily" | "weekly";
 export const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly: 4.33 };
@@ -316,4 +317,126 @@ export function funderMessagePrefill(args: {
     subject: `Re: ${business} — Deal ${dealNo}`,
     body: `Hi — following up on ${business} (Deal ${dealNo}). [write your message here]\n\n${signoff}`,
   };
+}
+
+// ── Decline close-out ────────────────────────────────────────────────────────
+// Every funder passed. Tell the merchant, then park the deal. Shared by the
+// Funder chase tab and the Playbook's FunderWorkspace so the words the merchant
+// receives, and the guards around sending them, are identical on both.
+
+/** Where a closed-out deal lands. `nurture` is the default on purpose: these
+ *  merchants requalify, Sequences C and F exist to bring them back, and `dead`
+ *  is far harder to walk back than it is to set. */
+export type CloseOutOutcome = "nurture" | "dead";
+
+export const CLOSE_OUT_OUTCOMES: { key: CloseOutOutcome; label: string; hint: string }[] = [
+  { key: "nurture", label: "Nurture", hint: "stays in the book — re-engagement sequences keep working it" },
+  { key: "dead", label: "Dead", hint: "off the board for good — hard to walk back" },
+];
+
+/**
+ * REFUSE to close out a merchant who has a live offer on the table. Declining
+ * someone a funder has actually approved is the worst error this screen could
+ * make, so it is a hard block rather than a warning.
+ *
+ * Returns the reason to show, or null when the close-out may proceed.
+ */
+export function closeOutBlockReason(subs: SubmissionLike[], lenderNames?: (string | undefined)[]): string | null {
+  const live: string[] = [];
+  subs.forEach((s, i) => {
+    const k = stateOf(s).key;
+    if (k === "offer" || k === "accepted") live.push(lenderNames?.[i] || "a funder");
+  });
+  if (live.length === 0) return null;
+  return `${live.join(" and ")} ${live.length === 1 ? "has" : "have"} an offer on the table — that has to be resolved before this merchant can be told everyone passed.`;
+}
+
+/**
+ * The decline email. Reviewed by the compliance agent before first ship:
+ * an MCA is a purchase of future receivables, so there is no "loan", no
+ * "credit decision", and the decision is attributed explicitly to the FUNDERS
+ * rather than to us — we are the broker relaying their outcome, not a creditor
+ * issuing a denial, and passive phrasing blurred that.
+ *
+ * Deliberately non-final in tone: ~45-60% of merchants requalify, and this is
+ * the last thing they hear from us before the re-engagement sequences.
+ */
+export function declineCloseoutPrefill(args: {
+  businessName: string | null | undefined;
+  firstName: string | null | undefined;
+  senderName: string;
+}): { subject: string; body: string } {
+  const business = args.businessName || "your business";
+  const first = args.firstName?.trim() || "there";
+  return {
+    subject: `Update on your funding application — ${business}`,
+    body:
+      `Hi ${first},\n\n` +
+      `I wanted to come back to you personally about your application.\n\n` +
+      `We submitted your file to several funders, and unfortunately none of them were able to move ` +
+      `forward at this time. That reflects those funders' criteria as they stand today — not a ` +
+      `permanent judgment on you or your business.\n\n` +
+      `Circumstances change, and so do the programs our funders run. If your revenue, time in ` +
+      `business, or banking picture shifts over the next few months, I'd genuinely welcome another ` +
+      `look — there's no cost to asking and no obligation.\n\n` +
+      `Thank you for the time you put into this. Gathering statements and paperwork is not a small ` +
+      `ask, and I appreciate you doing it.\n\n` +
+      `— ${args.senderName}, Agentic Voice, Inc. dba Momentum Funding · (954) 737-5692`,
+  };
+}
+
+/**
+ * Send the decline, then park the deal — IN THAT ORDER, and never the reverse.
+ *
+ * If the send fails the deal is left exactly as it was, on the board, so a
+ * merchant who never received the email cannot be quietly filed away. The
+ * throw propagates and the caller shows it; a park is never reported when the
+ * email did not go.
+ *
+ * `skipEmail` is for a do_not_contact merchant: park, log WHY no email went,
+ * and say so in the UI. We never email a DND merchant.
+ */
+export async function closeOutDeclined(args: {
+  dealId: string;
+  outcome: CloseOutOutcome;
+  reason: LostReason;
+  subject: string;
+  body: string;
+  skipEmail: boolean;
+  lenderNames: string[];
+  userId: string | null | undefined;
+  byName: string;
+}): Promise<{ emailed: boolean }> {
+  let emailed = false;
+
+  if (!args.skipEmail) {
+    // Throws on failure → the park below never runs.
+    const { data, error } = await supabase.functions.invoke("send-merchant-email", {
+      body: { dealId: args.dealId, subject: args.subject.trim(), body: args.body.trim() },
+    });
+    if (error) throw error;
+    const err = (data as { error?: string } | null)?.error;
+    if (err) throw new Error(err);
+    emailed = true;
+  }
+
+  // Only now does the deal move. updateDealStatus owns the stage-stamp and
+  // backward-move rules; a park into a terminal state is always permitted.
+  await updateDealStatus(args.dealId, args.outcome, args.reason);
+
+  const funders = args.lenderNames.length ? args.lenderNames.join(", ") : "the funders it went to";
+  await logDealActivity({
+    dealId: args.dealId,
+    userId: args.userId,
+    interactionType: "note",
+    subject: `Closed out — all funders declined`,
+    content:
+      `${args.byName} closed this out to ${args.outcome} (${args.reason}). Declined by: ${funders}. ` +
+      (emailed
+        ? `Decline email sent to the merchant — subject "${args.subject.trim()}".`
+        : `NO email sent — merchant is marked do-not-contact.`),
+    newStatus: args.outcome,
+  });
+
+  return { emailed };
 }

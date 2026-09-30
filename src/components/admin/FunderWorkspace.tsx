@@ -15,9 +15,21 @@
 // Neither panel advances a stage: logging an offer here never moves the deal.
 import FunderResponsesBoard from "./FunderResponsesBoard";
 import FunderPicker from "./FunderPicker";
+import DeclineCloseOut from "./DeclineCloseOut";
 import type { DealWithCustomer } from "../../types/deals";
 
-export default function FunderWorkspace({ deal }: { deal: DealWithCustomer }) {
+export default function FunderWorkspace({
+  deal,
+  /** Called after a close-out parks the deal, so the host can refresh. */
+  onChanged,
+  /** The Funder chase tab puts "Declined — close out" on the merchant ROW, so
+   *  it turns this copy off rather than showing the operator two of them. */
+  showCloseOut = true,
+}: {
+  deal: DealWithCustomer;
+  onChanged?: () => void;
+  showCloseOut?: boolean;
+}) {
   return (
     <>
       <FunderResponsesBoard deal={deal} />
@@ -32,6 +44,15 @@ export default function FunderWorkspace({ deal }: { deal: DealWithCustomer }) {
           <FunderPicker deal={deal} />
         </div>
       </details>
+
+      {/* Everyone passed → tell the merchant and park it. Blocks itself while
+          any funder still has an offer on the table, and refuses outright if
+          it cannot read the submissions to check. */}
+      {showCloseOut && (
+        <div className="mt-3">
+          <DeclineCloseOut deal={deal} onDone={onChanged} />
+        </div>
+      )}
     </>
   );
 }
