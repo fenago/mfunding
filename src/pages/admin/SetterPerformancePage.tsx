@@ -646,6 +646,12 @@ interface PipeCounts {
    *  submission out), with no signature we can actually read. The at-or-past
    *  rule requires it; saying how many is what stops it being a quiet claim. */
   signedInferred: number;
+  /** Counted at Application Sent on the strength of a SIGNATURE rather than a
+   *  send stamp — the merchant plainly received an application, we just have
+   *  no record of sending it. Live: MF-2026-0113, Express Redemption, signed
+   *  MCA_Merchant_Funding_Application on 2026-07-22 with no
+   *  application_sent_at and the deal parked at Contacted. */
+  appSentInferred: number;
   /** False when the underlying read failed. The rung then draws "—", never 0 —
    *  a failed signature sweep must not render as three hundred merchants who
    *  refused to sign. */
@@ -665,38 +671,80 @@ interface PipeCounts {
 // today it is ZERO on both products (all 3 submitted real-time deals and all 4
 // at Bank Statements carry a readable signature), so the rule currently changes
 // no number; it exists so the funnel cannot invert the day one of them doesn't.
+/** Which rungs one deal reached, as the cascade sees them. ONE definition,
+ *  used by the funnel, the per-setter rows and the daily table's
+ *  reconciliation line, so those three can never drift apart. */
+interface PipeReach {
+  contacted: boolean;
+  qualifying: boolean;
+  appSent: boolean;
+  signed: boolean;
+  statements: boolean;
+  submitted: boolean;
+  funded: boolean;
+  /** A signature we actually read, as opposed to one inferred from depth. */
+  signedProven: boolean;
+  /** An application_sent_at stamp or a status at-or-past App Sent, as opposed
+   *  to Application Sent inferred from a signature. */
+  appSentStamped: boolean;
+}
+
+/**
+ * THE CASCADE. Each rung is OR'd with every rung below it, all the way to the
+ * bottom of the ladder — which is what makes the funnel monotone BY
+ * CONSTRUCTION rather than by luck.
+ *
+ * It has to run the whole way, and real data proved it: MF-2026-0113 (Express
+ * Redemption) signed MCA_Merchant_Funding_Application on 2026-07-22 and the
+ * deal carries NO application_sent_at, parked in nurture at previous_status
+ * 'contacted'. Stopping the cascade at Signed left exactly that deal counted
+ * at Signed and not at Application Sent — a later rung out-counting an earlier
+ * one, which is the one thing this funnel promises cannot happen. You cannot
+ * sign an application that was never sent to you, so the signature IS the
+ * evidence for the rung above it.
+ */
+function pipelineReach(d: SourceDeal, facts: PipeFacts): PipeReach {
+  const depth = pipelineDepth(d);
+  const funded = depth >= IDX("funded");
+  const submitted = funded || depth >= IDX("submitted_to_funder") || !!facts.submitted?.has(d.id);
+  const statements = submitted || depth >= IDX("bank_statements");
+  const signedProven = !!facts.signed?.has(d.id);
+  const signed = signedProven || statements;
+  const appSentStamped = depth >= IDX("application_sent");
+  const appSent = appSentStamped || signed;
+  const qualifying = appSent || depth >= IDX("qualifying");
+  const contacted = qualifying || depth >= IDX("contacted");
+  return { contacted, qualifying, appSent, signed, statements, submitted, funded, signedProven, appSentStamped };
+}
+
 function computePipeline(deals: SourceDeal[], facts: PipeFacts = NO_PIPE_FACTS): PipeCounts {
   const c: PipeCounts = {
     received: 0, contacted: 0, qualifying: 0, appsSent: 0, signed: 0,
     bankStatements: 0, submitted: 0, funded: 0,
     appointments: 0, fundedAmount: 0, untouched: 0,
-    signedInferred: 0,
+    signedInferred: 0, appSentInferred: 0,
     signedReadable: facts.signed !== null,
     submittedReadable: facts.submitted !== null,
   };
   for (const d of deals) {
     c.received++;
-    const depth = pipelineDepth(d);
-    const isFunded = depth >= IDX("funded");
-    // Deepest-reading-wins, applied outward from the bottom of the ladder.
-    const hitSubmitted =
-      isFunded || depth >= IDX("submitted_to_funder") || !!facts.submitted?.has(d.id);
-    const hitStatements = hitSubmitted || depth >= IDX("bank_statements");
-    const signedProven = !!facts.signed?.has(d.id);
-    const hitSigned = signedProven || hitStatements;
+    const r = pipelineReach(d, facts);
 
-    if (depth >= IDX("contacted")) c.contacted++; else c.untouched++;
-    if (depth >= IDX("qualifying")) c.qualifying++;
-    if (depth >= IDX("application_sent")) c.appsSent++;
-    if (hitSigned) {
+    if (r.contacted) c.contacted++; else c.untouched++;
+    if (r.qualifying) c.qualifying++;
+    if (r.appSent) {
+      c.appsSent++;
+      if (!r.appSentStamped) c.appSentInferred++;
+    }
+    if (r.signed) {
       c.signed++;
       // Only meaningful when the signature read succeeded; when it failed the
       // whole rung renders "—" and every row would count as "inferred".
-      if (!signedProven && c.signedReadable) c.signedInferred++;
+      if (!r.signedProven && c.signedReadable) c.signedInferred++;
     }
-    if (hitStatements) c.bankStatements++;
-    if (hitSubmitted) c.submitted++;
-    if (isFunded) {
+    if (r.statements) c.bankStatements++;
+    if (r.submitted) c.submitted++;
+    if (r.funded) {
       c.funded++;
       c.fundedAmount += Number(d.amount_funded ?? 0);
     }
@@ -777,6 +825,12 @@ function pipelineStagesOf(c: PipeCounts, targetPrefix: string): FunnelStage[] {
       help: "Reached at-or-past the Application Sent rung: an application_sent_at stamp, or a current (or pre-park) status of App Sent or later",
       count: c.appsSent, stepLabel: "of qualified", stepShort: "of qualified",
       stepPct: pct(c.appsSent, c.qualifying), targetKey: key("app_rate_pct"),
+      secondaryLine:
+        c.appSentInferred > 0 ? (
+          <span className="text-[11px] text-amber-600 dark:text-amber-400">
+            {c.appSentInferred.toLocaleString()} counted from a signature, no send on record
+          </span>
+        ) : undefined,
     },
     // ── The three rungs the funnel used to jump straight over ───────────────
     // It went App Sent → Funded, which hid every stage where deals actually
@@ -9379,9 +9433,12 @@ function summariseDaily(deals: DailyDeal[], ctx: DailyContext): DailyMetrics {
   };
   for (const d of deals) {
     m.arrived++;
-    const depth = pipelineDepth(d);
-    if (depth >= IDX("contacted")) m.contactedRung++;
-    if (depth >= IDX("funded")) m.funded++;
+    // The SAME cascade the stage funnel uses, so the reconciliation line below
+    // the table cannot quote a "funnel's Contacted rung" the funnel disagrees
+    // with. Facts are rebuilt from this panel's own reads.
+    const reach = pipelineReach(d, { signed: ctx.signed, submitted: ctx.submitted });
+    if (reach.contacted) m.contactedRung++;
+    if (reach.funded) m.funded++;
     if (d.application_sent_at) {
       if (isPhantomApplicationSend(d)) m.appPhantom++;
       else m.appSent++;
@@ -9570,6 +9627,17 @@ type DailyLoad =
        *  when the pipe last delivered instead of looking like a broken query. */
       lastArrivalAt: string | null;
       lastArrivalUnreadable: boolean;
+      /** Whether that newest arrival came from the VENDOR or was created by
+       *  hand. `lead_source_detail` carries the vendor's own string ("Synergy
+       *  live transfer · …") and is NULL on a deal somebody typed. */
+      lastArrivalIsVendor: boolean;
+      /** Newest arrival the VENDOR actually delivered. This is the one the
+       *  owner would ring Synergy about, and it is a DIFFERENT FACT from the
+       *  newest deal carrying this lead_source — MF-2026-0442 was created by
+       *  hand on 2026-09-29 while the live-transfer pipe has been dry since
+       *  2026-09-07. Conflating the two would have told him the pipe was
+       *  healthy on the day he needed to chase it. */
+      lastVendorArrivalAt: string | null;
     };
 
 function SourceDailyTable({ def }: { def: SourceTabDef }) {
@@ -9629,15 +9697,40 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
     //       empty range can name the last arrival instead of going blank.
     let lastArrivalAt: string | null = null;
     let lastArrivalUnreadable = false;
+    let lastArrivalIsVendor = false;
+    let lastVendorArrivalAt: string | null = null;
     {
-      const { data, error } = await supabase
-        .from("deals")
-        .select("created_at")
-        .eq("lead_source", leadSource)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (error) lastArrivalUnreadable = true;
-      else lastArrivalAt = ((data ?? [])[0] as { created_at: string | null } | undefined)?.created_at ?? null;
+      const [anyRes, vendorRes] = await Promise.all([
+        supabase
+          .from("deals")
+          .select("created_at,lead_source_detail")
+          .eq("lead_source", leadSource)
+          .order("created_at", { ascending: false })
+          .limit(1),
+        // The vendor's own delivery. `lead_source_detail` is written by
+        // live-transfer-intake and is NULL on a hand-created deal, so this is
+        // the only honest read of "when did the pipe last fire".
+        supabase
+          .from("deals")
+          .select("created_at")
+          .eq("lead_source", leadSource)
+          .not("lead_source_detail", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1),
+      ]);
+      if (anyRes.error) {
+        lastArrivalUnreadable = true;
+      } else {
+        const row = (anyRes.data ?? [])[0] as
+          | { created_at: string | null; lead_source_detail: string | null }
+          | undefined;
+        lastArrivalAt = row?.created_at ?? null;
+        lastArrivalIsVendor = !!row?.lead_source_detail;
+      }
+      if (!vendorRes.error) {
+        lastVendorArrivalAt =
+          ((vendorRes.data ?? [])[0] as { created_at: string | null } | undefined)?.created_at ?? null;
+      }
     }
 
     const ids = deals.map((d) => d.id);
@@ -9718,6 +9811,8 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
       submittedError,
       lastArrivalAt,
       lastArrivalUnreadable,
+      lastArrivalIsVendor,
+      lastVendorArrivalAt,
     });
   }, [fromDay, toDay, leadSource, clockApplies]);
 
@@ -9890,11 +9985,15 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
     return w.m.appSent === 0 ? w : null;
   })();
 
-  /** Business days since the pipe last delivered anything. Measured against
-   *  the last arrival ANYWHERE, not just in range, so narrowing the range
-   *  cannot manufacture a drought. */
+  const lastVendorDay = etDayOf(load.lastVendorArrivalAt);
+
+  /** Business days since the VENDOR last delivered. Measured against the last
+   *  vendor arrival ANYWHERE, not just in range, so narrowing the range cannot
+   *  manufacture a drought — and not against the last deal carrying this lead
+   *  source, because one of those was typed by hand on a day the pipe was dry
+   *  and would have reported the vendor as healthy. */
   const droughtDays =
-    lastArrivalDay && lastArrivalDay <= today ? businessDaysSince(lastArrivalDay, today) : null;
+    lastVendorDay && lastVendorDay <= today ? businessDaysSince(lastVendorDay, today) : null;
 
   return (
     <div className="card bg-base-100 border border-base-300 shadow-sm">
@@ -9944,7 +10043,24 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
               {load.lastArrivalUnreadable
                 ? "When this source last delivered could not be read, so nothing is being claimed about it."
                 : lastArrivalDay
-                  ? <>The last {def.noun} arrived <b>{etDayLabel(lastArrivalDay)}</b> ({etStamp(load.lastArrivalAt)} ET). The rows below are real zeros — the vendor delivered nothing, which is not the same as a broken read.</>
+                  ? (
+                    <>
+                      The last {def.noun} on file is dated <b>{etDayLabel(lastArrivalDay)}</b> (
+                      {etStamp(load.lastArrivalAt)} ET)
+                      {load.lastArrivalIsVendor
+                        ? <> and the <b>vendor</b> delivered it.</>
+                        : (
+                          <>
+                            , but it was <b>created by hand</b> — no <code>lead_source_detail</code>, so it did not
+                            come down the vendor pipe.{" "}
+                            {lastVendorDay
+                              ? <>The vendor last delivered on <b>{etDayLabel(lastVendorDay)}</b>.</>
+                              : <>The vendor has <b>never</b> delivered one.</>}
+                          </>
+                        )}{" "}
+                      The rows below are real zeros — nothing arrived, which is not the same as a broken read.
+                    </>
+                  )
                   : <>This source has <b>never</b> delivered a {def.noun}. The rows below are real zeros.</>}
             </span>
           </div>
@@ -10156,14 +10272,21 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
               </>,
             );
           }
-          if (droughtDays !== null && droughtDays >= 2 && lastArrivalDay) {
+          if (droughtDays !== null && droughtDays >= 2 && lastVendorDay) {
             notes.push(
               <>
                 <b className="text-amber-600 dark:text-amber-400">
-                  Last arrival {etDayLabel(lastArrivalDay)} — {droughtDays} business day
-                  {droughtDays === 1 ? "" : "s"} with no {def.noun}s.
+                  Last vendor {def.noun} {etDayLabel(lastVendorDay)} — {droughtDays} business day
+                  {droughtDays === 1 ? "" : "s"} with nothing delivered.
                 </b>{" "}
                 Weekends are not counted, so this is a real gap in delivery, not a Monday-morning artefact.
+                {lastArrivalDay && lastArrivalDay > lastVendorDay && (
+                  <>
+                    {" "}A {def.noun} dated <b>{etDayLabel(lastArrivalDay)}</b> exists but was{" "}
+                    <b>created by hand</b>, not delivered by the vendor (no{" "}
+                    <code>lead_source_detail</code>), so it does not mean the pipe is running.
+                  </>
+                )}
               </>,
             );
           }
