@@ -91,22 +91,44 @@ export function scoreDeal(i: UWInputs, c: ScorecardConfig = DEFAULT_SCORECARD): 
   return { score, recommendation, flags, breakdown };
 }
 
-/** The active scorecard config (falls back to DEFAULT_SCORECARD). */
+/**
+ * The active scorecard config, falling back to DEFAULT_SCORECARD when there
+ * genuinely isn't one.
+ *
+ * ⚠ THROWS when the read FAILS, and that distinction is the whole point. This
+ * used to swallow the error and hand back DEFAULT_SCORECARD either way, so a
+ * configured scorecard that couldn't be read silently became the default one —
+ * and deals got scored against weights nobody chose, with nothing on screen
+ * saying so. "No scorecard configured" and "we couldn't read the scorecard"
+ * produce the same object and must not produce the same behaviour.
+ */
 export async function getActiveScorecard(): Promise<ScorecardConfig> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("underwriting_scorecards")
     .select("config")
     .eq("is_active", true)
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (error) throw new Error(`Couldn't read the active underwriting scorecard — ${error.message}`);
   return { ...DEFAULT_SCORECARD, ...((data?.config as Partial<ScorecardConfig>) ?? {}) };
 }
 
 /** Upsert the active scorecard config (single active row). */
 export async function saveScorecard(config: ScorecardConfig): Promise<void> {
-  const { data: existing } = await supabase
+  // ⚠ This read decides UPDATE vs INSERT. If it fails and we treat that as "no
+  // active row", we INSERT a second active scorecard while one already exists —
+  // breaking the single-active-row invariant this function's own name asserts,
+  // and leaving getActiveScorecard to pick between two by updated_at. A write
+  // whose branch depends on a read must not run on a read that failed.
+  const { data: existing, error: readError } = await supabase
     .from("underwriting_scorecards").select("id").eq("is_active", true).limit(1).maybeSingle();
+  if (readError) {
+    throw new Error(
+      `Couldn't check for an existing scorecard (${readError.message}), so nothing was saved — ` +
+      `writing now could create a second active scorecard. Reload and try again.`,
+    );
+  }
   if (existing) {
     await mustWrite("update underwriting scorecard", supabase.from("underwriting_scorecards").update({ config }).eq("id", existing.id));
   } else {

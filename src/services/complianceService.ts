@@ -56,10 +56,19 @@ const TERMINAL = ["declined", "dead", "funded", "renewal_eligible", "restructure
 export async function getDisclosureExposure(): Promise<DisclosureExposure[]> {
   const disclosures = await listDisclosures();
 
-  const { data: deals } = await supabase
+  // ⚠ A failed read here produces zero open deals in every state, which the
+  // page renders as NO disclosure gaps — a compliance all-clear derived from a
+  // read that never happened, on the screen that decides whether a state's
+  // disclosure has to be finalized before an offer goes out.
+  const { data: deals, error } = await supabase
     .from("deals")
     .select("id, status, customer:customers!customer_id ( address_state )")
     .not("status", "in", `(${TERMINAL.join(",")})`);
+  if (error) {
+    throw new Error(
+      `Couldn't read open deals by state — ${error.message}. Exposure is UNKNOWN; this is not "no gaps".`,
+    );
+  }
 
   // Count open deals per state (match 2-letter code or full name, case-insensitive).
   const counts = new Map<string, number>();

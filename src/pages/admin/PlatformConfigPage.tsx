@@ -33,6 +33,12 @@ const SCORECARD_GROUPS: { title: string; fields: { key: keyof ScorecardConfig; l
 export default function PlatformConfigPage() {
   const [branding, setBranding] = useState<Branding>(DEFAULT_BRANDING);
   const [scorecard, setScorecard] = useState<ScorecardConfig>(DEFAULT_SCORECARD);
+  // Non-null = the scorecard read FAILED, so the editor below is showing
+  // DEFAULT_SCORECARD as a placeholder — NOT as the saved configuration.
+  // Saving from that state would overwrite a real scorecard with defaults, the
+  // same way FunderRecipeCard's blank form would have wiped a funder's
+  // submission address. Save is blocked while this is set.
+  const [scorecardUnreadable, setScorecardUnreadable] = useState<string | null>(null);
   const [leadAssignment, setLeadAssignment] = useState<LeadAssignmentSetting>(DEFAULT_LEAD_ASSIGNMENT);
   const [docSettings, setDocSettings] = useState<CloserDocSettings>(DEFAULT_CLOSER_DOC_SETTINGS);
   const [closers, setClosers] = useState<Closer[]>([]);
@@ -45,7 +51,9 @@ export default function PlatformConfigPage() {
 
   useEffect(() => {
     getBranding().then(setBranding).catch(() => {});
-    getActiveScorecard().then(setScorecard).catch(() => {});
+    getActiveScorecard()
+      .then((sc) => { setScorecard(sc); setScorecardUnreadable(null); })
+      .catch((e) => setScorecardUnreadable(e instanceof Error ? e.message : "the read failed"));
     getLeadAssignment().then(setLeadAssignment).catch(() => {});
     getCloserDocSettings().then(setDocSettings).catch(() => {});
     getAllClosers().then(setClosers).catch(() => {});
@@ -58,6 +66,7 @@ export default function PlatformConfigPage() {
     try { await saveBranding(branding); flash("Branding saved"); } finally { setBusy(false); }
   }
   async function persistScorecard() {
+    if (scorecardUnreadable) return; // guarded in the UI too; belt and braces
     setBusy(true);
     try { await saveScorecard(scorecard); flash("Scorecard saved"); } finally { setBusy(false); }
   }
@@ -255,7 +264,21 @@ export default function PlatformConfigPage() {
             </div>
           ))}
         </div>
-        <button onClick={persistScorecard} disabled={busy} className="btn-primary text-sm mt-4 disabled:opacity-60">Save scorecard</button>
+        {scorecardUnreadable && (
+          <div className="mt-3 rounded-md border-2 border-rose-400 dark:border-rose-600 bg-rose-50 dark:bg-rose-900/25 px-3 py-2.5">
+            <p className="text-[13px] font-semibold text-rose-900 dark:text-rose-200">
+              ⚠ Couldn't read the saved scorecard — {scorecardUnreadable}
+            </p>
+            <p className="mt-1 text-[11px] text-rose-800 dark:text-rose-300">
+              The weights above are the <span className="font-semibold">defaults shown as a placeholder</span>, not your
+              saved configuration. <span className="font-semibold">Saving is disabled</span> — a save here would overwrite
+              the real scorecard. Reload the page.
+            </p>
+          </div>
+        )}
+        <button onClick={persistScorecard} disabled={busy || !!scorecardUnreadable}
+          title={scorecardUnreadable ? "Disabled: the saved scorecard couldn't be read, so saving would overwrite it with defaults." : undefined}
+          className="btn-primary text-sm mt-4 disabled:opacity-60">Save scorecard</button>
       </div>
 
       {/* Pipeline reference (read-only) */}

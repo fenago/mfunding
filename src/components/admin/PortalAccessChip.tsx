@@ -28,14 +28,22 @@ export default function PortalAccessChip({ customerId }: { customerId: string })
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("customers")
       .select("user_id, portal_invited_at, email")
       .eq("id", customerId)
       .maybeSingle();
+    // ⚠ A failed read used to fall straight through as user_id=null,
+    // portal_invited_at=null — which renders the amber "No portal access" chip
+    // whose tooltip says "This merchant CANNOT sign in". That is an assertion
+    // about the merchant made from a read that never happened, and it invites
+    // a closer to re-send an invite to someone who already has an account.
+    if (error) { setLoadError(error.message); return; }
+    setLoadError(null);
     setState({
       userId: (data?.user_id as string | null) ?? null,
       invitedAt: (data?.portal_invited_at as string | null) ?? null,
@@ -90,6 +98,19 @@ export default function PortalAccessChip({ customerId }: { customerId: string })
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open, load]);
+
+  // Three states, not two: loading, read, and couldn't-read. The last one must
+  // never wear the amber "No portal access" chip.
+  if (loadError) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-600"
+        title={`Couldn't check this merchant's portal access — ${loadError}. This is NOT "no portal access": don't send an invite off this chip, reload first.`}
+      >
+        ⚠ Portal: couldn't check
+      </span>
+    );
+  }
 
   if (!state) {
     return (

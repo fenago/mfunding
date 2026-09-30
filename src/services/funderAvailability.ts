@@ -44,6 +44,10 @@ export interface FunderReadiness {
 export interface FunderAvailability {
   rows: FunderReadiness[];
   hasUnderwriting: boolean; // false → box-fit couldn't run; widget shows the nudge
+  /** Non-null = the underwriting/customer reads FAILED, so hasUnderwriting=false
+   *  means "we couldn't look", NOT "no run exists". Optional so existing readers
+   *  are unaffected. See loadDealFit. */
+  factsUnreadable?: string | null;
 }
 
 // customer_document_type slugs used as the docs-on-file vocabulary.
@@ -88,6 +92,9 @@ interface ProgramRow {
 // null — a null metric makes the matching criterion "unchecked", never a pass.
 export interface DealFit {
   hasUnderwriting: boolean;
+  /** Non-null = a read behind these facts failed. hasUnderwriting=false is then
+   *  unproven, and box-fit must NOT fall back to the optimistic docs-only pass. */
+  factsUnreadable?: string | null;
   positions: number | null; // open MCA positions
   revenue: number | null; // bank-verified true avg monthly revenue
   worstNegDays: number | null; // worst full month's negative-day count
@@ -294,11 +301,15 @@ async function loadDealFit(deal: DealWithCustomer): Promise<DealFit> {
   // address_state isn't on DealWithCustomer.customer — fetch it (+ industry/tib
   // as a fallback) straight from customers.
   if (deal.customer_id) {
-    const { data: cust } = await supabase
+    const { data: cust, error: custError } = await supabase
       .from("customers")
       .select("address_state, industry, time_in_business")
       .eq("id", deal.customer_id)
       .maybeSingle();
+    // A null state/industry/tib already lands in evaluateBox's `unchecked`, which
+    // is honest either way — but only if we know it was null. Record the failure
+    // so the widget can say which it was.
+    if (custError) base.factsUnreadable = `the merchant record (${custError.message})`;
     if (cust) {
       base.state = (cust as { address_state: string | null }).address_state ?? null;
       base.industry = base.industry ?? (cust as { industry: string | null }).industry ?? null;
@@ -306,13 +317,26 @@ async function loadDealFit(deal: DealWithCustomer): Promise<DealFit> {
     }
   }
 
-  const { data: uw } = await supabase
+  const { data: uw, error: uwError } = await supabase
     .from("deal_underwriting")
     .select("metrics")
     .eq("deal_id", deal.id)
     .order("version", { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  // ⚠ THIS ONE PRODUCES A FALSE GREEN LIGHT, NOT A MISSING LIST.
+  // hasUnderwriting=false makes getFunderAvailability return tier "fits_ready",
+  // ready: true for EVERY funder — the docs-only fallback, which is a sound
+  // answer when no run exists and a dangerous one when the run exists and we
+  // couldn't read it. A closer would see every funder green on a deal that
+  // plainly busts half their boxes.
+  if (uwError) {
+    base.factsUnreadable = base.factsUnreadable
+      ? `${base.factsUnreadable} and the underwriting run (${uwError.message})`
+      : `the underwriting run (${uwError.message})`;
+    return base;
+  }
 
   const metrics = (uw as { metrics: Record<string, unknown> } | null)?.metrics;
   if (!metrics) return base;
@@ -371,8 +395,19 @@ export async function getFunderAvailability(deal: DealWithCustomer): Promise<Fun
         return { lenderId: p.lender_id, name, tier: "waiting_docs", ready: false, missing, advisories, boxReasons: [], unchecked: [], bankMonths, conditions };
       }
       // No underwriting run → box-fit unknowable → docs-only "ready".
+      // But if the facts were UNREADABLE rather than absent, "ready" is a claim
+      // we cannot make: it would green-light every funder off a failed read.
+      // Same row, minus the green — and `unchecked` says why.
       if (!fit.hasUnderwriting) {
-        return { lenderId: p.lender_id, name, tier: "fits_ready", ready: true, missing, advisories, boxReasons: [], unchecked: [], bankMonths, conditions };
+        const unreadable = fit.factsUnreadable
+          ? [`box-fit not evaluated — couldn't read ${fit.factsUnreadable}`]
+          : [];
+        return {
+          lenderId: p.lender_id, name,
+          tier: fit.factsUnreadable ? "waiting_docs" : "fits_ready",
+          ready: fit.factsUnreadable ? false : true,
+          missing, advisories, boxReasons: [], unchecked: unreadable, bankMonths, conditions,
+        };
       }
       const { reasons, unchecked } = evaluateBox(p, fit);
       const tier: FunderTier = reasons.length > 0 ? "out_of_box" : "fits_ready";
@@ -382,5 +417,5 @@ export async function getFunderAvailability(deal: DealWithCustomer): Promise<Fun
   const order: Record<FunderTier, number> = { fits_ready: 0, out_of_box: 1, waiting_docs: 2 };
   rows.sort((a, b) => (order[a.tier] - order[b.tier]) || a.name.localeCompare(b.name));
 
-  return { rows, hasUnderwriting: fit.hasUnderwriting };
+  return { rows, hasUnderwriting: fit.hasUnderwriting, factsUnreadable: fit.factsUnreadable ?? null };
 }

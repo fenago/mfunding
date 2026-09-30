@@ -14,7 +14,14 @@ export default function CompliancePage() {
   const [savingId, setSavingId] = useState<string | null>(null);
 
   useEffect(() => { listDisclosures().then(setRows).catch(() => {}).finally(() => setLoading(false)); }, []);
-  useEffect(() => { getDisclosureExposure().then(setExposure).catch(() => {}); }, []);
+  // An exposure read that failed must not render as "no gaps" — silence here
+  // reads as a compliance all-clear.
+  const [exposureError, setExposureError] = useState<string | null>(null);
+  useEffect(() => {
+    getDisclosureExposure()
+      .then((e) => { setExposure(e); setExposureError(null); })
+      .catch((e) => setExposureError(e instanceof Error ? e.message : "the exposure read failed"));
+  }, []);
 
   // Alert when open deals sit in a state whose disclosure isn't finalized.
   const alerts = exposure.filter((e) => e.open_deals > 0 && !e.finalized);
@@ -55,6 +62,18 @@ export default function CompliancePage() {
       </div>
 
       {/* Missing-disclosure alerts — open deals in states without finalized text */}
+      {exposureError && (
+        <div className="bg-rose-50 dark:bg-rose-900/25 border-2 border-rose-400 dark:border-rose-600 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <ExclamationTriangleIcon className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+            <h2 className="font-semibold text-rose-900 dark:text-rose-200">Disclosure exposure could not be checked</h2>
+          </div>
+          <p className="text-sm text-rose-800 dark:text-rose-300">
+            {exposureError} <span className="font-semibold">An empty gap list below does NOT mean there are no gaps</span> —
+            we could not count open deals by state. Reload before treating any state as clear.
+          </p>
+        </div>
+      )}
       {alerts.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-3">

@@ -33,6 +33,10 @@ const baseMissing = (m: string) => m.replace(/\s*\(.*\)$/, "").trim();
 export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCustomer }) {
   const [rows, setRows] = useState<FunderReadiness[]>([]);
   const [hasUnderwriting, setHasUnderwriting] = useState(true);
+  // Non-null = the facts behind box-fit couldn't be read, so hasUnderwriting
+  // false means "we couldn't look", not "no run exists" — and the nudge below
+  // must not tell a closer to run an underwriter that may already have run.
+  const [factsUnreadable, setFactsUnreadable] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showOutOfBox, setShowOutOfBox] = useState(false);
@@ -50,6 +54,7 @@ export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCu
         if (!cancelled) {
           setRows(r.rows);
           setHasUnderwriting(r.hasUnderwriting);
+          setFactsUnreadable(r.factsUnreadable ?? null);
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to check funder availability");
@@ -138,9 +143,17 @@ export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCu
           <>
             {/* No underwriting run → box-fit couldn't run; nudge to run it. */}
             {!hasUnderwriting && (
-              <p className="text-[11px] text-amber-700 dark:text-amber-300 inline-flex items-center gap-1 rounded-md bg-amber-50 dark:bg-amber-900/20 px-2 py-1">
-                <SparklesIcon className="w-3.5 h-3.5" /> Showing document readiness only — run the AI underwriter for fit-checking (position, revenue, negative days…).
-              </p>
+              factsUnreadable ? (
+                <p className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 rounded-md bg-rose-50 dark:bg-rose-900/25 px-2 py-1.5">
+                  ⚠ Box-fit was NOT evaluated — couldn't read {factsUnreadable}. No funder below is confirmed a fit,
+                  and this is <span className="underline">not</span> "no underwriting on file" — the run may well exist.
+                  Reload before you submit off this list.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 inline-flex items-center gap-1 rounded-md bg-amber-50 dark:bg-amber-900/20 px-2 py-1">
+                  <SparklesIcon className="w-3.5 h-3.5" /> Showing document readiness only — run the AI underwriter for fit-checking (position, revenue, negative days…).
+                </p>
+              )
             )}
 
             {/* Scoreboard summary — always the first thing you read */}

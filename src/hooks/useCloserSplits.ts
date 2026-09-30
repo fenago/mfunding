@@ -20,8 +20,28 @@ export const DEFAULT_CLOSER_SPLITS: CloserSplits = {
 
 interface UseCloserSplitsResult {
   splits: CloserSplits;
-  /** True once we've confirmed the user has a matching `closers` row. */
+  /** True once we've confirmed the user has a matching `closers` row.
+   *  ⚠ FALSE MEANS "CONFIRMED NO ROW", NOT "WE DIDN'T CHECK" — see `unreadable`. */
   hasCloser: boolean;
+  /**
+   * Non-null = the `closers` read FAILED, so we do not know this person's
+   * splits or whether they are a closer at all.
+   *
+   * This used to be indistinguishable from "not a closer": a failed read fell
+   * into the same else-branch as a missing row and served
+   * DEFAULT_CLOSER_SPLITS with hasCloser=false. Two separate harms:
+   *
+   *   MONEY ON SCREEN. The commission calculator and the per-deal "your cut"
+   *   figure would show the 30% default instead of the rate the person
+   *   actually negotiated, labelled "default rates" as though that were a
+   *   fact about them rather than about a read that didn't happen.
+   *
+   *   A GATE THAT FAILED OPEN. useRenewalsAccess computes
+   *   `isSuperAdmin || !hasCloser || renewalsEnabled`, so hasCloser=false
+   *   GRANTED renewals to a closer whose renewals_enabled is off. A failed
+   *   read must never widen access; it now fails closed and says why.
+   */
+  unreadable: string | null;
   /** The closer's per-user renewals gate. Meaningful only when hasCloser is true. */
   renewalsEnabled: boolean;
   loading: boolean;
@@ -37,6 +57,7 @@ export function useCloserSplits(): UseCloserSplitsResult {
   const [splits, setSplits] = useState<CloserSplits>(DEFAULT_CLOSER_SPLITS);
   const [hasCloser, setHasCloser] = useState(false);
   const [renewalsEnabled, setRenewalsEnabled] = useState(false);
+  const [unreadable, setUnreadable] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -47,17 +68,30 @@ export function useCloserSplits(): UseCloserSplitsResult {
           setSplits(DEFAULT_CLOSER_SPLITS);
           setHasCloser(false);
           setRenewalsEnabled(false);
+          setUnreadable(null); // no signed-in user is a known state, not a failed read
           setLoading(false);
         }
         return;
       }
       setLoading(true);
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("closers")
         .select("company_lead_split, self_gen_split, renewal_split, renewals_enabled")
         .eq("user_id", effectiveUserId)
         .maybeSingle();
       if (cancelled) return;
+      if (error) {
+        // Do NOT fall through to the no-row branch. We keep the defaults so
+        // nothing renders NaN, but `unreadable` tells every consumer that the
+        // numbers are a placeholder and the gates must not open on them.
+        setSplits(DEFAULT_CLOSER_SPLITS);
+        setHasCloser(false);
+        setRenewalsEnabled(false);
+        setUnreadable(error.message);
+        setLoading(false);
+        return;
+      }
+      setUnreadable(null);
       if (data) {
         setSplits({
           company_lead_split: data.company_lead_split,
@@ -79,7 +113,7 @@ export function useCloserSplits(): UseCloserSplitsResult {
     };
   }, [effectiveUserId]);
 
-  return { splits, hasCloser, renewalsEnabled, loading };
+  return { splits, hasCloser, renewalsEnabled, unreadable, loading };
 }
 
 interface UseRenewalsAccessResult {
@@ -96,8 +130,12 @@ interface UseRenewalsAccessResult {
  */
 export function useRenewalsAccess(): UseRenewalsAccessResult {
   const { isSuperAdmin } = useUserProfile();
-  const { hasCloser, renewalsEnabled, loading } = useCloserSplits();
-  const canSeeRenewals = isSuperAdmin || !hasCloser || renewalsEnabled;
+  const { hasCloser, renewalsEnabled, unreadable, loading } = useCloserSplits();
+  // FAIL CLOSED on an unreadable `closers` row. `!hasCloser` is the "plain
+  // admin keeps existing access" allowance, and a failed read used to borrow it
+  // — silently granting renewals to a closer whose renewals_enabled is off.
+  // A super_admin still passes, because that right doesn't come from this read.
+  const canSeeRenewals = isSuperAdmin || (unreadable ? false : (!hasCloser || renewalsEnabled));
   return { canSeeRenewals, loading };
 }
 

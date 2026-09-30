@@ -464,11 +464,13 @@ export default function PlaybooksPage() {
     refetchedCampaigns.current.add(id);
     listCampaigns().then(setCampaigns).catch(() => {});
   }, [deal?.campaign_id, dealCampaign]);
-  const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
+  const { splits, hasCloser, renewalsEnabled, unreadable: splitsUnreadable } = useCloserSplits();
   const { isAdmin, isSuperAdmin, profile, effectiveUserId } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
-  // anyone without a closer row keeps default access.
-  const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
+  // anyone without a closer row keeps default access. An UNREADABLE closers row
+  // fails CLOSED — `!hasCloser` is the plain-admin allowance and a failed read
+  // must not borrow it to widen access. (Mirrors useRenewalsAccess.)
+  const canRenew = isSuperAdmin || (splitsUnreadable ? false : (!hasCloser || renewalsEnabled));
   // Setters (role=closer) must never see their own cut or split % in the
   // playbook — only management does. The DEAL's size ("$ in play", funding
   // amount) stays visible to everyone; this hides the personal payout math.
@@ -1238,7 +1240,7 @@ export default function PlaybooksPage() {
       )}
 
       {/* My commission calculator — management only (it reveals the split math) */}
-      {showEconomics && <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} />}
+      {showEconomics && <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} splitsUnreadable={splitsUnreadable} />}
 
       {/* Steps */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
@@ -1309,6 +1311,7 @@ export default function PlaybooksPage() {
               openEditLead={() => setShowEditLead(true)}
               splits={splits}
               hasCloser={hasCloser}
+              splitsUnreadable={splitsUnreadable}
               showEconomics={showEconomics}
               canReassign={canReassignDeal}
               closerOptions={closerOptions}
@@ -3653,7 +3656,7 @@ function OpeningScriptCard({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
-function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, showEconomics, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication, onNotify }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; showEconomics: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void; onNotify: (text: string, tone?: "ok" | "error") => void }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, splitsUnreadable, showEconomics, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication, onNotify }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; splitsUnreadable: string | null; showEconomics: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void; onNotify: (text: string, tone?: "ok" | "error") => void }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -4120,10 +4123,16 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Personal cut + split % — management only. The "$ in play" chip
                   above is the DEAL's size and stays visible to setters. */}
               {showEconomics && (
-                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white dark:bg-emerald-600"
-                  title={`Your cut at your ${splits.company_lead_split}% company-lead split${hasCloser ? "" : " (default rate)"}`}>
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full text-white ${splitsUnreadable ? "bg-slate-500 dark:bg-slate-600" : "bg-emerald-600 dark:bg-emerald-600"}`}
+                  title={splitsUnreadable
+                    ? `We couldn't read your commission split (${splitsUnreadable}), so this is the ${splits.company_lead_split}% DEFAULT, not your rate. Don't quote this figure.`
+                    : `Your cut at your ${splits.company_lead_split}% company-lead split${hasCloser ? "" : " (default rate)"}`}>
                   your cut ≈ ${Math.round(myCut).toLocaleString()}
-                  <span className="ml-1 font-normal opacity-90">· {splits.company_lead_split}% company-lead split</span>
+                  <span className="ml-1 font-normal opacity-90">
+                    {splitsUnreadable
+                      ? `· ⚠ split unreadable — ${splits.company_lead_split}% default shown`
+                      : `· ${splits.company_lead_split}% company-lead split`}
+                  </span>
                 </span>
               )}
             </>
@@ -4738,7 +4747,7 @@ function CloseDealModal({
 // Compact "what do I make on this deal?" calculator for the signed-in closer.
 // Uses their own splits (or default 30/65/30 when they have no closers row).
 
-function CommissionCalculator({ splits, hasCloser, canRenew }: { splits: CloserSplits; hasCloser: boolean; canRenew: boolean }) {
+function CommissionCalculator({ splits, hasCloser, canRenew, splitsUnreadable }: { splits: CloserSplits; hasCloser: boolean; canRenew: boolean; splitsUnreadable: string | null }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState<number>(COMMISSION_DEFAULTS.AVERAGE_DEAL_SIZE);
   const [isRenewal, setIsRenewal] = useState(false);
@@ -4773,11 +4782,18 @@ function CommissionCalculator({ splits, hasCloser, canRenew }: { splits: CloserS
           <CalculatorIcon className="w-5 h-5 text-emerald-600" /> 💰 My commission calculator
         </span>
         <span className="flex items-center gap-2">
-          {!hasCloser && (
+          {/* "default rates" is a claim that this person HAS no negotiated
+              split. When the read failed we don't know that, and saying it
+              about someone's pay is the wrong way round. */}
+          {splitsUnreadable ? (
+            <span className="text-[10px] uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              ⚠ split unreadable
+            </span>
+          ) : !hasCloser ? (
             <span className="text-[10px] uppercase px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
               default rates
             </span>
-          )}
+          ) : null}
           <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} />
         </span>
       </button>
@@ -4867,10 +4883,12 @@ function CommissionCalculator({ splits, hasCloser, canRenew }: { splits: CloserS
               </div>
             </div>
           </div>
-          <p className="text-[11px] text-gray-400">
-            {hasCloser
-              ? "Uses your personal splits from Admin → Closers."
-              : "You have no closer profile yet — showing default rates (30% company-lead, 65% self-gen, 30% renewal)."}
+          <p className={`text-[11px] ${splitsUnreadable ? "font-semibold text-amber-700 dark:text-amber-300" : "text-gray-400"}`}>
+            {splitsUnreadable
+              ? `⚠ We couldn't read your commission profile — ${splitsUnreadable}. These are the DEFAULT rates (30% company-lead, 65% self-gen, 30% renewal), NOT confirmation that yours are the defaults. Reload before you quote any of these figures.`
+              : hasCloser
+                ? "Uses your personal splits from Admin → Closers."
+                : "You have no closer profile yet — showing default rates (30% company-lead, 65% self-gen, 30% renewal)."}
           </p>
         </div>
       )}
