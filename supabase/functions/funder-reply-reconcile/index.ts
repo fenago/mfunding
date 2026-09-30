@@ -181,9 +181,20 @@ async function extractSignature(db: SupabaseClient, body: string): Promise<Extra
   if (!text) return empty;
   // The signature is near the end; also drop the quoted original so we don't
   // read the merchant's / our own text.
+  //
+  // ⚠️ `>= 0`, NOT `> 0` — and here the consequence is a WRONG CONTACT RECORD,
+  // not just a wrong summary. A reply that is nothing but quoted history (hit
+  // reply, attach a file, type nothing) puts the marker at index 0, so a `> 0`
+  // guard strips nothing, and the only signature block left in the text is
+  // OURS. We would then extract our own name, title, phone and email and file
+  // them as the funder representative's contact details.
+  //
+  // Stripping to empty is the correct answer: a quote-only reply contains no
+  // signature of theirs, so the honest result is "none found".
   let sig = text;
   const q = sig.search(/\bOn\s.{4,80}\swrote:/);
-  if (q > 0) sig = sig.slice(0, q).trim();
+  if (q >= 0) sig = sig.slice(0, q).trim();
+  if (!sig) return empty;
   sig = sig.slice(-1200);
 
   const system =
@@ -246,9 +257,14 @@ function extractSignaturePhone(rawBody: string, personName?: string | null): str
   const text = toText(rawBody);
   if (!text) return null;
   // Drop the quoted original — the signature we want is our correspondent's.
+  // `>= 0`, not `> 0`: see extractSignature above. On a quote-only body the
+  // old guard stripped nothing and this returned OUR OWN phone number as the
+  // funder's. Empty after stripping means "they left no signature", which is
+  // the truth and is what null is for.
   let sig = text;
   const q = sig.search(/\bOn\s.{4,80}\swrote:/);
-  if (q > 0) sig = sig.slice(0, q).trim();
+  if (q >= 0) sig = sig.slice(0, q).trim();
+  if (!sig) return null;
   const lines = sig.split(/\n/).map((l) => l.trim()).filter(Boolean);
   const tail = lines.slice(-18); // the signature block lives at the end
 

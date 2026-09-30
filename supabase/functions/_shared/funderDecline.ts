@@ -37,7 +37,12 @@ export interface DeclineParse {
   reason_categories: DeclineCategory[];
   verbatim_quote: string;
   confidence: "high" | "medium" | "low";
-  method: "llm" | "heuristic";
+  /**
+   * How this parse was produced. `no_typed_text` means the reply carried no
+   * typed words at all (body was only the quoted thread) — recorded explicitly
+   * so a surface can say WHY there is no reason, instead of rendering a blank.
+   */
+  method: "llm" | "heuristic" | "no_typed_text";
   model: string | null;
   /** Present when the funder is asking for stips rather than passing. */
   is_stip_request: boolean;
@@ -143,13 +148,36 @@ export function coreBody(raw: string): string {
     .replace(/\s+/g, " ")
     .trim();
   // Quoted original.
+  //
+  // ⚠️ `>= 0`, NOT `> 0`. When a reply is nothing BUT quoted history — someone
+  // hits reply, attaches a file, types no text — the marker sits at index 0,
+  // a `> 0` guard is false, nothing is stripped, and OUR OWN quoted email
+  // survives as "what the funder wrote". It then gets classified as their
+  // decline. The guard fails in exactly the case stripping matters most.
+  //
+  // Found on the merchant path (poll-funder-replies, fixed in ba765cb), where
+  // it described an inbound reply carrying eight of the merchant's bank
+  // statements as "an outbound email from broker Kristine at Momentum Funding".
+  // As funder-match put it: an unstripped body is not "no quote found", it is
+  // "the whole thing was quote and we didn't notice" — the failure and the
+  // success produce identical-looking output, so neither the code nor the
+  // reader can tell them apart.
+  //
+  // No live instance on the funder side: 0 of 153 funder_replies have a body
+  // starting with the quote marker. Fixed as a latent defect, not an observed
+  // one, because a decline nobody can explain in six weeks is a worse way to
+  // find out.
   const quote = t.search(/\bOn\s.{4,80}\swrote:/i);
-  if (quote > 0) t = t.slice(0, quote).trim();
+  if (quote >= 0) t = t.slice(0, quote).trim();
   // Legal / confidentiality boilerplate that dwarfs the one real sentence.
+  // SAME BUG, five lines down, and nobody had flagged it: a funder whose
+  // template leads with a confidentiality notice starts the match at index 0,
+  // so `> 0` kept the entire notice and classified the decline off legal
+  // boilerplate instead of the one sentence that says why.
   const legal = t.search(
     /(The information contained in this e-?mail|This e-?mail transmission|CONFIDENTIALITY NOTICE|This message and any attachments)/i,
   );
-  if (legal > 0) t = t.slice(0, legal).trim();
+  if (legal >= 0) t = t.slice(0, legal).trim();
   return t;
 }
 
@@ -232,12 +260,62 @@ export function heuristicDecline(text: string): DeclineParse | null {
  * BOTH give up — the row then stays unparsed and the next cron retries it, so a
  * transient provider outage never permanently loses a decline.
  */
+/**
+ * The summary for a reply that contained NO TYPED TEXT — the body was nothing
+ * but quoted history.
+ *
+ * ⚠️ NEVER HAND THE CLASSIFIER AN EMPTY STRING. Fixing the `> 0` guard turns
+ * "wrong text" into "no text", and that is only an improvement if something
+ * downstream knows what empty MEANS. It didn't: `parseFunderReply` returned
+ * null on an empty body, `funder-decline-intel` counted that as `deferred` and
+ * left `parsed_at` NULL, so the row requeued forever and never surfaced. On the
+ * boards, `response_summary` rendered as a blank chip.
+ *
+ * As processor-funders put it: an attachment-only DECLINE would show as
+ * "✉ Replied" with an empty box rather than "❌ Declined" — a real event
+ * rendering as absence, which is the same defect class one step further down.
+ *
+ * ⚠️ AND WE DO NOT INVENT THE ATTACHMENT COUNT. `funder_replies` has no
+ * attachments column, so the funder path genuinely does not know N. Saying
+ * "3 attachments" because it reads better would be fabricating the one number
+ * a human would act on. When N is known (callers that have it) we state it;
+ * when it is not, we say what we do know and tell them to look.
+ */
+export function noTypedTextNote(attachmentCount?: number | null): string {
+  const n = typeof attachmentCount === "number" && attachmentCount > 0 ? attachmentCount : null;
+  return n
+    ? `Replied with ${n} attachment${n === 1 ? "" : "s"} and no typed text — open the email to read them.`
+    : "Replied with no typed text — the body was only the quoted thread. Open the email to see whether anything was attached.";
+}
+
 export async function parseFunderReply(
   db: SupabaseClient,
-  o: { subject?: string | null; body: string; lenderName?: string | null },
+  o: {
+    subject?: string | null;
+    body: string;
+    lenderName?: string | null;
+    /** Pass when the caller knows it. Omitted means UNKNOWN, never zero. */
+    attachmentCount?: number | null;
+  },
 ): Promise<DeclineParse | null> {
   const body = coreBody(o.body);
-  if (!body) return null;
+  // NO TYPED TEXT — a defined answer, not null and not "".
+  // Returning null here left the row queued forever with parsed_at NULL and a
+  // blank summary on every board. This stamps it, says why, and flags LOW
+  // confidence: we cannot rule out that an attached PDF is itself a decline
+  // letter, so `is_decline: false` is the honest default and NOT a verdict.
+  if (!body) {
+    return {
+      is_decline: false,
+      reason_categories: [],
+      verbatim_quote: "",
+      confidence: "low",
+      method: "no_typed_text",
+      model: null,
+      is_stip_request: false,
+      summary: noTypedTextNote(o.attachmentCount),
+    };
+  }
 
   const prompt =
     `Funder: ${o.lenderName ?? "(unknown)"}\n` +
