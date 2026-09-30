@@ -7,6 +7,7 @@
 //   newLead  ding-ding, rising     — a live transfer / real-time lead, act now
 //   match    one high ding         — a vendor email merged into an existing deal
 //   signed   three-note rise, warm — the merchant signed their APPLICATION
+//   update   two notes falling     — something changed on a merchant's file
 //
 // A fresh AudioContext per chime, closed once it finishes, so we never leak
 // contexts. Everything is wrapped in try/catch: if the browser blocks audio the
@@ -60,4 +61,20 @@ export const playSignedChime = () =>
     { freq: 523.25, at: 0, dur: 0.18 },
     { freq: 659.25, at: 0.16, dur: 0.18 },
     { freq: 783.99, at: 0.32, dur: 0.34 },
+  ]);
+
+/**
+ * Merchant file changed: two soft notes FALLING (G–D). Deliberately the inverse
+ * of the signed chime's rise and half the volume-weight of the lead ding.
+ *
+ * It has to be distinguishable by ear from the other three without being
+ * alarming: a merchant correcting his corporate name is important and is not an
+ * emergency. The floor works by ear — a fourth chime that sounds like the live
+ * transfer would make the live transfer mean less, which is the opposite of the
+ * point.
+ */
+export const playUpdateChime = () =>
+  playTones([
+    { freq: 783.99, at: 0, dur: 0.14 },
+    { freq: 587.33, at: 0.15, dur: 0.26 },
   ]);

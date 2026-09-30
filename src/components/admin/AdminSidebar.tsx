@@ -59,6 +59,7 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
 import useIsProcessor from "../../hooks/useIsProcessor";
 import useSignedAppsBadge from "../../hooks/useSignedAppsBadge";
+import useProcessorUpdatesBadge from "../../hooks/useProcessorUpdatesBadge";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
@@ -335,6 +336,9 @@ export default function AdminSidebar() {
   // canSee below) — a setter's browser should not ask for a number it can never
   // show. `isProcessor` arrives a beat late; the hook refetches when it flips.
   const signedApps = useSignedAppsBadge({ enabled: isSuperAdmin || isProcessor });
+  // Unread CHANGES on merchant files (a reply, a signature, documents, a funder
+  // answering). Same audience as the pill it shares.
+  const updates = useProcessorUpdatesBadge({ enabled: isSuperAdmin || isProcessor });
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -356,11 +360,19 @@ export default function AdminSidebar() {
    * The nav pills. Two items carry one:
    *
    *   · Text Messages — org-wide unread on the shared line (red).
-   *   · Processor     — merchants who have SIGNED their application and have NO
-   *     bank statements on file (emerald). That is the queue where a signature
-   *     turns into work, and it empties itself when the statements land, so it
-   *     can never become permanent decoration. It sits on Processor because the
-   *     Application Chase tab is where that chase is actually run.
+   *   · Processor     — TWO meanings on ONE pill, in priority order:
+   *
+   *       VIOLET  unread CHANGES on merchant files — a merchant replied, signed,
+   *               sent documents, or a funder answered. This WINS when it is
+   *               non-zero, because it is news that someone is waiting on: on
+   *               2026-09-30 a merchant corrected his corporate name, email and
+   *               phone at 16:54 and nobody saw it (Bankers LLC / MF-2026-0425).
+   *       EMERALD merchants who have SIGNED their application and have NO bank
+   *               statements on file. The standing chase queue.
+   *
+   *     One pill rather than two dots on a 20px nav row; the tooltip always
+   *     names BOTH numbers so the hidden one is never a secret. Both empty
+   *     themselves as the work is done, so neither can become decoration.
    *
    * ⚠️ UNREADABLE IS NEVER ZERO. A count we could not read shows an amber "?" —
    * hiding the pill would claim "nothing to chase", which is exactly how a
@@ -369,6 +381,40 @@ export default function AdminSidebar() {
    */
   const badgeFor = (path: string): { text: string; title: string; tone: string } | null => {
     if (path === "/admin/processor") {
+      // The other number, always named in the tooltip so the pill never hides
+      // half of what it knows.
+      const signedNote =
+        signedApps.count === null
+          ? signedApps.error
+            ? ` · signed-application count unreadable (${signedApps.error})`
+            : ""
+          : signedApps.count > 0
+            ? ` · ${signedApps.count} signed application${signedApps.count === 1 ? "" : "s"} still awaiting bank statements`
+            : "";
+
+      // ── EITHER read failing shows the amber "?". A half-known pill that looks
+      //    confident is worse than one that admits it. ──
+      if (updates.error && updates.count === null) {
+        return {
+          text: "?",
+          title: `Unread merchant-file changes: the count could not be read (${updates.error}). This is NOT zero — open Processor → Updates before assuming nothing has changed.${signedNote}`,
+          tone: "bg-amber-500",
+        };
+      }
+
+      // ── VIOLET WINS. Something changed and nobody has looked. ──
+      if (updates.count !== null && updates.count > 0) {
+        const n = updates.count;
+        return {
+          text: n > 99 ? "99+" : String(n),
+          title: `${n} unread change${n === 1 ? "" : "s"} on merchant files — a reply, a signature, documents or a funder answer. Open Processor → Updates.${signedNote}${
+            updates.error ? ` (last refresh failed: ${updates.error})` : ""
+          }`,
+          tone: updates.error ? "bg-amber-500" : "bg-violet-600",
+        };
+      }
+
+      // ── Nothing unread. Fall back to the standing signed-app chase. ──
       if (signedApps.count === null) {
         if (!signedApps.error) return null; // still loading — say nothing
         return {

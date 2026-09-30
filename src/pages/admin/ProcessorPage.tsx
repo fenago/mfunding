@@ -27,6 +27,8 @@ import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
 import ApplicationChaseTab from "@/components/admin/processor/ApplicationChaseTab";
 import FunderChaseTab from "@/components/admin/processor/FunderChaseTab";
+import MerchantUpdatesTab from "@/components/admin/processor/MerchantUpdatesTab";
+import useProcessorUpdatesBadge from "@/hooks/useProcessorUpdatesBadge";
 import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
@@ -182,7 +184,10 @@ export default function ProcessorPage() {
   // is her job!" It was third in a row of small text buttons below the
   // scoreboard and the bucket grid, so the page opened on a funnel overview
   // instead of the queue she actually works.
-  const [view, setView] = useState<"funnel" | "board" | "chase" | "funders">("chase");
+  const [view, setView] = useState<"funnel" | "board" | "chase" | "funders" | "updates">("chase");
+  // The unread count on the Updates tab. Shares the hook the sidebar pill uses,
+  // so the two can never disagree about how much is waiting.
+  const updatesBadge = useProcessorUpdatesBadge();
   const [bucket, setBucket] = useState<BucketKey>("all");
   const [stage, setStage] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
@@ -565,8 +570,12 @@ export default function ProcessorPage() {
               // FIRST, because it is the job. partial → unsigned → signed →
               // statements → GO/NO-GO, each bucket naming what she has to chase.
               { key: "chase", label: "📋 Application chase" },
-              // SECOND, because chasing funders is the other half of the job and
-              // it was invisible until now — one row per submission, not per deal.
+              // SECOND: what CHANGED. Not first — Application chase was moved to
+              // first deliberately ("this is her job!") and displacing it would
+              // undo that. The badge is what pulls her here, not the position.
+              { key: "updates", label: "🔔 Updates" },
+              // Chasing funders is the other half of the job and it was
+              // invisible until now — one row per submission, not per deal.
               { key: "funders", label: "📨 Funder chase" },
               { key: "funnel", label: "Interested → Ready" },
               { key: "board", label: "Whole board (by stage)" },
@@ -579,13 +588,34 @@ export default function ProcessorPage() {
                 setView(v.key);
                 setStage(null);
               }}
-              className={`px-3 py-1.5 font-semibold ${
+              className={`relative px-3 py-1.5 font-semibold ${
                 view === v.key
                   ? "bg-ocean-blue text-white"
                   : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
               }`}
             >
               {v.label}
+              {/* The unread count, on the tab itself. Amber "?" when the count
+                  could not be read — a tab that silently shows nothing is the
+                  failure this whole feature exists to stop. */}
+              {v.key === "updates" && updatesBadge.count === null && updatesBadge.error && (
+                <span
+                  title={`Unread merchant-file changes could not be counted (${updatesBadge.error}). This is NOT zero.`}
+                  className="ml-1.5 inline-flex min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white"
+                >
+                  ?
+                </span>
+              )}
+              {v.key === "updates" && (updatesBadge.count ?? 0) > 0 && (
+                <span
+                  title={`${updatesBadge.count} unread change${updatesBadge.count === 1 ? "" : "s"} on merchant files`}
+                  className={`ml-1.5 inline-flex min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums text-white ${
+                    view === v.key ? "bg-white/25" : "bg-violet-600"
+                  }`}
+                >
+                  {(updatesBadge.count ?? 0) > 99 ? "99+" : updatesBadge.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -673,13 +703,18 @@ export default function ProcessorPage() {
           live transfers, real-time appointments and existing pipeline produced
           every one. Fixed window on purpose — this page has no date picker, and
           a silently-scoped number is worse than an explicitly-scoped one. */}
-      {view !== "chase" && view !== "funders" && (
+      {view !== "chase" && view !== "funders" && view !== "updates" && (
         <DialOriginsPanel from={ORIGINS_FROM} to={ORIGINS_TO} rangeLabel="last 30 days · whole floor" />
       )}
 
       {/* 3a. THE APPLICATION CHASE — its own tab, its own queue RPC. */}
       {/* 3a-ii. THE FUNDER CHASE — flat queue, one row per submission. */}
       {view === "funders" && <FunderChaseTab />}
+
+      {/* 3a-iii. WHAT CHANGED — the durable half of the merchant-update alert.
+          The corner toast is for the processor who is looking; this is for the
+          one who was not on the page when the merchant wrote in. */}
+      {view === "updates" && <MerchantUpdatesTab />}
 
       {view === "chase" && (
         <ApplicationChaseTab

@@ -1,21 +1,32 @@
 import { XMarkIcon, BellIcon, CheckBadgeIcon } from "@heroicons/react/24/outline";
 import type { CornerAlert } from "../../lib/cornerAlert";
+import { metaFor, headlineFor, subtitleFor } from "./processor/updateKindMeta";
 // Generic short-relative-time helper (it lives next to the portal's notification
 // list, but it is not portal-specific — reusing it beats a fifth copy).
 import { relativeTime } from "../../utils/portalNotifications";
 
 // The unmissable corner alert stack. Fixed bottom-right, above everything — sits
 // at bottom-24 so it clears the transient status toast AND the floating "switch
-// lead" buttons (both at bottom-6) instead of covering them. Three kinds:
-//   · new_lead     — a live transfer (red pulse) / real-time lead (mint)
-//   · vendor_match — a Synergy vendor email deduped into a NOT-open deal (calm blue)
-//   · app_signed   — the merchant signed their APPLICATION (green, celebratory)
+// lead" buttons (both at bottom-6) instead of covering them. Four kinds:
+//   · new_lead        — a live transfer (red pulse) / real-time lead (mint)
+//   · vendor_match    — a Synergy vendor email deduped into a NOT-open deal (calm blue)
+//   · app_signed      — the merchant signed their APPLICATION (green, celebratory)
+//   · merchant_update — something CHANGED on a merchant's file (violet), for
+//                       processors: a reply, a signature, documents, a funder
+//                       answering. See useMerchantUpdateAlert for the Bankers
+//                       miss that produced it.
 // Cards persist until clicked (opens the deal) or dismissed; that persistence is
 // the point.
 //
 // The signature card is deliberately the calm one: green, a badge icon, no pulse,
 // and it states how long ago the merchant actually signed. It is good news that
 // may already be an hour old, and it must never read like a live transfer.
+//
+// The update card is calmer still, and it is NOT the guarantee — the Updates tab
+// and the sidebar badge are. If nobody is looking when it fires, the change is
+// still waiting, still counted, and still unread when they come back. That is
+// the whole failure this feature exists to stop, so the toast is allowed to be
+// the pleasant part rather than the load-bearing one.
 export default function NewLeadToast({
   alerts,
   onOpen,
@@ -64,6 +75,9 @@ function AlertCard({
 }) {
   if (alert.kind === "app_signed" && alert.signed) {
     return <SignedCard alert={alert} signed={alert.signed} onOpen={onOpen} onDismiss={onDismiss} />;
+  }
+  if (alert.kind === "merchant_update" && alert.update) {
+    return <UpdateCard alert={alert} update={alert.update} onOpen={onOpen} onDismiss={onDismiss} />;
   }
   const isMatch = alert.kind === "vendor_match";
   const isLive = alert.leadSource === "live_transfer";
@@ -237,6 +251,101 @@ function SignedCard({
         </span>
         {canOpen && (
           <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+            Open →
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * SOMETHING CHANGED ON A MERCHANT'S FILE.
+ *
+ * Calm on purpose. A merchant correcting his corporate name is important and is
+ * not an emergency, and a card that shouts would devalue the live-transfer card
+ * sitting above it in the same stack.
+ *
+ * It shows the EVENT time, never "just now" — a document sweep can be an hour
+ * behind, and a processor deciding whether to pick up the phone is entitled to
+ * know whether this happened four minutes or four hours ago.
+ */
+function UpdateCard({
+  alert,
+  update,
+  onOpen,
+  onDismiss,
+}: {
+  alert: CornerAlert;
+  update: NonNullable<CornerAlert["update"]>;
+  onOpen: (dealId: string) => void;
+  onDismiss: (key: string) => void;
+}) {
+  const canOpen = !!alert.dealId;
+  const meta = metaFor(update.updateKind);
+  const { Icon } = meta;
+  const ago = update.eventAt ? relativeTime(update.eventAt) : null;
+  const headline = headlineFor(update.updateKind, update.title, update.eventCount);
+  const subtitle = subtitleFor(update.updateKind, update.detail, update.eventCount);
+
+  return (
+    <div
+      role={canOpen ? "button" : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? () => onOpen(alert.dealId) : undefined}
+      onKeyDown={(e) => {
+        if (canOpen && (e.key === "Enter" || e.key === " ")) onOpen(alert.dealId);
+      }}
+      title={
+        update.eventAt
+          ? `${headline} — ${new Date(update.eventAt).toLocaleString()}`
+          : headline
+      }
+      className={`group relative rounded-xl border border-gray-200 dark:border-gray-700 border-l-4 ${meta.edge} bg-white dark:bg-gray-800 shadow-2xl ring-1 ring-black/5 p-3.5 transition ${
+        canOpen ? "cursor-pointer hover:-translate-y-0.5" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className={`inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide ${meta.head}`}>
+          <Icon className="w-4 h-4" />
+          {meta.label}
+        </span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDismiss(alert.key);
+          }}
+          title="Dismiss — it stays in Processor → Updates until you mark it read"
+          className="shrink-0 -mr-1 -mt-1 rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+        >
+          <XMarkIcon className="w-4 h-4" />
+        </button>
+      </div>
+
+      <p className="mt-1.5 text-sm font-bold text-gray-900 dark:text-white truncate">{alert.business}</p>
+
+      <p className="mt-0.5 text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+        {headline}
+        {alert.dealNumber && <span className="font-normal text-gray-400"> · {alert.dealNumber}</span>}
+      </p>
+
+      {/* The substance — the reply summary, the document name, the reason.
+          Clamped to three lines: enough to act on, never a wall. */}
+      {subtitle && (
+        <p className="mt-1 text-[11px] leading-snug text-gray-600 dark:text-gray-300 line-clamp-3">{subtitle}</p>
+      )}
+
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+          {ago ? (
+            <b className="text-gray-700 dark:text-gray-200">{ago === "just now" ? "just now" : `${ago} ago`}</b>
+          ) : (
+            <span className="text-gray-400">time not recorded</span>
+          )}
+        </span>
+        {canOpen && (
+          <span className={`text-[11px] font-semibold ${meta.head} opacity-0 group-hover:opacity-100 transition-opacity shrink-0`}>
             Open →
           </span>
         )}

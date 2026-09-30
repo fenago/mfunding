@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import { useUserProfile } from "./UserProfileContext";
 import { useNewLeadAlert, type CornerAlert, type MatchBanner } from "../hooks/useNewLeadAlert";
 import { useSignedApplicationAlert } from "../hooks/useSignedApplicationAlert";
+import { useMerchantUpdateAlert } from "../hooks/useMerchantUpdateAlert";
+import useIsProcessor from "../hooks/useIsProcessor";
 
 /**
  * ONE realtime lead-alert subscription for the whole admin shell.
@@ -16,12 +18,22 @@ import { useSignedApplicationAlert } from "../hooks/useSignedApplicationAlert";
  * twice (two subscriptions, two chimes, two toasts for one lead), the playbook
  * registers its open deal here via `setOpenDeal` and reads `matchBanner` back.
  *
- * TWO SOURCES, ONE STACK. Signed-application cards come from a different table
- * (ghl_doc_completions) on their own subscription, but the corner is one piece
- * of screen: both streams are merged into `alerts` here so a signature card and
- * a live-transfer card queue up instead of covering each other. Signatures go
- * BELOW leads in the list — a merchant on the phone outranks good news that is
- * already up to an hour old (see useSignedApplicationAlert on that latency).
+ * THREE SOURCES, ONE STACK. Signed-application cards come from a different
+ * table (ghl_doc_completions), and merchant-file changes from a third
+ * (processor_notifications), each on its own subscription — but the corner is
+ * one piece of screen, so all three are merged into `alerts` here and queue up
+ * instead of covering each other.
+ *
+ * ORDER IS A PRIORITY CLAIM, and it is made once, here:
+ *
+ *   1. leads      — a live transfer means a merchant is ON THE PHONE right now
+ *   2. updates    — a merchant CHANGED something and is waiting on us (the
+ *                   Bankers correction: a name, an email and a phone, ignored)
+ *   3. signatures — good news, and already up to an hour old by the time the
+ *                   hourly sweep finds it (see useSignedApplicationAlert)
+ *
+ * Updates sit above signatures because a change usually carries a question; a
+ * signature is a thing that has already gone right.
  */
 interface LeadAlertContextValue {
   alerts: CornerAlert[];
@@ -49,7 +61,12 @@ export function useLeadAlerts(): LeadAlertContextValue {
 }
 
 export function LeadAlertProvider({ children }: { children: React.ReactNode }) {
-  const { effectiveUserId, isAdmin } = useUserProfile();
+  const { effectiveUserId, isAdmin, isSuperAdmin } = useUserProfile();
+  // Merchant-file changes go to PROCESSORS (and super-admins), matching the gate
+  // on processor_pipeline_rows. Fail-closed while the capability read is in
+  // flight — `isProcessor` is false until the RPC answers, and the hook
+  // subscribes when it flips. A setter's browser never opens the channel.
+  const { isProcessor } = useIsProcessor();
 
   const [openDealId, setOpenDealId] = useState<string | null>(null);
   // The playbook's refresh callback is re-created on every render; hold it in a
@@ -81,20 +98,30 @@ export function LeadAlertProvider({ children }: { children: React.ReactNode }) {
 
   const { alerts: signedAlerts, dismiss: dismissSigned } = useSignedApplicationAlert({ desktopEnabled });
 
-  const alerts = useMemo(() => [...leadAlerts, ...signedAlerts], [leadAlerts, signedAlerts]);
+  const { alerts: updateAlerts, dismiss: dismissUpdate } = useMerchantUpdateAlert({
+    enabled: isProcessor || isSuperAdmin,
+    desktopEnabled,
+  });
 
-  // Fan a dismissal out to both streams; each ignores a key it doesn't hold.
+  const alerts = useMemo(
+    () => [...leadAlerts, ...updateAlerts, ...signedAlerts],
+    [leadAlerts, updateAlerts, signedAlerts],
+  );
+
+  // Fan a dismissal out to all three streams; each ignores a key it doesn't hold.
   const dismiss = useCallback(
     (key: string) => {
       dismissLead(key);
       dismissSigned(key);
+      dismissUpdate(key);
     },
-    [dismissLead, dismissSigned],
+    [dismissLead, dismissSigned, dismissUpdate],
   );
   const dismissAll = useCallback(() => {
     dismissAllLeads();
     for (const a of signedAlerts) dismissSigned(a.key);
-  }, [dismissAllLeads, dismissSigned, signedAlerts]);
+    for (const a of updateAlerts) dismissUpdate(a.key);
+  }, [dismissAllLeads, dismissSigned, signedAlerts, dismissUpdate, updateAlerts]);
 
   const value = useMemo<LeadAlertContextValue>(
     () => ({ alerts, dismiss, dismissAll, matchBanner, dismissBanner, desktopEnabled, enableDesktop, setOpenDeal }),
