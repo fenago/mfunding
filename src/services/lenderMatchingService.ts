@@ -7,6 +7,16 @@ interface DealProfile {
   monthly_revenue: number | null;
   time_in_business: number | null;
   industry: string | null;
+  /**
+   * ⚠ NEITHER CALLER PASSES THIS TODAY, and the inclusion rule below is written
+   * so that supplying it can never silently shrink the funder list. Before this
+   * comment existed, adding it would have looked like an obvious improvement and
+   * activated two penalty branches (−10 paper-tier mismatch, −15 below minimum),
+   * dropping the worst case to −25 against a `score > 0` test — so funders would
+   * have started vanishing for merchants with poor credit, which is the exact
+   * population this product exists to serve, with nothing on screen to say why.
+   * Found by review, 2026-09-30, one field away from live.
+   */
   credit_score?: number | null;
 }
 
@@ -169,14 +179,24 @@ export async function getMatchingLendersRead(dealProfile: DealProfile): Promise<
       }
     }
 
-    // Only include lenders with a positive score
-    if (score > 0) {
-      matches.push({
-        ...(lender as LenderMatch),
-        score,
-        reasons,
-      });
-    }
+    // INCLUSION IS BY PRODUCT TYPE. SCORE IS FOR RANKING ONLY.
+    //
+    // Reaching here means the lender offers this product — the one `continue`
+    // above is the product-type check. Everything after it adjusts a rank, and a
+    // rank must never become an exclusion: a funder who is 40 points worse than
+    // another is still a funder you can send to, and the caller has its own hard
+    // gates (a submission destination, required stips) that do the real
+    // excluding, visibly, with a reason on the row.
+    //
+    // This is behaviour-preserving as written — with `credit_score` unset the
+    // floor is +10, so `score > 0` excluded nothing — but it removes the trap
+    // documented on DealProfile.credit_score above, where one added field turns
+    // a ranking penalty into a silent disappearance.
+    matches.push({
+      ...(lender as LenderMatch),
+      score,
+      reasons,
+    });
   }
 
   // Sort by score descending
