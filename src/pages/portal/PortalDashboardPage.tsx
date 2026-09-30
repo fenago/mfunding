@@ -23,7 +23,7 @@ import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
 import DealCard from "../../components/portal/DealCard";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
 import { unifyDocs } from "../../utils/signing";
-
+import { readCount, type Readable } from "@/lib/readable";
 /** MCA-family deal that has funded — excluded from offer nudges (it shows the
  *  paydown tracker instead). */
 function isFundedMca(deal: PortalDeal): boolean {
@@ -51,8 +51,12 @@ export default function PortalDashboardPage() {
     contactCount: 0,
   });
   const [offerCount, setOfferCount] = useState(0);
-  const [unreadMessages, setUnreadMessages] = useState(0);
-  const [pendingDocuments, setPendingDocuments] = useState(0);
+  // Readable, not number. These two tiles face the MERCHANT: a failed count
+  // rendered as 0 tells him he has no pending documents and no messages from
+  // his advisor, which is the same lie the closer-side surfaces told — only
+  // this time we tell it to the customer. A count we couldn't take says so.
+  const [unreadMessages, setUnreadMessages] = useState<Readable<number>>({ kind: "loading" });
+  const [pendingDocuments, setPendingDocuments] = useState<Readable<number>>({ kind: "loading" });
   const [isLoading, setIsLoading] = useState(true);
   const [signingDoc, setSigningDoc] = useState<MerchantDocument | null>(null);
   const [selectedByDeal, setSelectedByDeal] = useState<Record<string, string>>({});
@@ -76,12 +80,11 @@ export default function PortalDashboardPage() {
     if (customer) {
       setFirstName(customer.first_name ?? null);
       setCustomerId(customer.id);
-      const { count: docCount } = await supabase
+      setPendingDocuments(readCount(await supabase
         .from("customer_documents")
         .select("id", { count: "exact", head: true })
         .eq("customer_id", customer.id)
-        .eq("status", "pending");
-      setPendingDocuments(docCount || 0);
+        .eq("status", "pending")));
 
       // Document checklist (own rows via RLS; [] if table not deployed yet).
       try {
@@ -131,12 +134,11 @@ export default function PortalDashboardPage() {
       setOfferCount(0);
     }
 
-    const { count: msgCount } = await supabase
+    setUnreadMessages(readCount(await supabase
       .from("messages")
       .select("id", { count: "exact", head: true })
       .eq("to_user_id", uid)
-      .eq("status", "unread");
-    setUnreadMessages(msgCount || 0);
+      .eq("status", "unread")));
 
     setIsLoading(false);
   }, [session]);
@@ -306,18 +308,20 @@ export default function PortalDashboardPage() {
           <div className="flex items-center gap-4">
             <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg relative">
               <DocumentArrowUpIcon className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-              {pendingDocuments > 0 && (
+              {pendingDocuments.kind === "ok" && pendingDocuments.value > 0 && (
                 <span className="absolute -top-1 -right-1 w-5 h-5 bg-yellow-500 text-white text-xs rounded-full flex items-center justify-center">
-                  {pendingDocuments}
+                  {pendingDocuments.value}
                 </span>
               )}
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-white">Documents</h3>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {pendingDocuments > 0
-                  ? `${pendingDocuments} item${pendingDocuments === 1 ? "" : "s"} pending`
-                  : "Upload bank statements and more"}
+                {pendingDocuments.kind === "unreadable"
+                  ? "Couldn't check your pending items just now — open Documents to see them."
+                  : pendingDocuments.kind === "ok" && pendingDocuments.value > 0
+                    ? `${pendingDocuments.value} item${pendingDocuments.value === 1 ? "" : "s"} pending`
+                    : "Upload bank statements and more"}
               </p>
             </div>
           </div>
@@ -330,18 +334,20 @@ export default function PortalDashboardPage() {
           <div className="flex items-center gap-4">
             <div className="p-3 bg-green-100 dark:bg-green-900 rounded-lg relative">
               <InboxIcon className="w-6 h-6 text-green-600 dark:text-green-400" />
-              {unreadMessages > 0 && (
+              {unreadMessages.kind === "ok" && unreadMessages.value > 0 && (
                 <span className="absolute -top-1 -right-1 w-5 h-5 bg-mint-green text-white text-xs rounded-full flex items-center justify-center">
-                  {unreadMessages}
+                  {unreadMessages.value}
                 </span>
               )}
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-white">Messages</h3>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {unreadMessages > 0
-                  ? `${unreadMessages} unread`
-                  : "Updates from your funding advisor"}
+                {unreadMessages.kind === "unreadable"
+                  ? "Couldn't check for new messages just now — open your inbox."
+                  : unreadMessages.kind === "ok" && unreadMessages.value > 0
+                    ? `${unreadMessages.value} unread`
+                    : "Updates from your funding advisor"}
               </p>
             </div>
           </div>

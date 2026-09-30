@@ -59,9 +59,11 @@ import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
 import TextMerchantPanel from "../../components/admin/TextMerchantPanel";
 import PlaybookTextSend from "../../components/admin/PlaybookTextSend";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
+import MerchantLinks from "../../components/admin/MerchantLinksMenu";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
 import { openGhlUploadViaProxy, readDocsStatus, duplicateContactNote, type GhlDocsStatus } from "../../lib/ghlDocs";
+import type { Readable } from "@/lib/readable";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
@@ -1790,7 +1792,7 @@ function DocGroupRow({ group }: { group: DocGroup }) {
 // download it and re-upload it here, or submit-to-funders HARD-BLOCKS the fan-out
 // (funder emails attach docs from OUR storage, not GHL). Loud amber until it's on
 // file; flips green once it is. Renders directly under the application doc's row.
-function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerId: string; attached: boolean; onUploaded: () => void }) {
+function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerId: string; attached: Readable<boolean>; onUploaded: () => void }) {
   const { session } = useSession();
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1811,7 +1813,34 @@ function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerI
     }
   }
 
-  if (attached) {
+  // THREE states, never two. "We couldn't check" is not "he didn't do it" —
+  // rendering the amber BLOCKED banner off a failed read accuses the closer of
+  // skipping a step and sends them into GHL to re-download a file that is
+  // already attached. Loud, not quiet: the reader is told the check failed.
+  if (attached.kind === "unreadable") {
+    return (
+      <div className="mt-1.5 ml-6 rounded-md border-2 border-slate-400 dark:border-slate-500 bg-slate-100 dark:bg-slate-800/60 px-3 py-2.5 text-[12px] text-slate-800 dark:text-slate-200">
+        <p className="font-semibold flex items-start gap-1.5">
+          <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+          Couldn't check whether the signed application is attached — {attached.why}
+        </p>
+        <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-400">
+          This is <span className="font-semibold">not</span> "it's missing". Reload before you go re-download it from GHL.
+          If it really isn't attached, submissions will still be blocked at send time.
+        </p>
+      </div>
+    );
+  }
+
+  if (attached.kind === "loading") {
+    return (
+      <div className="mt-1.5 ml-6 px-3 py-2 text-[12px] text-slate-500 dark:text-slate-400">
+        Checking whether the signed application is attached…
+      </div>
+    );
+  }
+
+  if (attached.value) {
     return (
       <div className="mt-1.5 ml-6 flex items-center gap-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] font-medium text-emerald-800 dark:text-emerald-200">
         <CheckCircleIcon className="w-4 h-4 shrink-0" />
@@ -1975,7 +2004,9 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
   // Whether the signed application is attached APP-SIDE (customer_documents) —
   // ground truth for the action banner. Null until the first check resolves, so
   // the LOUD banner never flashes before we know.
-  const [appAttached, setAppAttached] = useState<boolean | null>(null);
+  // Readable, not boolean|null: `null` conflated "haven't asked" with "asked
+  // and couldn't find out", and the second one must reach the banner.
+  const [appAttached, setAppAttached] = useState<Readable<boolean>>({ kind: "loading" });
   // APP-SIDE documents (email-scraped, portal uploads, manual drops). The owner
   // couldn't find a merchant's emailed bank statements because this panel only
   // showed GHL e-sign docs — one question ("what came back?") must have ONE
@@ -2044,8 +2075,10 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
   async function checkAttached() {
     try {
       setAppAttached(await hasSignedApplicationOnFile(customerId));
-    } catch {
-      /* leave prior value; the banner just won't flip until the next check */
+    } catch (e) {
+      // A THROWN read is unreadable too — it must not leave a stale `true`, and
+      // it must never decay into the amber "NOT attached" accusation.
+      setAppAttached({ kind: "unreadable", why: e instanceof Error ? e.message : "the check failed" });
     }
   }
   async function loadAppDocs() {
@@ -2146,7 +2179,7 @@ function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { de
             return (
               <div key={g.key} className="space-y-1">
                 <DocGroupRow group={g} />
-                {isAppGroup && g.latest.signed && appAttached !== null && (
+                {isAppGroup && g.latest.signed && (
                   <SignedAppActionBanner customerId={customerId} attached={appAttached} onUploaded={checkAttached} />
                 )}
               </div>
@@ -3888,6 +3921,15 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Send any document RIGHT NOW, at any stage — the application paths
                   plus the registered agreements (broker/TCPA consent). */}
               <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} ghlContactId={deal.ghl_contact_id} />
+              {/* The two links people actually ask for, BESIDE the full menu and
+                  not inside it. Send docs stays because the playbook is where
+                  someone decides what to send; these are for when they already
+                  know, which is most of the time. */}
+              <MerchantLinks
+                ghlContactId={deal.ghl_contact_id}
+                customerId={deal.customer_id}
+                merchantEmail={deal.customer?.email}
+              />
               {/* Connect-Bank link as a FIRST-CLASS chip (it also lives in Send
                   docs, but was too buried to find) — one tap mints + copies the
                   link to text; verifies revenue in ~60s. */}

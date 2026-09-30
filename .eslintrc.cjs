@@ -17,5 +17,11 @@ module.exports = {
     // Loud-by-default: every supabase table write must go through
     // mustWrite()/tryWrite() (src/supabase/writes.ts). See eslint-rules/.
     'require-supabase-write-wrapper': 'error',
+    // WARN, not error, on purpose: this lands across six agents' in-flight work
+    // and most hits are judgement calls. It flags a read whose `error` nobody
+    // looked at being coalesced into an empty value — the shape behind six
+    // "the UI accused a merchant of something the read never proved" incidents.
+    // Promote the critical surfaces to 'error' once they're converted.
+    'no-absence-from-failed-read': 'warn',
   },
 }

@@ -69,14 +69,29 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // ⚠ THE READ FAILING IS NOT "THIS FUNDER HAS NO RECIPE".
+  // This card used to branch `if (data) {...} else { setForm(EMPTY) }`, so a
+  // failed read rendered the blank recipe — the "no submission address
+  // recorded" incident. Worse than a wrong label: save() UPSERTS on lender_id,
+  // so one Save on that blank form would have overwritten a real funder's
+  // submission address, templates and stips with nulls. When we couldn't read,
+  // we show why and refuse to save.
+  const [unreadableWhy, setUnreadableWhy] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const { data } = await supabase
+      const { data, error: readError } = await supabase
         .from("funder_submission_profiles").select("*").eq("lender_id", lenderId).maybeSingle();
       if (cancelled) return;
+      setUnreadableWhy(readError ? readError.message : null);
+      if (readError) {
+        // Leave the form untouched rather than paint EMPTY over a recipe that
+        // may well exist. Save is blocked below while this is set.
+        setLoading(false);
+        return;
+      }
       if (data) {
         setForm({
           method: (data.method as Method) ?? "email",
@@ -108,6 +123,11 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
     setForm((f) => ({ ...f, [k]: f[k].includes(val) ? f[k].filter((x) => x !== val) : [...f[k], val] }));
 
   async function save() {
+    // Hard stop: we never learned what is on file, so we cannot upsert over it.
+    if (unreadableWhy) {
+      setErr(`Refusing to save — we couldn't read this funder's existing recipe (${unreadableWhy}), and saving now would overwrite it with blanks. Reload first.`);
+      return;
+    }
     setSaving(true); setSaved(false); setErr(null);
     try {
       const payload = {
@@ -186,6 +206,19 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
         How the submit-to-funders engine sends this funder every deal. Falls back to a
         generic email format if left blank.
       </p>
+
+      {unreadableWhy && (
+        <div className="mb-4 rounded-md border-2 border-rose-400 dark:border-rose-600 bg-rose-50 dark:bg-rose-900/25 px-3 py-2.5">
+          <p className="text-[13px] font-semibold text-rose-900 dark:text-rose-200">
+            ⚠ Couldn't read this funder's saved recipe — {unreadableWhy}
+          </p>
+          <p className="mt-1 text-[11px] text-rose-800 dark:text-rose-300">
+            The fields below are <span className="font-semibold">blank because the read failed</span>, not because this
+            funder has no submission address. <span className="font-semibold">Saving is disabled</span> — a save here would
+            overwrite the real recipe with empties. Reload the page.
+          </p>
+        </div>
+      )}
 
       {/* Method */}
       <div className="grid md:grid-cols-3 gap-4 mb-4">
@@ -304,7 +337,7 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
       {testMsg && <p className="text-sm text-emerald-600 dark:text-emerald-400 mb-3">{testMsg}</p>}
 
       <div className="flex items-center gap-3">
-        <button onClick={save} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
+        <button onClick={save} disabled={saving || !!unreadableWhy} title={unreadableWhy ? "Disabled: the existing recipe couldn't be read, so saving would overwrite it with blanks." : undefined} className="btn-primary flex items-center gap-2 disabled:opacity-50">
           {saving ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <CheckIcon className="w-4 h-4" />}
           {saving ? "Saving…" : "Save recipe"}
         </button>

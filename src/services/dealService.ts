@@ -1028,10 +1028,23 @@ export async function reactivateDeal(id: string): Promise<Deal> {
     target = prev;
   } else {
     // 2. Infer from submissions.
-    const { data: subs } = await supabase
+    //
+    // An UNREADABLE submissions list is not an empty one. If this read fails we
+    // conclude "no submissions", fall through to application_sent (or worse,
+    // qualifying), and WRITE that stage — silently retreating a deal that was
+    // actually out with funders. A wrong read here doesn't just mislabel a
+    // screen, it moves the deal. So refuse to infer: throw, and let the caller
+    // surface it, rather than guess a stage from a read that didn't happen.
+    const { data: subs, error: subsError } = await supabase
       .from("deal_submissions")
       .select("status")
       .eq("deal_id", id);
+    if (subsError) {
+      throw new Error(
+        `Couldn't read this deal's funder submissions (${subsError.message}), so we can't tell which stage to bring it back to. ` +
+          `Nothing was changed — retry, or move it by hand.`,
+      );
+    }
     const rows = (subs ?? []) as { status: SubmissionStatus }[];
     const hasOffer = rows.some((s) =>
       ["offer_made", "offer_accepted", "approved"].includes(s.status),
@@ -1376,11 +1389,24 @@ export async function submitToMultipleFunders(
   }
   if (data?.warning) console.warn("submit-to-funders:", data.warning);
   // Return the resulting submission rows for the UI.
-  const { data: submissionRows } = await supabase
+  //
+  // ⚠ THE SUBMIT ALREADY SUCCEEDED by the time we get here. If this read-back
+  // fails and we return `[]`, the caller renders "nothing submitted yet" next
+  // to a live Send button — and the next click double-submits the merchant to
+  // the same funders. An empty read is not a zero, and here it is not even a
+  // display bug: it is a second submission. Throw instead, so the UI says the
+  // send went out but we couldn't read it back.
+  const { data: submissionRows, error: readBackError } = await supabase
     .from("deal_submissions")
     .select("*")
     .eq("deal_id", dealId)
     .in("lender_id", lenderIds);
+  if (readBackError) {
+    throw new Error(
+      `Submitted to ${lenderIds.length} funder(s) — that part SUCCEEDED — but we couldn't read the submissions back ` +
+        `(${readBackError.message}). Refresh before sending again: do NOT re-submit, the funders already have it.`,
+    );
+  }
   return (submissionRows || []) as DealSubmission[];
 }
 

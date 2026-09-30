@@ -10,18 +10,28 @@
 // nobody hits the wall by surprise.
 import supabase from "../supabase";
 import { mustWrite } from "@/supabase/writes";
+import { ok, unreadable, type Readable } from "@/lib/readable";
 
 // Ground truth for "can a funder submission go out": is the signed application
 // attached APP-SIDE (Supabase customer_documents), not just signed in GHL? This
 // is exactly what submit-to-funders checks before it will fan out.
-export async function hasSignedApplicationOnFile(customerId: string): Promise<boolean> {
-  const { data } = await supabase
+//
+// ⚠ RETURNS Readable<boolean>, NOT boolean, AND THAT IS THE WHOLE POINT.
+// This used to be `(data?.length ?? 0) > 0`, which turns a failed read into a
+// confident `false` — and `false` is rendered as "Signed application is in GHL
+// but NOT attached in the system — funder submissions are BLOCKED", an
+// accusation that a closer skipped a step, plus a pointless download errand in
+// GHL. A read that didn't happen has to stay a read that didn't happen all the
+// way to the banner. See src/lib/readable.ts.
+export async function hasSignedApplicationOnFile(customerId: string): Promise<Readable<boolean>> {
+  const res = await supabase
     .from("customer_documents")
     .select("id")
     .eq("customer_id", customerId)
     .eq("document_type", "application")
     .limit(1);
-  return (data?.length ?? 0) > 0;
+  if (res.error) return unreadable(res.error.message);
+  return ok((res.data?.length ?? 0) > 0);
 }
 
 // Upload the signed application PDF the closer downloaded from GHL. Mirrors the
