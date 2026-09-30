@@ -2708,7 +2708,13 @@ export default function SetterPerformancePage() {
       // the person who did the work (Coloso 9/2: Kristine sent, Carlos was
       // assigned — the digest showed Carlos). Blocked sends excluded. ──
       try {
-        const { data: pushes } = await supabase
+        // ⚠ The catch below already does the right thing — setAppsByAuthor(null)
+        // falls the digest back to the assigned book. It was just never reached:
+        // supabase-js RETURNS errors instead of throwing, so a failed read gave
+        // `pushes = null`, `?? []` made it an empty list, and the digest
+        // published "0 apps" against every setter who had in fact sent some.
+        // An empty author map is an accusation; the null is the honest answer.
+        const { data: pushes, error: pushesError } = await supabase
           .from("activity_log")
           .select("entity_id, logged_by, content")
           .eq("entity_type", "deal")
@@ -2717,6 +2723,7 @@ export default function SetterPerformancePage() {
           .gte("created_at", fromIso)
           .lt("created_at", toIso)
           .limit(1000);
+        if (pushesError) throw new Error(pushesError.message);
         const byAuthor = new Map<string, Set<string>>();
         for (const p of (pushes ?? []) as { entity_id: string; logged_by: string | null }[]) {
           if (!p.logged_by) continue;
@@ -2727,8 +2734,11 @@ export default function SetterPerformancePage() {
         const allDealIds = [...new Set([...byAuthor.values()].flatMap((s) => [...s]))];
         const askByDeal = new Map<string, number>();
         if (allDealIds.length > 0) {
-          const { data: askRows } = await supabase
+          // Same again: a failed read here would leave every ask at 0, so the
+          // digest would credit a setter with the apps and none of the dollars.
+          const { data: askRows, error: askError } = await supabase
             .from("deals").select("id, amount_requested").in("id", allDealIds);
+          if (askError) throw new Error(askError.message);
           for (const d of (askRows ?? []) as { id: string; amount_requested: number | null }[]) {
             askByDeal.set(d.id, Number(d.amount_requested ?? 0) || 0);
           }

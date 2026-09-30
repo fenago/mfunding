@@ -48,6 +48,39 @@
 // See also: the memory `readers-must-distinguish-unreadable`, and the ESLint
 // rule `no-absence-from-failed-read` which flags the coalesce this type replaces.
 
+// ── THE HALF THIS TYPE DOES NOT COVER ───────────────────────────────────────
+//
+// `Readable` separates UNREADABLE from EMPTY. There is a second, independent
+// way to turn nothing into an accusation, and carrying a `Readable` does not
+// help with it at all:
+//
+//     ONE STORE'S ZERO RENDERED AS THE WHOLE TRUTH.
+//
+// Found on 2026-09-30 in the processor drawer, and it is worth reading twice
+// because the read SUCCEEDED. `ghl-docs-status` answered HTTP 200 with
+// `documents_error: null`, `uploads_error: null`, `identity_readable: true`,
+// eight documents and both of the merchant's uploaded files — and the panel
+// still printed "No documents on file yet" above ten rows of his files. The
+// count came from `processor_deal_detail`, which reads `customer_documents`,
+// and `customer_documents` only holds what arrived THROUGH THIS APP. A merchant
+// who uploads to a VibeReach form never touches it.
+//
+// So a row can be correctly unticked from a perfectly good read and still be
+// wrong, because the file is in the other store. No amount of `kind:
+// "unreadable"` catches that, and neither does the `no-absence-from-failed-read`
+// ESLint rule — both only see reads that failed.
+//
+// **The fix for this half is naming the store in the sentence**, not wrapping
+// the value: say "none in app" or "none on the VibeReach contact", never a bare
+// "no documents". A count is only a verdict about a person if it covers
+// everywhere they could have put the thing.
+//
+// Corollary, same day: `readDocsStatus` rules on the DOCUMENTS half of the
+// envelope only. `uploads_error` fails independently and comes back as a SHORT
+// list with no error anywhere `readDocsStatus` looks — which is exactly what
+// made a bank-statement row read "not collected" for a merchant who had sent
+// one. Check `uploads_error` yourself; see DocumentChecklist.tsx for the shape.
+
 /**
  * The result of a read that might not have happened.
  *
