@@ -129,19 +129,52 @@ const MERCHANT_CLOSED_STATUSES = [
   "renewal_eligible", "restructure_executed", "servicing",
 ];
 
+/** The quoted-original marker: "On Mon, Sep 28, 2026 at 9:49 AM Foo wrote:". */
+const QUOTED_ORIGINAL_RE = /\bOn\s.{4,80}\swrote:/i;
+
+/**
+ * Drop the quoted original from an email body.
+ *
+ * ⚠️ THE GUARD IS `>= 0`, NOT `> 0`, AND THAT IS THE WHOLE POINT.
+ *
+ * `> 0` looks like a harmless "only slice if there's something before it"
+ * guard. It is not: it fails EXACTLY in the case where stripping matters most.
+ * When a merchant attaches files and TYPES NOTHING, the body is quoted history
+ * and nothing else, so the marker sits at index 0, `> 0` is false, and the
+ * whole of OUR OWN last email survives as "what the merchant wrote".
+ *
+ * Joyce Derian / MF-2026-0363, 2026-09-28: she replied with EIGHT PDFs — six of
+ * them bank statements — and no body text. The quoted original came through
+ * intact, went to the summariser, and produced the line
+ *
+ *     "This is an outbound email from broker Kristine at Momentum Funding…"
+ *
+ * on an inbound reply. The direction test was right, the attachments were
+ * filed correctly, `bank_statements_at` was stamped correctly — and the one
+ * human-readable field said the opposite of what happened. A processor
+ * scanning for merchants who delivered would skip the merchant who delivered.
+ *
+ * So: strip at index 0 too, and when nothing survives, say so HONESTLY rather
+ * than handing back the quote. An attachment-only reply is a real and common
+ * thing for a merchant to send; it has no prose, and inventing some from our
+ * own quoted text is worse than admitting there is none.
+ */
+function stripQuotedOriginal(text: string): string {
+  const idx = text.search(QUOTED_ORIGINAL_RE);
+  return idx >= 0 ? text.slice(0, idx).trim() : text;
+}
+
 // Strip HTML/entities, collapse whitespace, and drop the quoted original so the
 // snippet carries only what the merchant actually wrote.
 function cleanEmailBody(raw: string): string {
   // Drop <style>/<script> blocks first so their CSS/JS text doesn't leak into
   // the snippet (e.g. ".ProseMirror > p.custom-newline { … }" from HTML editors).
-  let text = raw
+  const text = raw
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ").trim();
-  const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
-  if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
-  return text;
+  return stripQuotedOriginal(text);
 }
 
 // Ask Claude for a one-line, closer-scannable summary of a merchant email,
@@ -155,7 +188,20 @@ async function summarizeMerchantReply(db: SupabaseClient, replyText: string): Pr
     "broker. A merchant cash advance is a purchase of future receivables, NOT a loan — never " +
     "use lending terms. Reply with ONE plain sentence a closer can scan, and explicitly note " +
     "whether the merchant attached or promised any documents (e.g. bank statements, ID, voided " +
-    "check). No preamble, no markdown, no quotes around it.";
+    "check). No preamble, no markdown, no quotes around it.\n" +
+    // BELT AND BRACES. stripQuotedOriginal now removes the quoted original even
+    // when it is the entire body, so this should never be reachable — but when
+    // it WAS reachable it produced "This is an outbound email from broker
+    // Kristine…" on a reply carrying eight of the merchant's bank statements,
+    // and a processor scanning that list would skip the one merchant who
+    // delivered. If quoted history ever survives again, say nothing rather than
+    // describing our own email back to us.
+    "The text is ALWAYS an INBOUND email FROM the merchant — that fact is " +
+    "established before you see it, by the email record's own direction. Never " +
+    "describe it as outbound, as sent by the broker, or as written by anyone at " +
+    "the funding company. If the text appears to be a quoted copy of the " +
+    "broker's own earlier email, reply with exactly: " +
+    "Merchant replied with no new message text.";
   try {
     const text = (await callLLM(db, {
       system,
@@ -252,9 +298,10 @@ async function captureOutboundFunderEmails(
       const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
       if (String(e.direction ?? "") !== "outbound") continue;
       const subject = String(e.subject ?? "").trim();
-      let text = cleanEmailBody(String(e.body ?? ""));
-      const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
-      if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+      // cleanEmailBody already drops the quoted original (including a body that
+      // is NOTHING BUT quote — see stripQuotedOriginal). The second, `> 0`
+      // strip that used to sit here was both redundant and wrong.
+      const text = cleanEmailBody(String(e.body ?? ""));
       // Skip our own submission / re-send emails — those are already on the board
       // as funder:sent. Only genuine replies (typed in Conversations) belong here.
       if (/new submission from|merchant information sheet|referral guidelines|submitted the package/i.test(text)) continue;
@@ -361,8 +408,27 @@ async function runMerchantPhase(
     const snippet = reply.text.slice(0, 300);
 
     // Summarize (best-effort — must NOT block the stamp/alert below).
+    //
+    // AN ATTACHMENT-ONLY REPLY HAS NO PROSE, AND WE DO NOT INVENT ANY.
+    // Now that stripQuotedOriginal correctly removes a body that is nothing but
+    // quote, the common "merchant hits reply, attaches files, types nothing"
+    // case arrives here with empty text. Handing that to the LLM gets a summary
+    // of a placeholder string; handing it the QUOTE (the old behaviour) got a
+    // summary of our own last email, which is how Joyce Derian's eight bank
+    // statements were described as "an outbound email from broker Kristine".
+    //
+    // State the fact instead. It is shorter, it is true, and it is the thing a
+    // processor actually needs to know.
     let summary: string | null = null;
-    try { summary = await summarizeMerchantReply(db, reply.text); } catch { /* best-effort */ }
+    const hasProse = !!reply.text.trim() && !reply.text.startsWith("(reply received");
+    if (!hasProse) {
+      const n = reply.attachments.length;
+      summary = n
+        ? `Merchant replied with ${n} attachment${n === 1 ? "" : "s"} and no message text.`
+        : "Merchant replied with no message text and no attachments.";
+    } else {
+      try { summary = await summarizeMerchantReply(db, reply.text); } catch { /* best-effort */ }
+    }
 
     // Stamp forward-only. The .or guard makes concurrent runs race-safe; the
     // baseline filter already guarantees reply.at > merchant_reply_at.
@@ -809,10 +875,9 @@ Deno.serve(async (req) => {
       // Self-loop guard: our own sender bounced back is not a funder reply.
       if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
       const subject = String(e.subject ?? "");
-      let text = String(e.body ?? "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
-        .replace(/\s+/g, " ").trim();
-      const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
-      if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+      // Through the shared helper, not a fourth hand-rolled copy: this site had
+      // the same `> 0` guard and the same blind spot for a quote-only body.
+      let text = cleanEmailBody(String(e.body ?? ""));
       if (!text) text = "(reply received — open the conversation to read it)";
       const at = String(e.dateAdded ?? e.date ?? ref.msgDate);
       const fromRaw = String(e.from ?? "");
