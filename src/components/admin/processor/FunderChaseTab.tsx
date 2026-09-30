@@ -60,6 +60,8 @@ interface SubSummary {
   status: string;
   submittedAt: string | null;
   responseAt: string | null;
+  openedAt: string | null;
+  openCount: number;
   offerAmount: number | null;
   factorRate: number | null;
   dailyPayment: number | null;
@@ -81,12 +83,10 @@ interface DealGroup {
   /** Most recent SEND. Distinct from lastTouchAt (which a reply also moves):
    *  "newest submitted" must mean when we last put the package out. */
   newestSubmittedAt: string | null;
+  /** Any funder past its own quoted turnaround. Drives the row's red border
+   *  and its clock tone only — WHICH funder, and by how long, is said on that
+   *  funder's own line (FunderLine), not summarised up here. */
   breached: boolean;
-  /** The WORST offender among the funders sitting silent, named. */
-  breachedLabel: string | null;
-  /** True when not one silent funder has a turnaround on file — absence of a
-   *  breach flag then means "unknown", not "on time". */
-  noQuotedTurnaround: boolean;
 }
 
 type Load =
@@ -112,23 +112,49 @@ function bucketOfDeal(subs: SubSummary[]): Filter {
   return "declined";
 }
 
-/** "2 funders · both awaiting" / "3 funders · 2 awaiting · 1 declined" — enough
- *  to decide whether this merchant needs opening. */
-function funderSummary(subs: SubSummary[]): string {
-  const n = subs.length;
-  const tally = new Map<string, number>();
-  for (const s of subs) {
-    const l = stateOf(s).label;
-    tally.set(l, (tally.get(l) ?? 0) + 1);
-  }
-  const head = `${n} funder${n === 1 ? "" : "s"}`;
-  if (tally.size === 1) {
-    const [label] = [...tally.keys()];
-    if (n === 1) return `${head} · ${label.toLowerCase()}`;
-    return `${head} · ${n === 2 ? "both" : "all"} ${label.toLowerCase()}`;
-  }
-  const parts = [...tally.entries()].map(([label, c]) => `${c} ${label.toLowerCase()}`);
-  return `${head} · ${parts.join(" · ")}`;
+/**
+ * ONE LINE PER FUNDER, rendered in the COLLAPSED merchant row.
+ *
+ * This deliberately replaced a summary count ("2 funders · both awaiting").
+ * A count describes the information instead of being it: the whole job of this
+ * tab is deciding who to chase WITHOUT clicking, and "both awaiting" cannot
+ * tell you that Highland Hill is 4 hours out and Uplyft is 50 days out. Each
+ * funder carries its own chip, its own clock and its own open state.
+ */
+function FunderLine({ s }: { s: SubSummary }) {
+  const st = stateOf(s);
+  const quoted = quotedDecisionHours(s.fundingSpeed);
+  const hrs = hoursSince(s.submittedAt);
+  const tone = chaseTone(hrs, quoted);
+  const awaiting = st.key === "awaiting";
+  const breached = tone === "breached";
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] pl-6">
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${st.cls}`}>
+        {st.emoji} {st.label}
+      </span>
+      <span className="font-medium text-gray-800 dark:text-gray-100">{s.lenderName}</span>
+      <span className={CHASE_TONE_CLS[tone]}>
+        {s.submittedAt ? `sent ${relTime(s.submittedAt)}` : "never stamped"}
+      </span>
+      {s.openedAt ? (
+        <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[10px] font-semibold">
+          👀 opened{s.openCount > 1 ? ` ${s.openCount}×` : ""}
+        </span>
+      ) : (
+        <span className="text-[10px] text-gray-400">not opened</span>
+      )}
+      {breached && quoted != null && (
+        <span className="text-[10px] font-bold text-red-700 dark:text-red-300">
+          ⚠ past its own {quoted < 1 ? `${Math.round(quoted * 60)}-min` : `${quoted}h`} promise
+        </span>
+      )}
+      {/* No promise on file is UNKNOWN, not "on time" — say which it is. */}
+      {awaiting && quoted == null && (
+        <span className="text-[10px] text-gray-400">no quoted turnaround on file</span>
+      )}
+    </div>
+  );
 }
 
 // ── Sorting ─────────────────────────────────────────────────────────────────
@@ -202,7 +228,7 @@ export default function FunderChaseTab() {
     const { data: subData, error: subErr } = await supabase
       .from("deal_submissions")
       .select(
-        "id, deal_id, status, submitted_at, response_at, offer_amount, factor_rate, " +
+        "id, deal_id, status, submitted_at, response_at, opened_at, open_count, offer_amount, factor_rate, " +
           "daily_payment, weekly_payment, total_payback, " +
           "lender:lenders!lender_id ( company_name, funding_speed )",
       );
@@ -226,6 +252,8 @@ export default function FunderChaseTab() {
         status: r.status as string,
         submittedAt: (r.submitted_at as string | null) ?? null,
         responseAt: (r.response_at as string | null) ?? null,
+        openedAt: (r.opened_at as string | null) ?? null,
+        openCount: (r.open_count as number | null) ?? 0,
         offerAmount: (r.offer_amount as number | null) ?? null,
         factorRate: (r.factor_rate as number | null) ?? null,
         dailyPayment: (r.daily_payment as number | null) ?? null,
@@ -278,26 +306,14 @@ export default function FunderChaseTab() {
         }
       }
 
-      // Breach is judged per still-silent funder against ITS own promise, and
-      // the WORST one is what the row reports.
-      let breached = false;
-      let breachedLabel: string | null = null;
-      let worstOver = -1;
-      let awaitingCount = 0;
-      let awaitingWithQuote = 0;
-      for (const s of subs) {
-        if (stateOf(s).key !== "awaiting") continue;
-        awaitingCount += 1;
+      // Breach is judged per still-silent funder against ITS own promise. The
+      // row only needs to know THAT one is late; FunderLine names which.
+      const breached = subs.some((s) => {
+        if (stateOf(s).key !== "awaiting") return false;
         const q = quotedDecisionHours(s.fundingSpeed);
-        if (q != null) awaitingWithQuote += 1;
         const h = hoursSince(s.submittedAt);
-        if (q != null && h != null && h > q && h - q > worstOver) {
-          worstOver = h - q;
-          breached = true;
-          const promise = q < 1 ? `${Math.round(q * 60)}-min` : `${q}h`;
-          breachedLabel = `${s.lenderName} is past its own ${promise} promise — silent ${relTime(s.submittedAt)}`;
-        }
-      }
+        return q != null && h != null && h > q;
+      });
 
       const cust = d.customer as { business_name?: string | null; first_name?: string | null; last_name?: string | null } | undefined;
       groups.push({
@@ -315,11 +331,6 @@ export default function FunderChaseTab() {
         lastTouchAt,
         newestSubmittedAt,
         breached,
-        breachedLabel,
-        // No awaiting funder publishes a turnaround → we cannot say this row is
-        // "on time", only that we don't know. Said out loud on the row, so an
-        // un-flagged merchant never reads as "within their promise".
-        noQuotedTurnaround: awaitingCount > 0 && awaitingWithQuote === 0,
       });
     }
 
@@ -538,39 +549,31 @@ export default function FunderChaseTab() {
                   </span>
                 )}
 
-                {/* How many funders are out, and what they're doing. */}
-                <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                  {funderSummary(g.subs)}
+                <span className="text-[11px] text-gray-400">
+                  {g.subs.length} funder{g.subs.length === 1 ? "" : "s"}
                 </span>
 
-                <span className="ml-auto text-right">
-                  <span className={`block text-[11px] whitespace-nowrap ${CHASE_TONE_CLS[tone]}`}>
-                    {g.lastTouchAt ? `silent ${relTime(g.lastTouchAt)}` : "never stamped"}
-                  </span>
-                  {/* Absence of a breach flag is not a clean bill of health when
-                      nobody published a turnaround. Say which it is. */}
-                  {!g.breached && g.noQuotedTurnaround && (
-                    <span className="block text-[10px] text-gray-400">no quoted turnaround on file</span>
-                  )}
+                <span className={`ml-auto text-[11px] whitespace-nowrap ${CHASE_TONE_CLS[tone]}`}>
+                  {g.lastTouchAt ? `silent ${relTime(g.lastTouchAt)}` : "never stamped"}
                 </span>
               </button>
 
-              {(g.breached || g.dealNumber) && (
-                <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {g.breached && g.breachedLabel && (
-                    <span className="text-[11px] font-bold text-red-700 dark:text-red-300">
-                      ⚠ {g.breachedLabel}
-                    </span>
-                  )}
-                  {g.dealNumber && (
-                    <Link
-                      to={`/admin/deals/${g.dealId}`}
-                      className="ml-auto text-[10px] text-gray-400 hover:text-ocean-blue inline-flex items-center gap-0.5"
-                    >
-                      {g.dealNumber}
-                      <ArrowTopRightOnSquareIcon className="w-3 h-3" />
-                    </Link>
-                  )}
+              {/* The detail he reads BEFORE opening anything — a line per funder. */}
+              <div className="pb-2 space-y-0.5">
+                {g.subs.map((sub) => (
+                  <FunderLine key={sub.id} s={sub} />
+                ))}
+              </div>
+
+              {g.dealNumber && (
+                <div className="px-3 pb-2 flex items-center">
+                  <Link
+                    to={`/admin/deals/${g.dealId}`}
+                    className="ml-auto text-[10px] text-gray-400 hover:text-ocean-blue inline-flex items-center gap-0.5"
+                  >
+                    {g.dealNumber}
+                    <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                  </Link>
                 </div>
               )}
 
