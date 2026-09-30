@@ -200,6 +200,14 @@ const CSS = `
 .fcs .bchip.off{background:var(--chip);color:var(--ink-faint);font-weight:600}
 .fcs .loadnote{padding:26px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius)}
 .fcs .warn{border:1.5px solid var(--c);background:var(--c-bg);color:var(--c);border-radius:var(--radius);padding:12px 15px;font-size:13px;font-weight:600;margin-bottom:16px}
+.fcs .prog{border:1px solid var(--a);background:color-mix(in srgb,var(--a) 7%,transparent);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.fcs .prog .ph{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--a)}
+.fcs .prog .pay{font-size:13.5px;font-weight:800;color:var(--ink)}
+.fcs .prog .pay .n{color:var(--a)}
+.fcs .prog ul{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:5px}
+.fcs .prog li{font-size:11.5px;color:var(--ink-soft);line-height:1.45}
+.fcs .chips{display:flex;flex-wrap:wrap;gap:4px}
+.fcs .chips .c{font-size:10.5px;font-weight:700;background:var(--chip);color:var(--chip-ink);border-radius:5px;padding:2px 7px}
 /* submission links + portals */
 .fcs .lrow{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12.5px;line-height:1.5}
 .fcs .lrow .lk{font-size:11.5px;color:var(--ink-faint);min-width:74px}
@@ -589,6 +597,148 @@ const clean = (s: string | null | undefined) => {
 const mentionsContact = (s: string | null) => !!s && (s.includes("@") || /\d{3}[).\-\s]?\d{3}[.\-\s]?\d{4}/.test(s));
 
 
+
+// ── A recorded credit box, when one exists ───────────────────────────────────
+// `lender_programs` rows are loaded from a funder's own signed packet. Most
+// funders have none for these products; a funder WITHOUT a row keeps the
+// "we have not recorded this" wording, because the distinction between
+// "recorded" and "not recorded" is the whole safety property of these tabs.
+//
+// Commission NEVER renders alone. `points_max` without its qualifier overstates
+// the economics — UCS's line of credit pays "1–3% of the INITIAL DRAW", which
+// on a $250K line drawn at $50K is a different number than it looks. The
+// qualifier lives in `important_details` and is always printed with the number.
+type ProgramRow = {
+  id: string;
+  lender_id: string;
+  product_type: string | null;
+  points_min: number | string | null;
+  points_max: number | string | null;
+  important_details: string[] | null;
+  required_documents: string[] | null;
+  approval_min: number | string | null;
+  approval_max: number | string | null;
+  term_text: string | null;
+  min_credit_score: number | null;
+  monthly_revenue_required: number | string | null;
+  annual_revenue_required: number | string | null;
+  time_in_business_months: number | null;
+  cost_of_capital: string | null;
+  time_to_approve: string | null;
+  payment_frequency: string | null;
+  doc_bank_statement_months: number | null;
+  doc_tax_returns: { business_years?: number | null; personal_years?: number | null } | null;
+  doc_financials_threshold: number | string | null;
+  doc_extras: string[] | null;
+  doc_conditions: string | null;
+  doc_other: string | null;
+  industries_note: string | null;
+  notes: string | null;
+};
+type ProgramState = { byKey: Record<string, ProgramRow>; readable: boolean };
+
+const progKey = (lenderId: string, product: string) => `${lenderId}::${product}`;
+
+const fmtMonths = (m: number | null) => {
+  if (m == null) return null;
+  if (m % 12 === 0 && m >= 12) return `${m / 12} yr${m === 12 ? "" : "s"}`;
+  return `${m} mo`;
+};
+const fmtPts = (lo: number | string | null, hi: number | string | null) => {
+  const a = num(lo);
+  const b = num(hi);
+  if (a != null && b != null) return a === b ? `${b}%` : `${a}–${b}%`;
+  if (b != null) return `up to ${b}%`;
+  if (a != null) return `${a}%+`;
+  return null;
+};
+const prettyExtra = (x: string) => x.replace(/_/g, " ");
+
+function ProgramBox({ p, productLabel }: { p: ProgramRow; productLabel: string }) {
+  const cells: { k: string; v: string }[] = [];
+  const lo = fmtMoney(num(p.approval_min));
+  const hi = fmtMoney(num(p.approval_max));
+  if (lo || hi) cells.push({ k: "Amount", v: lo && hi ? `${lo}–${hi}` : (hi ?? `${lo}+`) });
+  const tib = fmtMonths(p.time_in_business_months);
+  if (tib) cells.push({ k: "Time in biz", v: tib });
+  if (p.min_credit_score != null) cells.push({ k: "FICO", v: `${p.min_credit_score}+` });
+  const mrev = fmtMoney(num(p.monthly_revenue_required));
+  const arev = fmtMoney(num(p.annual_revenue_required));
+  if (mrev) cells.push({ k: "Revenue / mo", v: mrev });
+  else if (arev) cells.push({ k: "Revenue / yr", v: arev });
+  if (p.term_text) cells.push({ k: "Term", v: p.term_text });
+  if (p.cost_of_capital) cells.push({ k: "Cost", v: p.cost_of_capital });
+  if (p.time_to_approve) cells.push({ k: "Decision", v: p.time_to_approve });
+  if (p.payment_frequency) cells.push({ k: "Payments", v: p.payment_frequency });
+
+  const docs: string[] = [];
+  if (p.doc_bank_statement_months != null) docs.push(`${p.doc_bank_statement_months} mo bank statements`);
+  const tr = p.doc_tax_returns;
+  if (tr?.business_years != null) docs.push(`business tax returns ${tr.business_years} yr`);
+  if (tr?.personal_years != null) docs.push(`personal tax returns ${tr.personal_years} yr`);
+  const thr = fmtMoney(num(p.doc_financials_threshold));
+  if (thr) docs.push(`P&L + balance sheet over ${thr}`);
+  for (const x of p.doc_extras ?? []) docs.push(prettyExtra(x));
+  for (const x of p.required_documents ?? []) docs.push(prettyExtra(x));
+
+  const pts = fmtPts(p.points_min, p.points_max);
+  const details = (p.important_details ?? []).filter(Boolean);
+
+  return (
+    <div className="prog">
+      <div className="ph">Recorded {productLabel.toLowerCase()} box — from this funder's own packet</div>
+      {pts && (
+        <div className="pay">
+          We get paid <span className="n">{pts}</span>
+          {details.length === 0 && (
+            <span style={{ fontWeight: 600, color: "var(--c)" }}>
+              {" "}
+              — qualifier not recorded, confirm before quoting
+            </span>
+          )}
+        </div>
+      )}
+      {cells.length > 0 && (
+        <div className="dgrid">
+          {cells.map((c) => (
+            <div className="dcell" key={c.k}>
+              <div className="k">{c.k}</div>
+              <div className="v">{c.v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {docs.length > 0 && (
+        <div>
+          <div className="ph" style={{ marginBottom: 4 }}>Documents</div>
+          <div className="chips">
+            {docs.map((d) => (
+              <span className="c" key={d}>
+                {d}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {p.doc_conditions && <div className="drow">{p.doc_conditions}</div>}
+      {p.doc_other && <div className="drow">{p.doc_other}</div>}
+      {p.industries_note && (
+        <div className="drow">
+          <b>Industries:</b> {p.industries_note}
+        </div>
+      )}
+      {details.length > 0 && (
+        <ul>
+          {details.map((d) => (
+            <li key={d}>{d}</li>
+          ))}
+        </ul>
+      )}
+      {p.notes && <div className="drow">{p.notes}</div>}
+    </div>
+  );
+}
+
 // ── Submission links, partner portals, marketing material ────────────────────
 // Three different things that a single "link" column would flatten into one:
 //   • the submission ROUTE  — where a deal goes (profile to_email / portal_url)
@@ -897,13 +1047,16 @@ function ContactBlock({
 // products get their own tab, sourced from lenders.lender_types.
 //
 // TWO THINGS ARE DELIBERATE HERE AND MUST STAY THAT WAY:
-//  1. `lender_programs` holds 112 rows and every one of them is product_type
-//     'mca'. There is NO recorded term-loan / LOC / SBA / equipment credit box
-//     for any funder, and `category.criteria` on a lender row was extracted from
-//     MCA packets and decline emails — quoting it on a loan tab would relabel an
-//     MCA box as a term-loan box. So these tabs say in words that we have not
-//     recorded the funder's criteria, and never render a blank cell that could
-//     be read as "no requirement".
+//  1. `lender_programs` now holds recorded credit boxes for a SMALL number of
+//     funders on these products (United Capital Source and GoKapital, loaded
+//     2026-09-30 from their signed ISO packets). Most funders have none. A
+//     funder with no row for this product has criteria we have NOT recorded —
+//     say that in words. Never render a blank cell that could read as "no
+//     requirement", and never fall back to `category.criteria`: that box was
+//     extracted from MCA packets and decline emails, so showing it under a loan
+//     heading relabels an MCA box as a term-loan box. The distinction matters
+//     MORE now that recorded and unrecorded funders sit on the same tab, not
+//     less.
 //  2. Vocabulary. An MCA is a purchase of future receivables and is never a
 //     loan. Term loans, lines of credit, SBA and equipment financing ARE credit,
 //     so they use ordinary lending language. Neither vocabulary leaks.
@@ -1149,6 +1302,25 @@ function mergeDocs(prev: DocState, next: DocState): DocState {
   return { byLender: { ...prev.byLender, ...next.byLender }, readable: prev.readable && next.readable };
 }
 
+// Recorded credit boxes. `lender_programs` is ops-staff/processor only, so a
+// setter's empty read is UNKNOWN, never "no box recorded". Selected with * on
+// purpose: columns are still being added to this table and a column list would
+// 400 the whole page the day one lands.
+async function loadPrograms(ids: string[]): Promise<ProgramState> {
+  if (ids.length === 0) return { byKey: {}, readable: true };
+  const { data, error } = await supabase.from("lender_programs").select("*").in("lender_id", ids);
+  if (error || (data ?? []).length === 0) return { byKey: {}, readable: false };
+  const byKey: Record<string, ProgramRow> = {};
+  for (const r of (data ?? []) as ProgramRow[]) {
+    if (r.product_type) byKey[progKey(r.lender_id, r.product_type)] = r;
+  }
+  return { byKey, readable: true };
+}
+
+function mergePrograms(prev: ProgramState, next: ProgramState): ProgramState {
+  return { byKey: { ...prev.byKey, ...next.byKey }, readable: prev.readable && next.readable };
+}
+
 async function loadProfiles(ids: string[]): Promise<ProfileState> {
   if (ids.length === 0) return { map: {}, readable: true, error: null, severity: "limited" };
   const { data, error } = await supabase.from("funder_submission_profiles").select(PROFILE_COLS).in("lender_id", ids);
@@ -1224,12 +1396,16 @@ function ProductFunderRow({
   profile,
   profilesReadable,
   docs,
+  program,
+  programsReadable,
 }: {
   l: ProductLenderRow;
   product: Exclude<ProductId, "mca">;
   profile: ProfileRow | undefined;
   profilesReadable: boolean;
   docs: DocState;
+  program: ProgramRow | undefined;
+  programsReadable: boolean;
 }) {
   const [who, setWho] = useState(false);
   const [open, setOpen] = useState(false);
@@ -1284,10 +1460,20 @@ function ProductFunderRow({
 
       {size && <div className="size mono">Catalog funding range {size} — recorded for the funder overall, not for {spec.label.toLowerCase()}</div>}
 
-      <div className="nocrit">
-        We have not recorded {l.company_name}'s {spec.label.toLowerCase()} criteria yet — nothing here is a published
-        credit box. Confirm time in business, credit and documents with the rep before you quote anything to a merchant.
-      </div>
+      {program ? (
+        <ProgramBox p={program} productLabel={spec.label} />
+      ) : !programsReadable ? (
+        <div className="nocrit">
+          Whether we hold {l.company_name}'s {spec.label.toLowerCase()} box is UNKNOWN — the recorded-criteria table
+          could not be read by your account. Not "nothing recorded": ask Ops.
+        </div>
+      ) : (
+        <div className="nocrit">
+          We have not recorded {l.company_name}'s {spec.label.toLowerCase()} criteria yet — nothing here is a published
+          credit box. Confirm time in business, credit and documents with the rep before you quote anything to a
+          merchant.
+        </div>
+      )}
 
       <button type="button" className="more" onClick={() => setWho((w) => !w)} aria-expanded={who}>
         {who ? "Hide contacts & links ↑" : "Who to call · submission links ↓"}
@@ -1323,11 +1509,13 @@ function ProductTabView({
   data,
   profiles,
   docs,
+  programs,
 }: {
   product: Exclude<ProductId, "mca">;
   data: ProductData;
   profiles: ProfileState;
   docs: DocState;
+  programs: ProgramState;
 }) {
   const spec = PRODUCT_SPEC[product];
   const markets = MARKETPLACES.filter((m) => m.products.includes(product));
@@ -1476,6 +1664,8 @@ function ProductTabView({
                   profile={profiles.map[l.id]}
                   profilesReadable={profiles.readable}
                   docs={docs}
+                  program={programs.byKey[progKey(l.id, TAB_PRODUCT[product])]}
+                  programsReadable={programs.readable}
                 />
               ))}
             </div>
@@ -1494,6 +1684,8 @@ function ProductTabView({
                   profile={profiles.map[l.id]}
                   profilesReadable={profiles.readable}
                   docs={docs}
+                  program={programs.byKey[progKey(l.id, TAB_PRODUCT[product])]}
+                  programsReadable={programs.readable}
                 />
               ))}
             </div>
@@ -1531,6 +1723,8 @@ export default function FunderCheatSheetPage() {
   });
   // Rate sheets / packets already captured per funder.
   const [docs, setDocs] = useState<DocState>({ byLender: {}, readable: true });
+  // Recorded credit boxes, used by the credit tabs.
+  const [programs, setPrograms] = useState<ProgramState>({ byKey: {}, readable: true });
 
   useEffect(() => {
     let cancelled = false;
@@ -1556,10 +1750,11 @@ export default function FunderCheatSheetPage() {
       setLenders(rows);
       setLoading(false);
       const ids = rows.map((r) => r.id);
-      const [res, dres] = await Promise.all([loadProfiles(ids), loadDocs(ids)]);
+      const [res, dres, pres] = await Promise.all([loadProfiles(ids), loadDocs(ids), loadPrograms(ids)]);
       if (cancelled) return;
       setProfiles((prev) => mergeProfiles(prev, res));
       setDocs((prev) => mergeDocs(prev, dres));
+      setPrograms((prev) => mergePrograms(prev, pres));
     })();
     return () => {
       cancelled = true;
@@ -1592,10 +1787,11 @@ export default function FunderCheatSheetPage() {
       const rows = (data ?? []) as ProductLenderRow[];
       setProd({ state: "ready", rows, error: null });
       const ids = rows.map((r) => r.id);
-      const [res, dres] = await Promise.all([loadProfiles(ids), loadDocs(ids)]);
+      const [res, dres, pres] = await Promise.all([loadProfiles(ids), loadDocs(ids), loadPrograms(ids)]);
       if (cancelled) return;
       setProfiles((prev) => mergeProfiles(prev, res));
       setDocs((prev) => mergeDocs(prev, dres));
+      setPrograms((prev) => mergePrograms(prev, pres));
     })();
     return () => {
       cancelled = true;
@@ -1677,6 +1873,7 @@ export default function FunderCheatSheetPage() {
             data={prod}
             profiles={profiles}
             docs={docs}
+            programs={programs}
           />
         )}
 
