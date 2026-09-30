@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import supabase from "@/supabase";
 import {
@@ -614,7 +614,12 @@ const clean = (s: string | null | undefined) => {
 //   2. an email followed by a separator and a token that is NOT a phone number,
 //      an email or a URL — which is what "x@y.com / Descartes2!" is, and what
 //      "team@mcashadvance.com / 855-433-8641" is not.
-const SECRET_WORD_RX = /\b(pass(word|wd)?|pwd|un\s*\/\s*pw|u\s*\/\s*p|credentials?)\b|\blogin\s*[:=]/i;
+// `pw:` and `uid:` are here because of a real row: Guidant's `lenders.notes`
+// holds a pasted partner-portal dump with "uid: <email>" and "pw: <secret>" on
+// consecutive lines — a complete working pair that the first version of this
+// guard sailed straight past, because it only knew the word "password".
+const SECRET_WORD_RX =
+  /\b(pass(word|wd)?|pwd|credentials?)\b|\b(un\s*\/\s*pw|u\s*\/\s*p)\b|\b(pw|uid|un|user(name)?|login)\s*[:=]/i;
 const EMAIL_PAIR_RX = /[\w.+-]+@[\w.-]+\.[a-z]{2,}\s*[/:]\s*(\S+)/gi;
 const TOKEN_IS_HARMLESS = (t: string) =>
   /^[\d()+.\-\s]{7,}$/.test(t) || t.includes("@") || /^https?:/i.test(t) || /^www\./i.test(t);
@@ -1687,12 +1692,14 @@ function ProductTabView({
   profiles,
   docs,
   programs,
+  onRetry,
 }: {
   product: Exclude<ProductId, "mca">;
   data: ProductData;
   profiles: ProfileState;
   docs: DocState;
   programs: ProgramState;
+  onRetry: () => void;
 }) {
   const spec = PRODUCT_SPEC[product];
   const markets = MARKETPLACES.filter((m) => m.products.includes(product));
@@ -1825,7 +1832,10 @@ function ProductTabView({
         {data.state === "loading" && <div className="loadnote">Reading the funder catalog…</div>}
         {data.state === "error" && (
           <div className="loadnote">
-            Nothing is listed below because the read failed — <b>not</b> because no funder does this product.
+            Nothing is listed below because the read failed — <b>not</b> because no funder does this product.{" "}
+            <button type="button" className="docopen" onClick={onRetry}>
+              try again
+            </button>
           </div>
         )}
 
@@ -1912,6 +1922,27 @@ export default function FunderCheatSheetPage() {
   const [docs, setDocs] = useState<DocState>({ byLender: {}, readable: true });
   // Recorded credit boxes, used by the credit tabs.
   const [programs, setPrograms] = useState<ProgramState>({ byKey: {}, readable: true });
+  // "Has the shared credit-tab load been started / finished" — a ref, NOT the
+  // rendered state, so that setting the state can never re-enter the effect.
+  const creditLoad = useRef<"idle" | "running" | "done">("idle");
+  // Only a page teardown abandons an in-flight read. Changing tabs must not.
+  const alive = useRef(true);
+  // The only way back out of a failed load, without reloading the page. The
+  // tick is what re-runs the effect: `prod.state` is deliberately NOT a
+  // dependency (that was the hang), so resetting the state alone would sit
+  // there doing nothing.
+  const [retryTick, setRetryTick] = useState(0);
+  const retryCredit = () => {
+    creditLoad.current = "idle";
+    setProd({ state: "idle", rows: [], error: null });
+    setRetryTick((t) => t + 1);
+  };
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   // Same three-outcome rule as the credit tabs: this must end in loaded, empty
   // or failed. `setLoading(false)` lives in the finally so no branch — including
@@ -1964,16 +1995,31 @@ export default function FunderCheatSheetPage() {
   // exactly what it was. A failed read is reported loudly and NEVER collapses
   // into an empty list.
   //
-  // THREE OUTCOMES, ALWAYS. Loaded, empty, or failed — "Reading the funder
-  // catalog…" must be able to end. Every await here is inside the try: a
-  // rejected promise (a dropped connection, a CORS failure, an aborted fetch)
-  // does not come back as `{ error }`, it THROWS, and without the catch the
-  // async body dies silently and the spinner runs until the tab is closed. A
-  // UI state with no exit is the same defect as a check that can only return
-  // clean.
+  // THREE OUTCOMES, ALWAYS — loaded, empty or failed. "Reading the funder
+  // catalog…" must be able to end, and there are two ways to strand it:
+  //
+  //  1. A THROWN rejection. A dropped connection or a CORS failure does not
+  //     come back as `{ error }`, it throws, and an uncaught throw kills the
+  //     async body with the loading flag still set. Hence the try/catch.
+  //
+  //  2. A CANCELLED load — which is what actually broke this, and it broke it
+  //     on the FIRST click, not on some race. `prod.state` was in the dep array
+  //     AND set by the effect, so `setProd(loading)` re-ran the effect, React
+  //     ran the previous cleanup, the cleanup set `cancelled = true`, and the
+  //     fetch it had just started threw its own result away. The `!== "idle"`
+  //     guard then blocked every retry. The tabs never loaded at all, for
+  //     anyone, and grepping the deployed bundle for my own strings proved only
+  //     that the code shipped — never that it ran.
+  //
+  // So: the effect depends on `tab` alone, "have we started" is a ref rather
+  // than the rendered state, and the load is abandoned only when the PAGE goes
+  // away — not when the user changes tab, because `prod.rows` is shared by all
+  // four credit tabs and there is nothing tab-specific to cancel. A failure
+  // resets the ref so the next visit (or the Try again button) retries.
   useEffect(() => {
-    if (tab === "mca" || prod.state !== "idle") return;
-    let cancelled = false;
+    if (tab === "mca" || creditLoad.current !== "idle") return;
+    creditLoad.current = "running";
+    const cancelled = () => !alive.current;
     setProd((p) => ({ ...p, state: "loading" }));
     (async () => {
       try {
@@ -1983,8 +2029,9 @@ export default function FunderCheatSheetPage() {
           `id, company_name, status, min_funding_amount, max_funding_amount, ${PRODUCT_SOURCE_COLUMNS}, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, submission_portal_url, submission_notes, website, notes`,
         )
         .neq("status", "rejected");
-      if (cancelled) return;
+      if (cancelled()) return;
       if (err) {
+        creditLoad.current = "idle"; // a failure must be retryable
         setProd({
           state: "error",
           rows: [],
@@ -1993,15 +2040,16 @@ export default function FunderCheatSheetPage() {
         return;
       }
       const rows = (data ?? []) as ProductLenderRow[];
+      creditLoad.current = "done";
       setProd({ state: "ready", rows, error: null });
       const ids = rows.map((r) => r.id);
       const [res, dres, pres] = await Promise.all([loadProfiles(ids), loadDocs(ids), loadPrograms(ids)]);
-      if (cancelled) return;
+      if (cancelled()) return;
       setProfiles((prev) => mergeProfiles(prev, res));
       setDocs((prev) => mergeDocs(prev, dres));
       setPrograms((prev) => mergePrograms(prev, pres));
       } catch (e) {
-        if (cancelled) return;
+        if (cancelled()) return;
         // Never leave the tab in "Reading…" — say what happened instead.
         setProd((prev) =>
           prev.state === "ready"
@@ -2016,21 +2064,11 @@ export default function FunderCheatSheetPage() {
         );
       }
     })();
-    return () => {
-      cancelled = true;
-      // A CANCELLED LOAD MUST NOT STRAND THE STATE.
-      // Leaving `loading` set here was a permanent hang: switch tabs mid-flight
-      // and the async body returns at `if (cancelled)` without ever calling
-      // setProd, so the state stays "loading" — and the guard at the top of this
-      // effect (`prod.state !== "idle"`) then refuses to fetch again on the way
-      // back. The tab read "Reading the funder catalog…" forever, and only a
-      // full page reload cleared it. Clicking across the five product tabs is
-      // the most ordinary thing to do here, so this fired constantly.
-      // The try/catch above guards a THROWN fetch; nothing guarded cancellation.
-      // Reset to idle so a return visit re-fetches.
-      setProd((prev) => (prev.state === "loading" ? { ...prev, state: "idle" } : prev));
-    };
-  }, [tab, prod.state]);
+    // NO CLEANUP ON PURPOSE. Changing tab must not abandon this read: the rows
+    // are shared by all four credit tabs, so there is nothing tab-specific to
+    // cancel, and cancelling is precisely what stranded the spinner before.
+    // Page teardown is handled by `alive`.
+  }, [tab, retryTick]);
 
   const decorated = useMemo(
     () =>
@@ -2108,6 +2146,7 @@ export default function FunderCheatSheetPage() {
             profiles={profiles}
             docs={docs}
             programs={programs}
+            onRetry={retryCredit}
           />
         )}
 
