@@ -304,8 +304,16 @@ export default function MerchantLinks({
   };
 
   const btn = compact
-    ? "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    ? "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
     : "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  // SHORTER WORDS ON A NARROW CARD, NOT A DIFFERENT CONTROL. The My Day cards
+  // are ~180px of usable width and the full labels ran straight over the grade
+  // chip and the transfer buttons — unreadable, reported live 2026-09-30. The
+  // shape stays identical everywhere (two buttons, same order, same icons, same
+  // behaviour); only the label length responds to the space. The full sentence
+  // is still on the tooltip, so nothing is lost.
+  const appLabel = compact ? "Application" : "Copy application link";
+  const upLabel = compact ? "Bank statements" : "Copy bank statement link";
   const appCls = "border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 dark:hover:bg-ocean-blue/10";
   const upCls =
     "border-emerald-500/50 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20";
@@ -327,7 +335,7 @@ export default function MerchantLinks({
         className={`${btn} ${appCls}`}
       >
         <DocumentTextIcon className="w-3.5 h-3.5" />
-        {busy === "app" ? "Finding it…" : "Copy application link"}
+        {busy === "app" ? "Finding it…" : appLabel}
       </button>
 
       <button
@@ -338,7 +346,7 @@ export default function MerchantLinks({
         className={`${btn} ${upCls}`}
       >
         <InboxArrowDownIcon className="w-3.5 h-3.5" />
-        {busy === "upload" ? "Copying…" : "Copy bank statement link"}
+        {busy === "upload" ? "Copying…" : upLabel}
       </button>
 
       {note && (

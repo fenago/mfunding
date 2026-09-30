@@ -1111,7 +1111,12 @@ function QueueCard({
           the playbook (open the card) and the Calendar's "+ Schedule call". */}
 
       <div className="flex items-center justify-between gap-2 mt-1.5">
-        <span className="flex items-center gap-1.5 min-w-0">
+        {/* flex-wrap, because this row outgrew one line. Without it the chips
+            do not reflow onto a second row, they OVERLAP — the grade chip and
+            the two copy buttons printed on top of each other on a w-72 card.
+            Reported live 2026-09-30. The header row at ~889 holds two items
+            and is deliberately left alone. */}
+        <span className="flex flex-wrap items-center gap-1.5 min-w-0">
           <span
             className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${SOURCE_TONE_CLASS[src.tone]}`}
             title={TONE_HINT[src.tone]}
