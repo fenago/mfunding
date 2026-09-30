@@ -48,13 +48,15 @@
 // See also: the memory `readers-must-distinguish-unreadable`, and the ESLint
 // rule `no-absence-from-failed-read` which flags the coalesce this type replaces.
 
-// ── THE HALF THIS TYPE DOES NOT COVER ───────────────────────────────────────
+// ── THE THREE THINGS THIS TYPE DOES NOT COVER ───────────────────────────────
 //
-// `Readable` separates UNREADABLE from EMPTY. There is a second, independent
-// way to turn nothing into an accusation, and carrying a `Readable` does not
-// help with it at all:
+// `Readable` separates UNREADABLE from EMPTY, and the ESLint rule
+// `no-absence-from-failed-read` finds the places that conflate them. Between
+// them they catch ONE shape: a read that FAILED. Three siblings get through,
+// and in every one of them nothing fails, nothing throws, and no guard fires.
+// Know these before you reach for `Readable<T>` and assume you are done.
 //
-//     ONE STORE'S ZERO RENDERED AS THE WHOLE TRUTH.
+// ── (1) ONE STORE'S ZERO RENDERED AS THE WHOLE TRUTH ───────────────────────
 //
 // Found on 2026-09-30 in the processor drawer, and it is worth reading twice
 // because the read SUCCEEDED. `ghl-docs-status` answered HTTP 200 with
@@ -75,11 +77,43 @@
 // "no documents". A count is only a verdict about a person if it covers
 // everywhere they could have put the thing.
 //
-// Corollary, same day: `readDocsStatus` rules on the DOCUMENTS half of the
-// envelope only. `uploads_error` fails independently and comes back as a SHORT
-// list with no error anywhere `readDocsStatus` looks — which is exactly what
-// made a bank-statement row read "not collected" for a merchant who had sent
-// one. Check `uploads_error` yourself; see DocumentChecklist.tsx for the shape.
+// ── (2) A PARTIAL-SUCCESS ENVELOPE: NOT UNREADABLE, NOT TRUSTWORTHY ────────
+//
+// A third state this type does not model. `readDocsStatus` rules on the
+// DOCUMENTS half of the `ghl-docs-status` envelope only — it checks
+// `documents_error` and `identity_readable`. `uploads_error` fails
+// INDEPENDENTLY and comes back as a SHORT `uploads` list with no error
+// anywhere `readDocsStatus` inspects, so the helper returns a confident
+// `kind: "ok"` over a list that is missing entries. That is exactly what made
+// a bank-statement row read "not collected" for a merchant who had sent one.
+//
+// A `Readable` is binary about the whole payload; an envelope can be half
+// true. When a payload carries several independent error fields, check EVERY
+// one of them, and treat any that fired as poisoning the parts it covers —
+// `DocumentChecklist.tsx` does this by naming each failure separately, and by
+// refusing to pre-seed `deals.doc_checklist` when any of them fired.
+//
+// ── (3) A NULL THAT MEANS "YOU MAY NOT KNOW" ───────────────────────────────
+//
+// The setter money wall (`deal_row_for_caller`) does not OMIT the columns a
+// setter may not see. For each of the 18 keys in `deal_money_keys()` —
+// amount_requested, amount_funded, payback_amount, lead_score, mca_score,
+// ai_lender_recommendations … — it writes an explicit JSON `null`:
+//
+//     jsonb_object_agg(k, 'null'::jsonb)
+//
+// So the key IS present. `'amount_requested' in deal` is true, and
+// `deal.amount_requested === undefined` is FALSE, so an undefined-guard sails
+// straight through. Worse — and this is the part to get right — `?? 0` and
+// `|| 0` DO fire on null. They are not bypassed; they are the mechanism. A
+// value that means "you are not authorised to know this" is silently converted
+// into "the answer is zero", and then rendered as a fact about the deal.
+//
+// This is the defect class inside a security boundary, and neither the type
+// nor the rule can see it: the read succeeded, the column is present, and the
+// coalesce is doing exactly what it was written to do. **Before coalescing any
+// key in `deal_money_keys()`, establish whether the caller is money-walled** —
+// a masked null must render as "hidden", never as 0, $0, or an ungraded lead.
 
 /**
  * The result of a read that might not have happened.
