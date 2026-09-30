@@ -115,6 +115,49 @@ for (const m of MAPPING) {
   }
 }
 
+// ── DELIBERATELY UNMAPPED, WHICH IS NOT THE SAME AS NOT YET MAPPED ──────────
+//
+// In the code above, a disposition we CHOSE not to act on and one that WAVV
+// added last Tuesday look identical: both are simply absent from MAPPING. That
+// is the same shape as every other defect this codebase keeps relearning —
+// absence standing in for two different facts — except here the absent thing is
+// a DECISION rather than a read.
+//
+// So every value we knowingly ignore is listed here WITH ITS REASON. The weekly
+// drift check (action:"drift") alerts on anything in neither list. Adding a
+// value here is therefore a visible decision in a diff, not a silent mute —
+// which matters, because the cheapest way to fix a noisy detector is to disable
+// it, and this list is the thing that stops that being necessary.
+//
+// ⚠️ Do NOT add a value here to quiet an alert you have not understood.
+// "Partial Application" (12 calls, median 294s) sat unmapped for weeks and
+// belongs in MAPPING, not in this list. The test is whether acting on it would
+// be WRONG, not whether acting on it is inconvenient.
+const IGNORED_DISPOSITIONS: Array<{ value: string; why: string }> = [
+  { value: "None", why: "Answered calls nobody dispositioned. We cannot guess what happened, and guessing is how a 7-minute call that produced a signed application gets filed as nothing. Surfaced for a human on Setter Performance → Disposition Review instead." },
+  { value: "(unset)", why: "Same as None, but WAVV never wrote a disposition at all (null in the mirror)." },
+  { value: "No Answer", why: "Nobody picked up. Lead stays in New Lead for redial — see the header note." },
+  { value: "Voice Message", why: "Voicemail drop. Not contact: 7% carry the human flag and 6.8k of 27k are under 30 seconds." },
+  { value: "Call Blocked", why: "Never connected — 0% human, every call under 30 seconds." },
+  { value: "Agent Canceled", why: "The setter hung up before connection. Nothing happened to the merchant." },
+  { value: "System Callback", why: "WAVV's own automated callback, not a setter outcome. Distinct from 'Callback': 1,179 of 2,325 are under 30 seconds where 'Callback' has none. Verified 2026-09-30 to be a separate WAVV value, not a normalization of Callback (disposition_original is null on every row)." },
+  { value: "Disconnected", why: "Line dropped. No outcome to record." },
+];
+
+/**
+ * WAVV's disposition label → the GHL tag their integration writes.
+ *
+ * ⚠️ THIS IS A CONVENTION, NOT A CONTRACT. It is inferred from the eight tags in
+ * MAPPING matching their labels under this transform ("Full App + Statements" →
+ * wavv-full-app-statements, "Do Not Contact" → wavv-do-not-contact). WAVV could
+ * name a new tag anything. The drift report prints the derived tag next to the
+ * raw label precisely so a human can see when the guess stops holding, rather
+ * than the detector quietly matching nothing and reporting a clean week.
+ */
+function dispositionToTag(label: string): string {
+  return `wavv-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+}
+
 // ── STAGE ORDER, SO A DISPOSITION CANNOT DEMOTE A DEAL. ─────────────────────
 // Every stage this function can target, in pipeline order. Mirrors
 // public.deals_stage_rank() and the MCA pipeline's stage list.
@@ -225,6 +268,87 @@ Deno.serve(async (req) => {
   // Diagnostic: return the raw opportunity lookup exactly as this function sees
   // it (used to chase the moved:0 anomaly on 2026-08-18). No writes.
   const payload = await req.json().catch(() => ({})) as Record<string, unknown>;
+
+  // ── action:"drift" — the weekly "has WAVV added a disposition?" check ──────
+  // Read-only against our own mirror; spends ZERO GHL calls, so it is invisible
+  // to the daily cap ledger. The aggregate runs server-side in
+  // public.wavv_disposition_drift() rather than pulling ~47k rows over egress.
+  if (payload.action === "drift") {
+    const days = typeof payload.days === "number" && payload.days > 0 ? Math.floor(payload.days) : 90;
+    const { data, error } = await db.rpc("wavv_disposition_drift", { p_days: days });
+    // A failed read is NOT "no drift". Reporting a clean week from a query that
+    // never ran is the exact failure this detector exists to catch elsewhere.
+    if (error) return json({ ok: false, error: `drift read failed: ${error.message}` }, 502);
+    if (!data) return json({ ok: false, error: "drift read returned nothing (not the same as no drift)" }, 502);
+
+    const mapped = new Set(MAPPING.map((m) => m.tag));
+    const ignored = new Set(IGNORED_DISPOSITIONS.map((i) => i.value));
+    type Row = { disposition: string; calls: number; median_sec: number | null; under_30s: number; pct_human: number | null; first_seen: string; last_seen: string };
+
+    const rows = (data as Row[]).map((r) => {
+      const tag = dispositionToTag(r.disposition);
+      const status = ignored.has(r.disposition) ? "ignored" : mapped.has(tag) ? "mapped" : "UNMAPPED";
+      return { ...r, derived_tag: tag, status };
+    });
+    const unmapped = rows.filter((r) => r.status === "UNMAPPED");
+
+    // File ONE kanban task per unmapped value, and only when there isn't already
+    // an open one — a weekly cron that re-files the same card every Sunday is a
+    // detector people learn to ignore. Best-effort: a failed insert must never
+    // turn into a 500 that hides the report itself.
+    //
+    // {dry_run:true} returns the identical report and files nothing, so the
+    // detector can be verified against live data without putting cards on
+    // someone's board.
+    const dryRun = payload.dry_run === true;
+    const filed: string[] = [];
+    for (const r of dryRun ? [] : unmapped) {
+      const title = `WAVV disposition not mapped: ${r.disposition}`;
+      try {
+        const { data: open } = await db
+          .from("kanban_tasks").select("id").eq("title", title).neq("status", "done").limit(1);
+        if (open && open.length > 0) continue;
+        const shape = `${r.calls} call(s) in the last ${days}d · median ${r.median_sec ?? "?"}s · ${r.under_30s} under 30s · ${r.pct_human ?? "?"}% human · first seen ${r.first_seen}, last ${r.last_seen}`;
+        await db.from("kanban_tasks").insert({
+          title,
+          status: "backlog",
+          priority: r.under_30s === 0 && r.calls > 0 ? "high" : "medium",
+          category: "ops-alert",
+          description:
+            `WAVV is writing a disposition that wavv-disposition-sync neither acts on nor deliberately ignores.\n\n` +
+            `${shape}\n\nDerived GHL tag (by convention): ${r.derived_tag}\n\n` +
+            `DECIDE ONE:\n` +
+            `  • it represents real progress → add it to MAPPING (owner ruling — every entry there is one)\n` +
+            `  • acting on it would be wrong → add it to IGNORED_DISPOSITIONS with the reason\n\n` +
+            `Do not close this without doing one of the two: an unmapped value and a deliberately ` +
+            `ignored one are indistinguishable in the code, which is why this card exists.`,
+        });
+        filed.push(r.disposition);
+      } catch (e) {
+        console.warn("[drift] could not file task for", r.disposition, e instanceof Error ? e.message : e);
+      }
+    }
+
+    return json({
+      ok: true,
+      window_days: days,
+      dry_run: dryRun,
+      drift: unmapped.length > 0,
+      unmapped: unmapped.map((r) => ({
+        disposition: r.disposition, derived_tag: r.derived_tag, calls: r.calls,
+        median_sec: r.median_sec, under_30s: r.under_30s, pct_human: r.pct_human,
+        first_seen: r.first_seen, last_seen: r.last_seen,
+      })),
+      tasks_filed: filed,
+      counts: {
+        mapped: rows.filter((r) => r.status === "mapped").length,
+        ignored: rows.filter((r) => r.status === "ignored").length,
+        unmapped: unmapped.length,
+      },
+      all: rows,
+    });
+  }
+
   if (payload.action === "probe" && typeof payload.contact_id === "string") {
     const od = await ghlFetch<unknown>(
       cfg, "GET", `/opportunities/search?location_id=${LOCATION}&contact_id=${payload.contact_id}`,
