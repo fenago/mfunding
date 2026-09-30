@@ -9851,7 +9851,18 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
   // weakest-step contest every time and bury the real leak. It is excluded
   // only while it is zero (a real fund rate competes normally), and the
   // immaturity itself gets said in its own callout below.
-  const leak = weakestStep(steps.filter((s) => !(s.key === "funded" && (s.n ?? 0) === 0)));
+  // And on LIVE TRANSFERS the Reached rung is excluded outright. The
+  // conversation that matters on a transfer happens on the VENDOR's line
+  // before the deal exists, so it is not one of our dispositioned dials and
+  // never will be — Reached reads near zero there by construction, wins the
+  // contest, and prints "the leak is reached" as a finding. It is not a
+  // finding, it is a measurement boundary, and this tab already says so three
+  // paragraphs down. Caught on the deployed page: 0 of 1, flagged as the leak.
+  const leak = weakestStep(
+    steps.filter(
+      (s) => !(s.key === "funded" && (s.n ?? 0) === 0) && !(s.key === "reached" && !clockApplies),
+    ),
+  );
   const ttc = total?.ttcMinutes ?? [];
   const slaPct = total && total.clocked > 0 ? (total.within5 / total.clocked) * 100 : null;
 
@@ -9982,6 +9993,11 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
                                 : s.n === null ? "unreadable" : "nothing above it to divide by")
                             : s.ofLabel}
                           {isLeak && <b className="ml-2 text-amber-600 dark:text-amber-400">weakest step</b>}
+                          {s.key === "reached" && !clockApplies && (
+                            <span className="ml-2 text-gray-400">
+                              not our measurement on a transfer — see below
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
