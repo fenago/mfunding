@@ -561,7 +561,16 @@ Deno.serve(async (req) => {
     // picker rehydrates from the deal so a reload never throws them away.
     await db.from("deals").update({
       ai_lender_recommendations: { summary, recommendations, underwriting },
-      ...(businessSummary ? { ai_business_summary: businessSummary } : {}),
+      // Stamp WHICH analysis this narrative came from. Without it the summary
+      // is undateable, which is how MF-2026-0418's "no negative days" — true
+      // against v2 — reached Cashable four days after v4 found 19.
+      ...(businessSummary
+        ? {
+            ai_business_summary: businessSummary,
+            ai_business_summary_uw_version: (uwRow?.version as number | null) ?? null,
+            ai_business_summary_at: new Date().toISOString(),
+          }
+        : {}),
       ai_recommended_at: new Date().toISOString(),
     }).eq("id", dealId);
 

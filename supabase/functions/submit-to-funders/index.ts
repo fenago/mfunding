@@ -665,6 +665,20 @@ Deno.serve(async (req) => {
   const verifiedRevRaw = uwMetrics?.true_avg_monthly_revenue;
   const verifiedRev = Number.isFinite(Number(verifiedRevRaw)) ? Number(verifiedRevRaw) : null;
 
+  // IS THE NARRATIVE STILL TRUE? The Deal Overview is prose we wrote once and
+  // never revisited. On MF-2026-0418 it said "no negative days" — correct
+  // against underwriting v2 — and was emailed four days after v4 found 19.
+  // A stale paragraph in front of a funder who is about to read the same
+  // statements is worse than no paragraph, so a stale one is OMITTED and the
+  // caller is told. Shared definition, so the picker's warning and this
+  // refusal can never disagree.
+  const { data: staleRow } = await db.rpc("deal_narrative_staleness", { p_deal_id: dealId });
+  const stale = Array.isArray(staleRow) ? staleRow[0] : staleRow;
+  const narrativeIsStale = Boolean(stale?.is_stale);
+  const narrativeStaleReason = (stale?.reason as string | null) ?? null;
+  const rawBizSummaryExists =
+    !!((deal as Record<string, unknown>).ai_business_summary as string | null)?.trim();
+
   // All docs on file for this deal's customer, grouped by type.
   const { data: docRows } = await db
     .from("customer_documents")
@@ -839,6 +853,11 @@ Deno.serve(async (req) => {
     // API scope-blocked — we cannot fetch them. If the recipe wants the signed
     // application and no app-side copy exists, say so honestly and warn the closer.
     let docsWarning: string | undefined;
+    // The picker already surfaces docsWarning, so the dropped narrative rides
+    // the same channel rather than inventing a second one nobody renders.
+    if (narrativeIsStale && rawBizSummaryExists) {
+      docsWarning = `Deal Overview omitted — ${narrativeStaleReason ?? "the narrative is out of date"}. Re-run the funder match to regenerate it.`;
+    }
     const wantsApp = attachSlugs.some((s) => s === "application" || s === "signed_application");
     if (wantsApp && appLinkCount === 0) {
       docLinkLines.push("Signed application: attached separately / available on request");
@@ -865,7 +884,10 @@ Deno.serve(async (req) => {
       : "";
     if (toFollowLine) bodyText += `\n\n${toFollowLine}`;
     // Funder-facing deal overview (the AI's clean merchant summary) at the bottom.
-    const bizSummary = ((deal as Record<string, unknown>).ai_business_summary as string | null)?.trim() || "";
+    // Silence beats a confident false sentence: a narrative the analysis has
+    // overtaken is dropped entirely rather than softened or hedged.
+    const rawBizSummary = ((deal as Record<string, unknown>).ai_business_summary as string | null)?.trim() || "";
+    const bizSummary = narrativeIsStale ? "" : rawBizSummary;
     if (bizSummary) bodyText += `\n\n— Deal Overview —\n${bizSummary}`;
     const bodyHtml =
       `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
