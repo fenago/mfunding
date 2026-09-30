@@ -109,14 +109,26 @@ export function DealDocumentsButton({
    *  and how many signed. Undefined/null while the bar's fetch is still resolving. */
   esign?: { out: number; signed: number } | null;
 }) {
+  /** null = we don't know yet (or couldn't find out) — deliberately NOT 0. */
   const [count, setCount] = useState<number | null>(null);
+  /** Non-null = the count read failed. A failed count is not a zero: this chip
+   *  sits on the deal bar and "Documents (0)" reads as "he sent nothing". */
+  const [countError, setCountError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   const loadCount = useCallback(async () => {
-    const { count: c } = await supabase
+    const { count: c, error } = await supabase
       .from("customer_documents")
       .select("id", { count: "exact", head: true })
       .eq("customer_id", customerId);
+    if (error) {
+      // Back to unknown, which renders no number at all, rather than a zero
+      // nobody measured.
+      setCount(null);
+      setCountError(error.message);
+      return;
+    }
+    setCountError(null);
     setCount(c ?? 0);
   }, [customerId]);
 
@@ -127,7 +139,8 @@ export function DealDocumentsButton({
   // "3 · 1 out · 2 signed" — files on record, then the e-sign state (each segment
   // only shows when non-zero, so it's compact and never claims a zero).
   const segments: string[] = [];
-  if (count !== null) segments.push(String(count));
+  if (countError) segments.push("?");
+  else if (count !== null) segments.push(String(count));
   if (esign) {
     if (esign.out > 0) segments.push(`${esign.out} out`);
     if (esign.signed > 0) segments.push(`${esign.signed} signed`);
@@ -139,7 +152,11 @@ export function DealDocumentsButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Every document on this deal — view, upload, and see what each file is. First number = files on record; e-sign docs sent to the merchant show as 'out' (awaiting signature) or 'signed'."
+        title={
+          countError
+            ? `Couldn't read the file count — ${countError}. The "?" is not a zero; open this to see what's actually on the deal.`
+            : "Every document on this deal — view, upload, and see what each file is. First number = files on record; e-sign docs sent to the merchant show as 'out' (awaiting signature) or 'signed'."
+        }
         className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 transition-colors"
       >
         <DocumentIcon className="w-3 h-3" /> Documents{label}

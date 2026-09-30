@@ -21,6 +21,8 @@ import {
 } from "@/lib/sms";
 import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 import { isApplicationDoc } from "@/utils/signing";
+import { readDocsStatus, type GhlDocsStatus } from "@/lib/ghlDocs";
+import { invokeThrow } from "@/utils/invokeError";
 
 /**
  * Text a merchant on the company line — an inline compose that goes out through
@@ -205,7 +207,14 @@ export default function TextMerchantPanel({
   // ── Link sources (fetched when the panel opens) ──
   const [uploadFormUrl, setUploadFormUrl] = useState<string | null>(null);
   const [docs, setDocs] = useState<AdhocDocDef[]>([]);
+  /** null = still checking. An EMPTY array means we asked and there genuinely is
+   *  nothing — see `sentLinksError` for the third state. */
   const [sentLinks, setSentLinks] = useState<SentDocLink[] | null>(null);
+  /** Non-null = we could not find out what was sent. This must never render as
+   *  "No application sent yet": a closer who believes that sends a second one
+   *  and the merchant gets two. That is the exact hazard the header comment in
+   *  src/lib/ghlDocs.ts records for AdHocSendMenu. */
+  const [sentLinksError, setSentLinksError] = useState<string | null>(null);
   const [minting, setMinting] = useState(false);
 
   useEffect(() => {
@@ -220,13 +229,33 @@ export default function TextMerchantPanel({
     if (!open || !ghlContactId) return;
     let cancelled = false;
     setSentLinks(null);
+    setSentLinksError(null);
     supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
-      .then(({ data }) => {
+      .then(async ({ data, error }) => {
         if (cancelled) return;
-        const d = data as { documents?: SentDocLink[]; error?: string } | null;
-        setSentLinks(d?.error ? [] : (d?.documents ?? []).filter((x) => x.url));
+        // invokeThrow first: on a non-2xx, supabase-js hands back data:null and a
+        // generic "non-2xx status code", with the server's real reason sitting
+        // unread in error.context. Then readDocsStatus, which is the ONE
+        // definition of unreadable-vs-empty for this payload — it also catches a
+        // truncated crawl and an unidentifiable merchant, both of which used to
+        // arrive here looking like a clean empty list.
+        if (error) await invokeThrow(error);
+        const state = readDocsStatus(data as GhlDocsStatus, null);
+        if (state.kind === "unreadable") {
+          setSentLinks([]);
+          setSentLinksError(state.why);
+          return;
+        }
+        // A partial-identity read is real data with a hole in it: the documents
+        // listed are genuine, but their ABSENCE proves nothing.
+        setSentLinksError(state.caveat);
+        setSentLinks(state.docs.filter((x) => x.url) as SentDocLink[]);
       })
-      .catch(() => { if (!cancelled) setSentLinks([]); });
+      .catch((e) => {
+        if (cancelled) return;
+        setSentLinks([]);
+        setSentLinksError(e instanceof Error ? e.message : "VibeReach didn't answer");
+      });
     return () => { cancelled = true; };
   }, [open, ghlContactId]);
 
@@ -368,11 +397,15 @@ export default function TextMerchantPanel({
     ? "No VibeReach contact on this merchant yet — send the application first."
     : sentLinks === null
       ? "Checking their documents…"
-      : !appSignUrl
-        ? "Send the application first (Fill out application → send) — its e-sign link doesn't exist yet."
-        : appAlreadySigned
-          ? "Application already signed ✓ — nothing to chase."
-          : null;
+      : // UNREADABLE, not empty. "Send the application first" here would be an
+        // instruction to send a second copy of something we simply failed to see.
+        !appSignUrl && sentLinksError
+        ? `Couldn't check what's been sent — ${sentLinksError}. This is NOT "nothing sent" — check Send docs before sending another.`
+        : !appSignUrl
+          ? "Send the application first (Fill out application → send) — its e-sign link doesn't exist yet."
+          : appAlreadySigned
+            ? "Application already signed ✓ — nothing to chase."
+            : null;
 
   const statementsAsk = (lead: string) =>
     `${lead} your last 3-4 months of business bank statements (a photo of your driver's license helps too). ` +
@@ -636,9 +669,15 @@ export default function TextMerchantPanel({
                 ))}
               </div>
               {ghlContactId && sentLinks?.length === 0 && (
-                <p className="mt-1 text-[10px] text-gray-400">
-                  No application sent yet — send it from <b>Send docs</b> and its link appears here to text.
-                </p>
+                sentLinksError ? (
+                  <p className="mt-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                    Couldn't read their documents — {sentLinksError}. <b>Not</b> proof nothing was sent.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    No application sent yet — send it from <b>Send docs</b> and its link appears here to text.
+                  </p>
+                )
               )}
             </>
           )}

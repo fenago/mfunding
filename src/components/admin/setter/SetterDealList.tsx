@@ -285,7 +285,17 @@ export default function SetterDealList({
   // unknown" — never "unsigned". See src/hooks/useApplicationSignatures.ts.
   const [appStatus, setAppStatus] = useState<Map<string, DealApplicationStatus>>(new Map());
   // Documents on file per customer: total + bank-statement count.
+  //
+  // ⚠ THIS COUNTS ONE STORE, AND IT CAN FAIL. `customer_documents` holds what
+  // was uploaded THROUGH THIS APP; a merchant who uploads through the VibeReach
+  // form never touches it. So a customer missing from this map means "nothing in
+  // the app store", never "he sent nothing" — the badge says so. And when the
+  // read itself fails, EVERY row would otherwise render "no docs" at once, which
+  // is the whole list accusing every merchant on it. `docCountsError` keeps that
+  // failure visible instead of printing it as a zero.
   const [docCounts, setDocCounts] = useState<Map<string, { total: number; statements: number }>>(new Map());
+  /** Non-null = the document read failed. Never render this as a count. */
+  const [docCountsError, setDocCountsError] = useState<string | null>(null);
   // Per-deal application completeness (pct + fields left) — the exit rule: a deal
   // leaves the working list at 100% (or Nurture).
   const [appPct, setAppPct] = useState<Map<string, { pct: number; left: number }>>(new Map());
@@ -359,12 +369,15 @@ export default function SetterDealList({
       // mirror stamped is not drawn as a send we made.
       const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean))) as string[];
       if (custIds.length > 0) {
-        const [{ data: appStatus, error: appStatusErr }, { data: docs }] = await Promise.all([
+        const [{ data: appStatus, error: appStatusErr }, { data: docs, error: docsErr }] = await Promise.all([
           supabase.rpc("deal_application_status", { p_deal_ids: rows.map((r) => r.id) }),
           supabase.from("customer_documents").select("customer_id, document_type").in("customer_id", custIds),
         ]);
         // The error is checked, not ignored: a failed read leaves the map empty,
         // and an absent deal reads as "signature unknown", never as unsigned.
+        // The document read next to it gets the same treatment — it used not to
+        // bind `error` at all, so one failed query silently drew "📄 no docs" on
+        // every row in the console.
         setAppStatus(
           appStatusErr
             ? new Map()
@@ -372,6 +385,7 @@ export default function SetterDealList({
                 ((appStatus ?? []) as unknown as DealApplicationStatus[]).map((r) => [r.deal_id, r]),
               ),
         );
+        setDocCountsError(docsErr ? docsErr.message : null);
         const dc = new Map<string, { total: number; statements: number }>();
         for (const doc of (docs ?? []) as { customer_id: string; document_type: string | null }[]) {
           const cur = dc.get(doc.customer_id) ?? { total: 0, statements: 0 };
@@ -383,6 +397,7 @@ export default function SetterDealList({
       } else {
         setAppStatus(new Map());
         setDocCounts(new Map());
+        setDocCountsError(null);
       }
       // ── Application completeness per deal (the exit rule) + the setter's ★s ──
       const dealIds = rows.map((r) => r.id);
@@ -763,14 +778,27 @@ export default function SetterDealList({
                         })()}
                         {/* Documents on file — total + how many are bank statements. */}
                         {(() => {
+                          // The read failed — say so. A zero here would put "no
+                          // docs" on every row at once and send setters chasing
+                          // merchants who have already sent their statements.
+                          if (docCountsError) {
+                            return (
+                              <span
+                                title={`Couldn't read the documents — ${docCountsError}. This is NOT "none on file"; open the deal before telling anyone they're missing.`}
+                                className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                              >
+                                📄 docs unknown
+                              </span>
+                            );
+                          }
                           const dcs = r.customer_id ? docCounts.get(r.customer_id) : null;
                           if (!dcs || dcs.total === 0) {
                             return (
                               <span
-                                title="No documents on file yet"
+                                title="Nothing in this app's document store. Merchants who upload through the VibeReach form land there instead — open the deal and check Files in VibeReach before chasing."
                                 className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-400 dark:bg-gray-700/60"
                               >
-                                📄 no docs
+                                📄 none in app
                               </span>
                             );
                           }

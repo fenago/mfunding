@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   DocumentMagnifyingGlassIcon, EyeIcon, CheckCircleIcon, XCircleIcon,
+  ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import {
   getDocumentsForReview, setDocumentStatus, getDocumentUrl,
@@ -26,12 +27,25 @@ export default function DocumentReviewPage() {
   const [typeFilter, setTypeFilter] = useState("all"); // document-type filter (defaults to All)
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // getDocumentsForReview THROWS on a Supabase error, and nothing used to catch
+  // it: the rejection went unhandled, `docs` stayed [], and the page drew a green
+  // tick and "Nothing to review — all caught up." over a queue it had never read.
+  // An unreadable queue is not an empty queue.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const shown = typeFilter === "all" ? docs : docs.filter((d) => d.document_type === typeFilter);
 
   async function load() {
     setLoading(true);
-    try { setDocs(await getDocumentsForReview(showAll)); } finally { setLoading(false); }
+    try {
+      setDocs(await getDocumentsForReview(showAll));
+      setLoadError(null);
+    } catch (e) {
+      setDocs([]);
+      setLoadError(e instanceof Error ? e.message : "the document queue could not be read");
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, [showAll]);
 
@@ -78,6 +92,25 @@ export default function DocumentReviewPage() {
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>
+      ) : loadError ? (
+        // NOT the green tick. The queue was never read, so "all caught up" would
+        // be a claim about work nobody has seen.
+        <div className="text-center py-10 bg-white dark:bg-gray-800 rounded-xl border border-amber-300 dark:border-amber-800">
+          <ExclamationTriangleIcon className="w-10 h-10 text-amber-500 mx-auto mb-2" />
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+            Couldn't read the review queue — {loadError}.
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            This is <b>not</b> "nothing to review". Retry before treating it as clear.
+          </p>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+          >
+            Retry
+          </button>
+        </div>
       ) : shown.length === 0 ? (
         <div className="text-center py-10 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
           <CheckCircleIcon className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
