@@ -38,9 +38,12 @@ interface Props {
   onClose: () => void;
   /** Latest selectable day (today). Future days hold no data to report on. */
   maxDay: string;
+  /** Which edge the panel hangs from. A control sitting on the right of its row
+   *  needs "right", or a 288px panel opens off the edge of a narrow window. */
+  align?: "left" | "right";
 }
 
-export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay }: Props) {
+export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay, align = "left" }: Props) {
   const panel = useRef<HTMLDivElement>(null);
 
   // The first click of a two-click range. Null means the next click starts one.
@@ -101,14 +104,26 @@ export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay }: 
       ref={panel}
       role="dialog"
       aria-label="Pick a day or a span of days"
-      className="absolute z-30 mt-2 w-72 rounded-xl border border-base-300 bg-base-100 dark:bg-gray-800 dark:border-gray-700 p-3 shadow-lg"
+      // ⚠ THIS PANEL RENDERED TRANSPARENT IN LIGHT MODE UNTIL 2026-09-29, and
+      // the reason is worth writing down: it was styled `bg-base-100
+      // border-base-300`, and THIS PROJECT DOES NOT LOAD DAISYUI. Tailwind v4
+      // needs an explicit `@plugin "daisyui"` in src/index.css and there isn't
+      // one, so every base-* utility compiles to nothing (grep the built CSS:
+      // zero occurrences of `base-100`). Cards elsewhere look right only
+      // because src/index.css defines its own `.card`. Here there was no
+      // background at all, so the page heading, the intro copy and the tab
+      // strip showed straight through the day grid. Real Tailwind colours
+      // only, in both themes — and `z-50` so nothing on the page overlaps it.
+      className={`absolute z-50 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white p-3 shadow-2xl ${
+        align === "right" ? "right-0" : "left-0"
+      }`}
     >
       <div className="flex items-center justify-between mb-2">
         <button
           type="button"
           onClick={() => step(-1)}
           aria-label="Previous month"
-          className="p-1 rounded-md hover:bg-base-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+          className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
         >
           <ChevronLeftIcon className="w-4 h-4" />
         </button>
@@ -117,7 +132,7 @@ export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay }: 
           type="button"
           onClick={() => step(1)}
           aria-label="Next month"
-          className="p-1 rounded-md hover:bg-base-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+          className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
         >
           <ChevronRightIcon className="w-4 h-4" />
         </button>
@@ -162,7 +177,9 @@ export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay }: 
                     ? "bg-mint-green text-gray-900 font-semibold"
                     : inSpan
                       ? "bg-mint-green/30 text-gray-900 dark:text-white"
-                      : "text-gray-700 dark:text-gray-200 hover:bg-base-200 dark:hover:bg-gray-700"
+                      // hover:bg-base-200 was dead for the same reason as the
+                      // panel's own background — no DaisyUI, no utility.
+                      : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
               } ${isToday && !isEdge && !isAnchor ? "ring-1 ring-ocean-blue" : ""}`}
             >
               {label}

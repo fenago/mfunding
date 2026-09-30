@@ -305,7 +305,12 @@ interface SetterOption {
 // Setters tab's loadDeals() uses (it ORs three activity timestamps to answer
 // "what moved in this window"), so the two queries are kept separate rather than
 // one being bent into the other's shape.
-const SOURCE_DEAL_COLS = "id,lead_source,status,previous_status,assigned_closer_id,created_at,contacted_at,spoke_at,qualified_at,application_sent_at,funded_at,appointment_at,amount_funded";
+// docs_collected_at / bank_statements_at ride along for the BANK STATEMENTS
+// rung; customer_id is what a signature hangs off (ghl_doc_completions is keyed
+// to the merchant, not the deal). Owner, 2026-09-29: "fine we get to
+// application sent... what about signed? what about bank statements??? what
+// about submitted? then funded."
+const SOURCE_DEAL_COLS = "id,lead_source,status,previous_status,assigned_closer_id,created_at,contacted_at,spoke_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,customer_id,funded_at,appointment_at,amount_funded";
 /** Bounded like the WAVV aggregate pass. Hitting it is REPORTED in the UI. */
 // Must not exceed the PostgREST max-rows (1,000) — a higher number here would
 // be a lie: the server truncates at 1,000 regardless, and the `>= CAP` test that
@@ -324,10 +329,33 @@ interface SourceDeal {
   spoke_at: string | null;
   qualified_at: string | null;
   application_sent_at: string | null;
+  docs_collected_at: string | null;
+  bank_statements_at: string | null;
+  /** The merchant. A signature is recorded against the CUSTOMER, not the deal,
+   *  so the Signed rung cannot be read without it. */
+  customer_id: string | null;
   funded_at: string | null;
   appointment_at: string | null;
   amount_funded: number | null;
 }
+
+/** The two facts the pipeline funnel cannot read off a `deals` row, loaded
+ *  once alongside the cohort and handed to every fold.
+ *
+ *  A null SET is UNREADABLE — that rung draws "—" and says so. It is never an
+ *  empty set, because "nobody signed" and "we could not find out" are different
+ *  claims and only one of them is an accusation. */
+interface PipeFacts {
+  /** Deals whose merchant has a SIGNED APPLICATION on file. From
+   *  deal_application_status(), which applies public.is_application_doc_name()
+   *  in SQL — the Broker Compensation Disclosure is not the application, and
+   *  this page holds no copy of that rule. */
+  signed: Set<string> | null;
+  /** Deals with at least one public.deal_submissions ROW. Never deals.status:
+   *  a status can lag its own submission by hours, and did. */
+  submitted: Set<string> | null;
+}
+const NO_PIPE_FACTS: PipeFacts = { signed: null, submitted: null };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // PRODUCTIVE CONTACTS — the PIPELINE-side positive
@@ -593,6 +621,8 @@ function pipelineDepth(d: SourceDeal): number {
   mark(d.spoke_at, "contacted");
   mark(d.qualified_at, "qualifying");
   mark(d.application_sent_at, "application_sent");
+  mark(d.docs_collected_at, "docs_collected");
+  mark(d.bank_statements_at, "bank_statements");
   if (d.funded_at || d.status === "funded") depth = Math.max(depth, IDX("funded"));
   return depth;
 }
@@ -602,25 +632,71 @@ interface PipeCounts {
   contacted: number;
   qualifying: number;
   appsSent: number;
+  /** The merchant SIGNED the application. A sent application nobody signed is a
+   *  dead deal, and before this rung existed that was invisible on this tab. */
+  signed: number;
+  bankStatements: number;
+  submitted: number;
   funded: number;
   appointments: number;
   fundedAmount: number;
   /** Still sitting at Received with nothing logged — the untouched pile. */
   untouched: number;
+  /** Counted at Signed only because the deal is DEEPER (statements in, or a
+   *  submission out), with no signature we can actually read. The at-or-past
+   *  rule requires it; saying how many is what stops it being a quiet claim. */
+  signedInferred: number;
+  /** False when the underlying read failed. The rung then draws "—", never 0 —
+   *  a failed signature sweep must not render as three hundred merchants who
+   *  refused to sign. */
+  signedReadable: boolean;
+  submittedReadable: boolean;
 }
 
-function computePipeline(deals: SourceDeal[]): PipeCounts {
+// ── HOW THE THREE NEW RUNGS KEEP THE FUNNEL MONOTONE ────────────────────────
+// Signed and Submitted are not positions on the MCA ladder — they are FACTS
+// from two other tables (a doc completion, a submission row). The tab's
+// documented rule is "the deepest reading wins, which is why a later stage can
+// never out-count an earlier one", so each rung is OR'd with every rung below
+// it: a deal with a submission row counts at Signed and at Bank Statements too,
+// because it demonstrably passed through them.
+//
+// THAT INFERENCE IS COUNTED AND NAMED, never silent — `signedInferred`. Live
+// today it is ZERO on both products (all 3 submitted real-time deals and all 4
+// at Bank Statements carry a readable signature), so the rule currently changes
+// no number; it exists so the funnel cannot invert the day one of them doesn't.
+function computePipeline(deals: SourceDeal[], facts: PipeFacts = NO_PIPE_FACTS): PipeCounts {
   const c: PipeCounts = {
-    received: 0, contacted: 0, qualifying: 0, appsSent: 0, funded: 0,
+    received: 0, contacted: 0, qualifying: 0, appsSent: 0, signed: 0,
+    bankStatements: 0, submitted: 0, funded: 0,
     appointments: 0, fundedAmount: 0, untouched: 0,
+    signedInferred: 0,
+    signedReadable: facts.signed !== null,
+    submittedReadable: facts.submitted !== null,
   };
   for (const d of deals) {
     c.received++;
     const depth = pipelineDepth(d);
+    const isFunded = depth >= IDX("funded");
+    // Deepest-reading-wins, applied outward from the bottom of the ladder.
+    const hitSubmitted =
+      isFunded || depth >= IDX("submitted_to_funder") || !!facts.submitted?.has(d.id);
+    const hitStatements = hitSubmitted || depth >= IDX("bank_statements");
+    const signedProven = !!facts.signed?.has(d.id);
+    const hitSigned = signedProven || hitStatements;
+
     if (depth >= IDX("contacted")) c.contacted++; else c.untouched++;
     if (depth >= IDX("qualifying")) c.qualifying++;
     if (depth >= IDX("application_sent")) c.appsSent++;
-    if (depth >= IDX("funded")) {
+    if (hitSigned) {
+      c.signed++;
+      // Only meaningful when the signature read succeeded; when it failed the
+      // whole rung renders "—" and every row would count as "inferred".
+      if (!signedProven && c.signedReadable) c.signedInferred++;
+    }
+    if (hitStatements) c.bankStatements++;
+    if (hitSubmitted) c.submitted++;
+    if (isFunded) {
       c.funded++;
       c.fundedAmount += Number(d.amount_funded ?? 0);
     }
@@ -702,17 +778,53 @@ function pipelineStagesOf(c: PipeCounts, targetPrefix: string): FunnelStage[] {
       count: c.appsSent, stepLabel: "of qualified", stepShort: "of qualified",
       stepPct: pct(c.appsSent, c.qualifying), targetKey: key("app_rate_pct"),
     },
+    // ── The three rungs the funnel used to jump straight over ───────────────
+    // It went App Sent → Funded, which hid every stage where deals actually
+    // die. None of these three has a threshold in
+    // platform_settings.ph_dialer_kpi_targets yet, so their rates render GREY —
+    // no target — and never green. That is the page's rule and no default is
+    // being invented here to fill the gap.
+    {
+      key: "signed", label: "Signed", short: "Signed",
+      help:
+        "The merchant SIGNED the application — a completion on 04B MCA PREFILL / 04C MCA PARTIAL / MCA_Merchant_Funding_Application, judged by public.is_application_doc_name() in SQL. The Broker Compensation Disclosure is NOT the application. A deal that is deeper (statements in, or submitted) counts here too, under the same at-or-past rule as every other rung.",
+      count: c.signed, stepLabel: "of applications sent", stepShort: "of apps sent",
+      stepPct: pct(c.signed, c.appsSent), targetKey: key("sign_rate_pct"),
+      unreadable: !c.signedReadable,
+      secondaryLine:
+        c.signedReadable && c.signedInferred > 0 ? (
+          <span className="text-[11px] text-amber-600 dark:text-amber-400">
+            {c.signedInferred.toLocaleString()} counted from a deeper stage, no signature on file
+          </span>
+        ) : undefined,
+    },
+    {
+      key: "bank_statements", label: "Bank statements", short: "Stmts in",
+      help: "Reached at-or-past the Bank Statements rung: a bank_statements_at / docs_collected_at stamp, or a current (or pre-park) status of Bank Statements or later. This is the documented #1 leak in the funnel.",
+      count: c.bankStatements, stepLabel: "of signed", stepShort: "of signed",
+      stepPct: pct(c.bankStatements, c.signed), targetKey: key("statements_rate_pct"),
+    },
+    {
+      key: "submitted", label: "Submitted to funders", short: "Submitted",
+      help:
+        "A public.deal_submissions ROW exists — a package that was actually sent to a funder. NOT deals.status: a status can lag its own submission by hours, and has. A deal at Submitted counts at Signed and Bank Statements too.",
+      count: c.submitted, stepLabel: "of statements in", stepShort: "of stmts",
+      stepPct: pct(c.submitted, c.bankStatements), targetKey: key("submit_rate_pct"),
+      unreadable: !c.submittedReadable,
+    },
     {
       key: "funded", label: "Funded", short: "Funded",
       help: "Funded: a funded_at stamp, or a current status of Funded",
-      count: c.funded, stepLabel: "of applications", stepShort: "of apps",
-      stepPct: pct(c.funded, c.appsSent), targetKey: key("fund_rate_pct"),
-      // Both lead-source tabs are VENDOR-DELIVERED warm leads (a live transfer
-      // or a real-time lead the merchant asked for), so the app→fund band that
-      // applies here is the warm one — 20–30% — not the 8–15% cold band. A warm
-      // source converting like a cold dial is exactly the finding this tab is
-      // for, and holding it to the cold band would hide it.
-      benchmark: { id: "app_to_fund_warm", basis: "step" },
+      count: c.funded, stepLabel: "of submissions", stepShort: "of submitted",
+      stepPct: pct(c.funded, c.submitted), targetKey: key("fund_rate_pct"),
+      // ⚠ THE app_to_fund_warm BAND USED TO HANG HERE AND NO LONGER CAN.
+      // `basis: "step"` colours a rung by its STEP rate, and this rung's step
+      // is now funded ÷ SUBMITTED — three rungs were inserted above it. The
+      // band means funded ÷ APPLICATIONS SENT, so leaving it attached would
+      // have judged one ratio against another's band and called it a verdict,
+      // which is the exact trap the FunnelStage.benchmark note warns about.
+      // The band is unchanged and still rendered, on its own denominator, in
+      // the "Application → funded" row beneath this funnel.
     },
   ];
 }
@@ -1605,12 +1717,16 @@ function inRange(iso: string | null, from: Date, to: Date): boolean {
   return t >= from.getTime() && t < to.getTime();
 }
 
-type RangeKey = "today" | "yesterday" | "7d" | "30d" | "custom";
+type RangeKey = "today" | "yesterday" | "7d" | "14d" | "30d" | "custom";
 const RANGE_LABELS: Record<RangeKey, string> = {
   // "Pick dates", not "Custom": the button opens a month grid, and the label
   // should say what clicking it does. Owner, on hunting for last Tuesday in the
   // old two-date-box version: "it's too hard to go into custom."
-  today: "Today", yesterday: "Yesterday", "7d": "Last 7 days", "30d": "Last 30 days", custom: "Pick dates",
+  today: "Today", yesterday: "Yesterday", "7d": "Last 7 days",
+  // The owner works in two-week windows — every analysis this week has been 14
+  // days — and without this preset that meant opening Pick dates every time.
+  "14d": "Last 14 days",
+  "30d": "Last 30 days", custom: "Pick dates",
 };
 /** Ranges that are ONE day wide. A trend drawn over one of these is a single
  *  dot — true, but useless — so the Trends tab widens away from them. */
@@ -2149,6 +2265,11 @@ export default function SetterPerformancePage() {
   const [sourceDealsLoading, setSourceDealsLoading] = useState(true);
   /** The cohort query hit its row cap — REPORTED, never silently absorbed. */
   const [sourceDealsTruncated, setSourceDealsTruncated] = useState(false);
+  /** The two facts the Signed and Submitted rungs are made of. Each is null
+   *  until read and stays null when the read FAILS, which is what makes those
+   *  rungs draw "—" instead of a fabricated zero. */
+  const [sourceFacts, setSourceFacts] = useState<PipeFacts>(NO_PIPE_FACTS);
+  const [sourceFactsError, setSourceFactsError] = useState<string | null>(null);
   /** profiles.id → display name, for deals.assigned_closer_id. Only super admins
    *  can read public.profiles, so this map can legitimately come back empty for
    *  a closer/employee session — the UI says so instead of inventing names. */
@@ -2220,6 +2341,7 @@ export default function SetterPerformancePage() {
       case "today":     return { from: localDayStart(0), to: localDayEnd(0) };
       case "yesterday": return { from: localDayStart(1), to: localDayEnd(1) };
       case "7d":        return { from: localDayStart(6), to: localDayEnd(0) };
+      case "14d":       return { from: localDayStart(13), to: localDayEnd(0) };
       case "30d":       return { from: localDayStart(29), to: localDayEnd(0) };
       case "custom": {
         const from = parseYmdLocal(customFrom);
@@ -2605,9 +2727,62 @@ export default function SetterPerformancePage() {
   // tabs answer is "of what the vendor delivered in this window, how much did we
   // convert" — a cohort question. Recent cohorts are therefore still maturing,
   // which the UI states rather than letting a fresh day read as a bad day.
+  /** Read the Signed and Submitted facts for a set of deals. Kept separate
+   *  from the cohort read so one failing cannot blank the other, and so the
+   *  funnel can render its first five rungs while these two are still in
+   *  flight. Ids go in chunks because deal_application_status() fans out
+   *  per deal and a URL full of 1,000 uuids is its own failure mode. */
+  const loadPipeFacts = useCallback(async (ids: string[]) => {
+    setSourceFactsError(null);
+    if (ids.length === 0) {
+      setSourceFacts({ signed: new Set(), submitted: new Set() });
+      return;
+    }
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += DAILY_ID_CHUNK) chunks.push(ids.slice(i, i + DAILY_ID_CHUNK));
+    const problems: string[] = [];
+
+    const [sigResults, subResults] = await Promise.all([
+      Promise.all(chunks.map((c) => supabase.rpc("deal_application_status", { p_deal_ids: c }))),
+      Promise.all(chunks.map((c) => supabase.from("deal_submissions").select("deal_id").in("deal_id", c))),
+    ]);
+
+    let signed: Set<string> | null = null;
+    const sigFailed = sigResults.find((r) => r.error);
+    if (sigFailed?.error) {
+      problems.push(`signatures: ${sigFailed.error.message}`);
+    } else {
+      const set = new Set<string>();
+      for (const r of sigResults) {
+        for (const row of ((r.data ?? []) as unknown as DealApplicationStatus[])) {
+          if (row.app_signed_state === "signed") set.add(row.deal_id);
+        }
+      }
+      signed = set;
+    }
+
+    let submitted: Set<string> | null = null;
+    const subFailed = subResults.find((r) => r.error);
+    if (subFailed?.error) {
+      problems.push(`submissions: ${subFailed.error.message}`);
+    } else {
+      const set = new Set<string>();
+      for (const r of subResults) {
+        for (const row of ((r.data ?? []) as { deal_id: string | null }[])) {
+          if (row.deal_id) set.add(row.deal_id);
+        }
+      }
+      submitted = set;
+    }
+
+    setSourceFacts({ signed, submitted });
+    setSourceFactsError(problems.length > 0 ? problems.join(" · ") : null);
+  }, []);
+
   const loadSourceDeals = useCallback(async () => {
     setSourceDealsLoading(true);
     setSourceDealsError(null);
+    setSourceFacts(NO_PIPE_FACTS);
     try {
       const { data, error } = await supabase
         .from("deals")
@@ -2621,6 +2796,13 @@ export default function SetterPerformancePage() {
       const rows = (data ?? []) as SourceDeal[];
       setSourceDeals(rows);
       setSourceDealsTruncated(rows.length >= SOURCE_DEAL_CAP);
+
+      // ── The Signed and Submitted rungs ──────────────────────────────────
+      // Two more reads over the SAME cohort, so the funnel can show where
+      // deals actually die instead of jumping App Sent → Funded. Each fails
+      // independently: a broken signature sweep must not take the submission
+      // count down with it, and neither may render as zero.
+      void loadPipeFacts(rows.map((r) => r.id));
 
       // Resolve setter names via staff_directory (staff-readable, names only) —
       // NOT profiles, whose RLS hands a closer only their own row. The directory
@@ -2642,7 +2824,7 @@ export default function SetterPerformancePage() {
       setSourceDealsError(e instanceof Error ? e.message : "Failed to read Synergy lead deals");
     }
     setSourceDealsLoading(false);
-  }, [fromIso, toIso]);
+  }, [fromIso, toIso, loadPipeFacts]);
 
   useEffect(() => { void loadSourceDeals(); }, [loadSourceDeals]);
 
@@ -4347,7 +4529,7 @@ export default function SetterPerformancePage() {
           unassigned,
           nameUnknown: !unassigned && name === null,
           deals: rows,
-          counts: computePipeline(rows),
+          counts: computePipeline(rows, sourceFacts),
         };
       });
       // Unassigned sinks to the bottom; everyone else by cohort size.
@@ -4355,13 +4537,13 @@ export default function SetterPerformancePage() {
         if (a.unassigned !== b.unassigned) return a.unassigned ? 1 : -1;
         return b.counts.received - a.counts.received;
       });
-      return { deals, counts: computePipeline(deals), groups };
+      return { deals, counts: computePipeline(deals, sourceFacts), groups };
     };
     return {
       live_transfers: build(SOURCE_TABS.live_transfers.leadSource),
       realtime: build(SOURCE_TABS.realtime.leadSource),
     };
-  }, [sourceDeals, closerNames]);
+  }, [sourceDeals, closerNames, sourceFacts]);
 
   // ── Daily trend ───────────────────────────────────────────────────────────
   const trend = useMemo(() => {
@@ -4889,6 +5071,7 @@ export default function SetterPerformancePage() {
             loading={sourceDealsLoading}
             error={sourceDealsError}
             truncated={sourceDealsTruncated}
+            factsError={sourceFactsError}
             targetFor={targetFor}
             rangeLabel={rangeLabelText}
             anyNameUnknown={sourceCohorts[tab]?.groups.some((g) => g.nameUnknown) ?? false}
@@ -8524,9 +8707,12 @@ function EmptyRange({ total }: { total: number | null }) {
 // they differ only by lead_source and by KPI-target prefix, so a difference
 // between the two tabs can only ever be a difference in the DATA.
 function SourceFunnelPanel({
-  def, cohort, loading, error, truncated, targetFor, rangeLabel, anyNameUnknown,
+  def, cohort, loading, error, truncated, factsError, targetFor, rangeLabel, anyNameUnknown,
 }: {
   def: SourceTabDef;
+  /** Which of the two extra rung reads failed, if either. Named out loud —
+   *  those rungs draw "—" and the reader is told why, not left to guess. */
+  factsError?: string | null;
   /** null = the deals read FAILED. Not "no leads" — the difference is the whole
    *  point, and the two render completely differently. */
   cohort: { deals: SourceDeal[]; counts: PipeCounts; groups: PipeGroup[] } | null;
@@ -8608,6 +8794,15 @@ function SourceFunnelPanel({
             Nurture / Declined / Dead is read at the last active stage it held before it was parked. The deepest of
             those readings wins, which is why a later stage can never out-count an earlier one.
           </div>
+          <div>
+            <b className="text-gray-700 dark:text-gray-200">Signed and Submitted are facts, not stages.</b> Signed is
+            a completed e-signature on the application itself (<code>public.is_application_doc_name()</code> in SQL —
+            the Broker Compensation Disclosure is a different document and does not count). Submitted is a{" "}
+            <code>deal_submissions</code> row, never <code>deals.status</code>, because a status can lag its own
+            submission by hours. The same deepest-reading-wins rule applies to both, so a submitted deal counts at
+            Signed and Bank Statements as well — and any deal counted at Signed <i>without</i> a signature on file is
+            counted and said out loud under that rung rather than folded in quietly.
+          </div>
           {filtered && (
             <div className="text-emerald-700 dark:text-emerald-400">
               <b>Filtered to {filteredName}.</b> Every tile, funnel step and row below counts only their {def.noun}s —
@@ -8687,6 +8882,27 @@ function SourceFunnelPanel({
     { label: "Contacted", value: c.contacted.toLocaleString(), help: "Reached at-or-past the Contacted rung" },
     { label: "Appointments", value: c.appointments.toLocaleString(), help: "Leads in this cohort with a booked appointment (deals.appointment_at). A callback is not an appointment and is not counted." },
     { label: "Apps sent", value: c.appsSent.toLocaleString(), help: "Reached at-or-past Application Sent" },
+    // The cards and the funnel must never disagree, so these three read the
+    // SAME PipeCounts the funnel does — not a second derivation.
+    {
+      label: "Signed",
+      value: c.signedReadable ? c.signed.toLocaleString() : "—",
+      help: c.signedReadable
+        ? "The merchant signed the APPLICATION (public.is_application_doc_name in SQL — the Broker Compensation Disclosure does not count)"
+        : "The signature read failed this load — unreadable, not zero",
+    },
+    {
+      label: "Statements",
+      value: c.bankStatements.toLocaleString(),
+      help: "Reached at-or-past the Bank Statements rung — the documented #1 leak in the funnel",
+    },
+    {
+      label: "Submitted",
+      value: c.submittedReadable ? c.submitted.toLocaleString() : "—",
+      help: c.submittedReadable
+        ? "At least one deal_submissions row exists — a package actually sent to a funder, never deals.status"
+        : "The submissions read failed this load — unreadable, not zero",
+    },
     { label: "Funded", value: c.funded.toLocaleString(), help: "Funded deals from this cohort" },
     {
       label: "Funded $",
@@ -8717,8 +8933,18 @@ function SourceFunnelPanel({
         </div>
       )}
 
+      {factsError && (
+        <div className="alert alert-warning">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <span>
+            <b>Part of the funnel is unreadable</b> — {factsError}. That rung draws “—” and its card is blank;
+            neither is being shown as zero, and the rungs above it are unaffected.
+          </span>
+        </div>
+      )}
+
       {/* Summary tiles */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {tiles.map((t) => (
           <div key={t.label} className="card bg-base-100 border border-base-300 shadow-sm" title={t.help}>
             <div className="card-body p-4">
@@ -8749,9 +8975,13 @@ function SourceFunnelPanel({
           <p className="text-xs text-gray-400">
             Step rates are judged against{" "}
             <code>{def.targetPrefix}_contact_rate_pct</code>, <code>{def.targetPrefix}_qualify_rate_pct</code>,{" "}
-            <code>{def.targetPrefix}_app_rate_pct</code> and <code>{def.targetPrefix}_fund_rate_pct</code> in{" "}
+            <code>{def.targetPrefix}_app_rate_pct</code>, <code>{def.targetPrefix}_sign_rate_pct</code>,{" "}
+            <code>{def.targetPrefix}_statements_rate_pct</code>, <code>{def.targetPrefix}_submit_rate_pct</code> and{" "}
+            <code>{def.targetPrefix}_fund_rate_pct</code> in{" "}
             <code>platform_settings.ph_dialer_kpi_targets</code>. None of them has a built-in default, so until the
-            owner stores a threshold every rate renders <b>grey — no target</b>, never green.{" "}
+            owner stores a threshold every rate renders <b>grey — no target</b>, never green. The three newest rungs
+            (Signed, Bank statements, Submitted) have no stored threshold at all yet, so they are grey by
+            definition — no default was invented to fill the gap.{" "}
             {def.id === "live_transfers"
               ? "Live transfers are held to their own thresholds: a warm transfer that converts like a cold call is the problem worth seeing."
               : "Real-time leads are held to their own thresholds — they arrive by email, so they should not be measured against a warm transfer."}
@@ -8812,6 +9042,9 @@ function SourceFunnelPanel({
                   <th className={TH_NUM} title="Qualifying ÷ contacted">Qual %</th>
                   <th className={TH_NUM}>App sent</th>
                   <th className={TH_NUM} title="App sent ÷ qualifying">App %</th>
+                  <th className={TH_NUM} title="The merchant signed the application (is_application_doc_name in SQL)">Signed</th>
+                  <th className={TH_NUM} title="Reached at-or-past the Bank Statements rung">Stmts</th>
+                  <th className={TH_NUM} title="A deal_submissions row exists — never deals.status">Submitted</th>
                   <th className={`${TH_NUM} ${GROUP_EDGE}`} title="Deals in this cohort with a booked appointment">Appts</th>
                   <th className={TH_NUM}>Funded</th>
                   <th className={TH_NUM}>Funded $</th>
@@ -8916,6 +9149,17 @@ function PipeCells({
       <td className={TD_NUM}><RagPct value={pct(counts.qualifying, counts.contacted)} target={t("qualify_rate_pct")} /></td>
       <td className={TD_NUM}>{counts.appsSent.toLocaleString()}</td>
       <td className={TD_NUM}><RagPct value={pct(counts.appsSent, counts.qualifying)} target={t("app_rate_pct")} /></td>
+      <td className={TD_NUM}>
+        {counts.signedReadable
+          ? counts.signed.toLocaleString()
+          : <span className="text-gray-400" title="The signature read failed this load — unreadable, not zero">—</span>}
+      </td>
+      <td className={TD_NUM}>{counts.bankStatements.toLocaleString()}</td>
+      <td className={TD_NUM}>
+        {counts.submittedReadable
+          ? counts.submitted.toLocaleString()
+          : <span className="text-gray-400" title="The submissions read failed this load — unreadable, not zero">—</span>}
+      </td>
       <td className={`${TD_NUM} ${GROUP_EDGE}`}>{counts.appointments.toLocaleString()}</td>
       <td className={TD_NUM}>{counts.funded.toLocaleString()}</td>
       <td className={TD_NUM}>{counts.fundedAmount > 0 ? usd(counts.fundedAmount) : <span className="text-gray-300 dark:text-gray-600">$0</span>}</td>
@@ -9071,8 +9315,10 @@ function writeStoredDailyRange(from: string, to: string): void {
   }
 }
 
+// customer_id already rides in SOURCE_DEAL_COLS (the Signed rung needs it), so
+// it is deliberately NOT repeated here.
 const DAILY_DEAL_COLS =
-  `${SOURCE_DEAL_COLS},created_by,customer_id,first_call_due_at,customer:customers!customer_id(phone)`;
+  `${SOURCE_DEAL_COLS},created_by,first_call_due_at,customer:customers!customer_id(phone)`;
 
 /** A SourceDeal plus the four things only this table needs: the creation facts
  *  the phantom-send rule is made of, the merchant the signature hangs off, the
@@ -9082,7 +9328,6 @@ const DAILY_DEAL_COLS =
  *  'unverified'; this table must not call it "never dialed". */
 interface DailyDeal extends SourceDeal {
   created_by: string | null;
-  customer_id: string | null;
   first_call_due_at: string | null;
   customer: { phone: string | null } | null;
 }
@@ -9447,15 +9692,17 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
           </button>
         </div>
         {calOpen && (
-          <div className="absolute right-0 z-30">
-            <DayRangeCalendar
-              from={fromDay}
-              to={toDay}
-              maxDay={today}
-              onPick={pick}
-              onClose={() => setCalOpen(false)}
-            />
-          </div>
+          // align="right" because this control sits at the right end of its
+          // row — a left-hung 288px panel would open off the edge of a narrow
+          // window. The panel positions itself against this relative parent.
+          <DayRangeCalendar
+            from={fromDay}
+            to={toDay}
+            maxDay={today}
+            align="right"
+            onPick={pick}
+            onClose={() => setCalOpen(false)}
+          />
         )}
       </div>
     </div>
