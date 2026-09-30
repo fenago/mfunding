@@ -114,7 +114,15 @@ export default function DayRangeCalendar({ from, to, onPick, onClose, maxDay, al
       // background at all, so the page heading, the intro copy and the tab
       // strip showed straight through the day grid. Real Tailwind colours
       // only, in both themes — and `z-50` so nothing on the page overlaps it.
-      className={`absolute z-50 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white p-3 shadow-2xl ${
+      // `top-full` is NOT decoration. Both callers put this inside a flex row
+      // with `items-center`, and a flex container ALIGNS THE STATIC POSITION OF
+      // AN ABSOLUTE CHILD — so with `top` left to auto the panel centred itself
+      // on the row and computed to top: -121.75px, i.e. it hung upwards over
+      // the page heading. Measured live on the deployed page; that vertical
+      // float is half of what "look how ridiculous it looks" was about, and the
+      // opaque background alone did not fix it. Anchor it to the bottom edge of
+      // the row and it can only ever open downwards.
+      className={`absolute top-full z-50 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white p-3 shadow-2xl ${
         align === "right" ? "right-0" : "left-0"
       }`}
     >
