@@ -49,6 +49,7 @@ import {
   type PipelineRow,
   type Sort,
   type WorkBucket,
+  isSubmittable,
 } from "@/components/admin/processor/types";
 
 const LIST_CAP = 500;
@@ -195,6 +196,10 @@ export default function ProcessorPage() {
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
+  // Which part of the drawer to land on. "funders" comes from the row's
+  // "Submit →" so one click reaches the picker instead of the top of a long
+  // drawer. Cleared whenever the drawer closes, so a later open is neutral.
+  const [drawerFocus, setDrawerFocus] = useState<"funders" | null>(null);
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   // Per-row armed nurture (armOrFire) — houses the two-step confirm without a popup.
@@ -992,12 +997,34 @@ export default function ProcessorPage() {
                           <td className="px-3 py-2 align-top">
                             <button
                               type="button"
-                              onClick={() => setSelectedDealId(r.id)}
+                              onClick={() => { setDrawerFocus(null); setSelectedDealId(r.id); }}
                               className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full ${NEXT_TONE[na.tone]} hover:opacity-80`}
                               title="Open the cockpit to do this"
                             >
                               {na.label}
                             </button>
+                            {/* Statements in, or a GO/NO-GO recorded → she can
+                                start the FIRST submission from here. Opens the
+                                drawer ON the picker rather than making her
+                                find it. Deliberately a drawer-open and not an
+                                inline picker: processor_pipeline_rows carries
+                                none of what FunderPicker needs (no
+                                customer_id, ghl_contact_id or
+                                ai_lender_recommendations), and widening a
+                                500-row list RPC with a heavy JSON column to
+                                serve one row at a time is cost that scales
+                                with the book instead of with what anyone
+                                looks at. */}
+                            {isSubmittable(r) && (
+                              <button
+                                type="button"
+                                onClick={() => { setDrawerFocus("funders"); setSelectedDealId(r.id); }}
+                                title="Open this deal on the funder picker"
+                                className="mt-1 block text-[11px] font-semibold text-ocean-blue hover:underline"
+                              >
+                                Submit →
+                              </button>
+                            )}
                           </td>
 
                           {/* Amount */}
@@ -1210,13 +1237,14 @@ export default function ProcessorPage() {
       {/* 4. The cockpit drawer */}
       <ProcessorDetailDrawer
         dealId={selectedDealId}
+        focus={drawerFocus}
         row={selectedRow}
         pipe={pipe}
         signature={signatureFor(selectedDealId)}
         signatureSentAt={sentAtFor(selectedDealId)}
         signatureSendEvidence={sendEvidenceFor(selectedDealId)}
         signatureEvidenceAgeSeconds={statusFor(selectedDealId)?.send_evidence_age_seconds ?? null}
-        onClose={() => setSelectedDealId(null)}
+        onClose={() => { setSelectedDealId(null); setDrawerFocus(null); }}
         onChanged={reloadAll}
       />
 

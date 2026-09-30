@@ -3,6 +3,7 @@
 
 import type { DealWithCustomer } from "@/types/deals";
 import { applicationCompleteness } from "@/lib/applicationCompleteness";
+import { PARKED_STATUSES } from "@/types/deals";
 import { dateKeyET } from "@/utils/time";
 
 export interface AppObj {
@@ -169,6 +170,21 @@ export function hasStatements(r: PipelineRow): boolean {
 /** Gate ② — the merchant application is 100% complete. */
 export function appComplete(r: PipelineRow): boolean {
   return appPct(r) === 100;
+}
+
+/**
+ * Can this deal go out to funders from the list?
+ *
+ * The same shape the drawer's own gate uses: statements in, or a GO/NO-GO
+ * recorded. Deliberately NOT "has already been submitted" — the whole point is
+ * to start the FIRST submission, and gating on prior submissions is the bug
+ * that made the drawer's panel invisible on exactly these rows.
+ *
+ * Parked deals are excluded: nurture/declined/dead is not a submission queue.
+ */
+export function isSubmittable(r: PipelineRow): boolean {
+  if (r.status && (PARKED_STATUSES as readonly string[]).includes(r.status)) return false;
+  return hasStatements(r) || r.qa_decision != null;
 }
 
 /** Gate ④ — QA has been passed. */

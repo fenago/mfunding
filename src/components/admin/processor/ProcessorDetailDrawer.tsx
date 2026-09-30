@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
@@ -254,6 +254,7 @@ export default function ProcessorDetailDrawer({
   signatureEvidenceAgeSeconds,
   onClose,
   onChanged,
+  focus = null,
 }: {
   dealId: string | null;
   /** The list row for this deal — the single source of truth for the gates so the
@@ -275,6 +276,10 @@ export default function ProcessorDetailDrawer({
   signatureEvidenceAgeSeconds?: number | null;
   onClose: () => void;
   onChanged: () => void;
+  /** "funders" scrolls the funder section into view once the deal has loaded.
+   *  Set by the list's "Submit →", so one click lands her on the picker rather
+   *  than at the top of a long drawer hunting for it. */
+  focus?: "funders" | null;
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [showSensitive, setShowSensitive] = useState(false);
@@ -315,6 +320,7 @@ export default function ProcessorDetailDrawer({
   const [noGoOpen, setNoGoOpen] = useState(false);
   const [noGoReason, setNoGoReason] = useState("");
   const [quickApp, setQuickApp] = useState(false);
+  const fundersRef = useRef<HTMLDivElement | null>(null);
   // Has this deal gone out to any funder? Gates the funder workspace below.
   //
   // Deliberately gated on the EXISTENCE OF A deal_submissions ROW, never on
@@ -411,6 +417,19 @@ export default function ProcessorDetailDrawer({
       void loadSubs();
     }
   }, [dealId, load, loadSubs]);
+
+  // Scroll to the funders section when the list sent her here to submit.
+  // Waits for BOTH reads: the section is not in the DOM until the deal has
+  // loaded and the submissions count has resolved, so scrolling earlier
+  // silently does nothing and she lands at the top wondering where it went.
+  useEffect(() => {
+    if (focus !== "funders") return;
+    if (state.kind !== "ready" || subs.kind === "loading") return;
+    const el = fundersRef.current;
+    if (!el) return;
+    const t = setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+    return () => clearTimeout(t);
+  }, [focus, state.kind, subs.kind]);
 
   // Esc closes the drawer.
   useEffect(() => {
@@ -1349,7 +1368,9 @@ export default function ProcessorDetailDrawer({
                 </section>
               ) : subs.kind === "loading" ? (
                 <p className="text-xs text-gray-400">Checking for funder submissions…</p>
-              ) : !dealForFunders || !submittable ? null : subs.count === 0 ? (
+              ) : !dealForFunders || !submittable ? null : (
+                <div ref={fundersRef}>
+                {subs.count === 0 ? (
                 /* NOTHING HAS GONE OUT YET — the picker is the primary action,
                    mounted directly rather than through FunderWorkspace, whose
                    picker is folded into an accordion headed "Submit to MORE
@@ -1372,6 +1393,8 @@ export default function ProcessorDetailDrawer({
                       responses, never with the first-submission picker. */}
                   <FunderWorkspace deal={dealForFunders} onChanged={onChanged} />
                 </section>
+                )}
+                </div>
               )}
 
               {/* Full application */}
