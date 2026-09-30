@@ -1350,9 +1350,19 @@ export async function submitToMultipleFunders(
   notes?: string,
 ): Promise<DealSubmission[]> {
   if (lenderIds.length === 0) return [];
-  // Gap B: the edge function records each submission, EMAILS each funder's
-  // submission_email with the deal package summary, advances the deal to
-  // "submitted_to_funder", and logs the send. (Replaces the old insert-only flow.)
+  // The edge function records each submission and EMAILS each funder's
+  // submission_email with the deal package. It does NOT advance the deal — the
+  // comment here used to claim it did, which is why nobody noticed that the
+  // advance was really a client-side call bolted onto this one caller. The
+  // OTHER submit path (FunderPicker, which the Playbook uses) invokes the same
+  // function directly and never called it, so every package sent from the
+  // Playbook left the deal reading bank_statements.
+  //
+  // The advance now belongs to the submission row itself:
+  // trg_deal_submissions_advance_stage fires on any row carrying submitted_at
+  // and stamps deals.submitted_at with that row's own send time. One writer,
+  // every caller, no client involvement. Do not re-add an updateDealStatus
+  // call here — two writers where one is a workaround is what hid this.
   const { data, error } = await supabase.functions.invoke("submit-to-funders", {
     body: { dealId, lenderIds, notes: notes || null },
   });
@@ -1361,12 +1371,6 @@ export async function submitToMultipleFunders(
     throw error;
   }
   if (data?.warning) console.warn("submit-to-funders:", data.warning);
-  // Advance the deal stage (also auto-syncs the GHL opportunity). Best-effort.
-  try {
-    await updateDealStatus(dealId, "submitted_to_funder");
-  } catch (e) {
-    console.error("Failed to advance deal to submitted_to_funder:", e);
-  }
   // Return the resulting submission rows for the UI.
   const { data: submissionRows } = await supabase
     .from("deal_submissions")

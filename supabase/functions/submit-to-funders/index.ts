@@ -122,8 +122,17 @@ function buildTokens(
   deal: Record<string, unknown>,
   c: Record<string, unknown>,
   closer: { name: string; email: string },
+  /** Bank-verified average monthly revenue from the newest underwriting run,
+   *  or null when no run exists for this deal. */
+  verifiedMonthlyRevenue: number | null = null,
 ): Record<string, string> {
   const owner = [c.first_name, c.last_name].filter(Boolean).join(" ") || "—";
+  // Print what we VERIFIED when we have it. When we do not, still print the
+  // merchant's number — a funder needs a figure — but say whose it is. Never
+  // an unlabelled number we have not checked ourselves.
+  const revenueLine = verifiedMonthlyRevenue != null
+    ? `${money(verifiedMonthlyRevenue)} (bank-verified)`
+    : `${money(c.monthly_revenue)} (merchant-stated, not yet bank-verified)`;
   return {
     business_name: (c.business_name as string) || "Unknown business",
     dba: (c.business_name as string) || "—",
@@ -132,7 +141,7 @@ function buildTokens(
     owner_phone: (c.phone as string) || "—",
     ein: (c.ein as string) || "—",
     amount_requested: money(deal.amount_requested ?? c.amount_requested),
-    monthly_revenue: money(c.monthly_revenue),
+    monthly_revenue: revenueLine,
     time_in_business: tib(c.time_in_business),
     industry: (c.industry as string) || (c.business_type as string) || "—",
     use_of_funds: (deal.use_of_funds as string) || (c.use_of_funds as string) || "—",
@@ -636,6 +645,26 @@ Deno.serve(async (req) => {
   const { data: customer } = await db.from("customers").select("*").eq("id", deal.customer_id).maybeSingle();
   const c = (customer ?? {}) as Record<string, unknown>;
 
+  // BANK-VERIFIED REVENUE, IF WE HAVE IT.
+  //
+  // Until now this function never opened deal_underwriting, so the "Monthly
+  // revenue:" line in every submission we have ever sent was
+  // customers.monthly_revenue — the merchant's own claim — printed unlabelled
+  // as though it were our figure. On MF-2026-0418 that put "$150,000" in front
+  // of Cashable while our own v4 run had computed $127,740 from the statements.
+  // The funder parses the same statements we do, so an unlabelled number we
+  // have not verified is a number they will catch.
+  const { data: uwRow } = await db
+    .from("deal_underwriting")
+    .select("metrics, version")
+    .eq("deal_id", dealId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const uwMetrics = (uwRow?.metrics ?? null) as Record<string, unknown> | null;
+  const verifiedRevRaw = uwMetrics?.true_avg_monthly_revenue;
+  const verifiedRev = Number.isFinite(Number(verifiedRevRaw)) ? Number(verifiedRevRaw) : null;
+
   // All docs on file for this deal's customer, grouped by type.
   const { data: docRows } = await db
     .from("customer_documents")
@@ -824,7 +853,7 @@ Deno.serve(async (req) => {
       : (docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)");
 
     // --- Render the recipe (subject + body) ---
-    const tokens = buildTokens(deal as Record<string, unknown>, c, closer);
+    const tokens = buildTokens(deal as Record<string, unknown>, c, closer, verifiedRev);
     tokens.doc_links = docLinksText;
     const subject = render(recipe?.subject_template || GENERIC_SUBJECT, tokens);
     let bodyText = render(recipe?.body_template || GENERIC_BODY, tokens);
