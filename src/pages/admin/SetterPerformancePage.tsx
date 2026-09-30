@@ -101,6 +101,7 @@ import {
   ClipboardDocumentListIcon,
   ScaleIcon,
   PhoneArrowUpRightIcon,
+  CalendarDaysIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -129,6 +130,7 @@ import {
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import { signatureUnknown, type SignatureState } from "@/lib/applicationSignature";
 import { isPhantomApplicationSend, checkPhantomMirror } from "@/lib/phantomApplicationSend";
+import { loadCallHistory, type CallHistory } from "@/lib/callHistory";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -4870,19 +4872,29 @@ export default function SetterPerformancePage() {
           paceUnavailableReason={paceUnavailableReason}
         />
       ) : isSourceTab(tab) ? (
-        <SourceFunnelPanel
-          // Keyed by tab so the closer filter resets when you switch products —
-          // a closer who works transfers may have no real-time leads at all.
-          key={tab}
-          def={SOURCE_TABS[tab]}
-          cohort={sourceCohorts[tab]}
-          loading={sourceDealsLoading}
-          error={sourceDealsError}
-          truncated={sourceDealsTruncated}
-          targetFor={targetFor}
-          rangeLabel={rangeLabelText}
-          anyNameUnknown={sourceCohorts[tab]?.groups.some((g) => g.nameUnknown) ?? false}
-        />
+        /* The cohort funnel and the DAY-BY-DAY table are siblings, not parent
+           and child, for one reason: the daily table carries its OWN range (it
+           starts at 2026-09-14, where the product started) and its own reads.
+           Nesting it inside SourceFunnelPanel would put it behind that panel's
+           loading / error / "no leads in this range" early returns — and the
+           empty-cohort case is exactly the one the owner most needs the daily
+           table for, because a dead vendor pipe is a finding. */
+        <div className="space-y-5">
+          <SourceFunnelPanel
+            // Keyed by tab so the closer filter resets when you switch products —
+            // a closer who works transfers may have no real-time leads at all.
+            key={tab}
+            def={SOURCE_TABS[tab]}
+            cohort={sourceCohorts[tab]}
+            loading={sourceDealsLoading}
+            error={sourceDealsError}
+            truncated={sourceDealsTruncated}
+            targetFor={targetFor}
+            rangeLabel={rangeLabelText}
+            anyNameUnknown={sourceCohorts[tab]?.groups.some((g) => g.nameUnknown) ?? false}
+          />
+          <SourceDailyTable key={`daily-${tab}`} def={SOURCE_TABS[tab]} />
+        </div>
       ) : loading ? (
         <div className="flex items-center gap-2 text-gray-400 text-sm">
           <span className="loading loading-spinner loading-sm" /> Loading WAVV calls…
@@ -8908,5 +8920,923 @@ function PipeCells({
       <td className={TD_NUM}>{counts.funded.toLocaleString()}</td>
       <td className={TD_NUM}>{counts.fundedAmount > 0 ? usd(counts.fundedAmount) : <span className="text-gray-300 dark:text-gray-600">$0</span>}</td>
     </>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DAY BY DAY — one ET calendar day per row, for one lead source
+// ═════════════════════════════════════════════════════════════════════════════
+// Owner, 2026-09-29: "start this on 9/14, since that's where it started." The
+// funnel above answers "how far did this range's cohort get"; it cannot answer
+// "which DAY did the vendor stop delivering", or "which day did we blow the
+// five-minute clock". A cohort total hides a vendor outage inside an average.
+//
+// EVERY COLUMN IS A PROPERTY OF THE ARRIVAL DAY'S COHORT, measured as of now —
+// the same reading as the funnel above, sliced by the day the lead LANDED, not
+// by the day the work happened. A lead that arrives on Monday and signs on
+// Thursday is Monday's signature, because Monday is the day whose delivery is
+// being judged. That is the only slicing under which the rates down a row mean
+// anything.
+//
+// ── THE FIVE READS, AND WHY EACH ONE IS THE SOURCE IT IS ────────────────────
+//   Arrived    public.deals, lead_source + created_at. The cohort itself.
+//   Reached    deal_call_events via realtime_lead_call_history() — a call
+//              carrying one of CONVERSATION_DISPOSITIONS at or after arrival.
+//              NOT a duration threshold (see the CONVERSATION_DISPOSITIONS
+//              block: 5,024 voicemails carry human=true, and the single
+//              787-second call that produced a full application carries
+//              human=false).
+//   App sent   deals.application_sent_at, phantom stamps excluded — the GHL
+//              opportunity mirror stamps the stage inside the creating
+//              transaction, and that is not a send.
+//   Signed     deal_application_status() → app_signed_state, which applies
+//              public.is_application_doc_name() in SQL. This page does NOT
+//              carry a copy of the doc-name rule; the one that did missed
+//              '04C MCA PARTIAL', the default send path.
+//   Submitted  a public.deal_submissions ROW, never deals.status — a stage can
+//              be dragged; a submission row is a thing that was sent.
+//
+// ── THE CLOCK IS THE DEAL'S OWN, NOT A NUMBER TYPED HERE ────────────────────
+// deals.first_call_due_at is created_at + 5 minutes on all 207 real-time leads
+// and is NULL on 96 of 100 live transfers, which is the database saying what
+// the Live Transfers tab renders: a merchant already on the phone has no
+// speed-to-lead clock. A deal with no clock is never scored against one.
+const DAILY_TABLE_ANCHOR = "2026-09-14";
+/** Reader-chosen days are persisted, so the owner does not re-pick 9/14 daily. */
+const DAILY_RANGE_STORE_KEY = "mf.setterPerf.dailyRange.v1";
+/** realtime_lead_call_history() refuses more than 200 deals per call, and
+ *  deal_application_status() fans out per deal, so ids go in chunks. */
+const DAILY_ID_CHUNK = 200;
+/** Page size for the deals read. Must stay <= PostgREST max-rows (1,000) or the
+ *  paging short-reads in silence — same trap as AGG_PAGE_SIZE. */
+const DAILY_PAGE_SIZE = 1000;
+/** Hard ceiling on the cohort this table will read. Hitting it is REPORTED as a
+ *  partial read, never absorbed: the owner was misled once by a 30-day view
+ *  that silently covered the most recent 20,000 of 30,357 calls.
+ *
+ *  Why 2,000 and not AGG_ROW_CAP's 20,000: every deal read here costs a slice
+ *  of two per-deal RPCs at 200 ids a call, so 20,000 would be 200 round trips.
+ *  Both lead sources together hold 307 deals across all time, so this is ~6.5×
+ *  the entire book — and if it is ever hit, the banner says so out loud. */
+const DAILY_DEAL_CAP = 2000;
+
+const ET_TZ = "America/New_York";
+
+/** Eastern's offset from UTC at an instant, in ms (negative — ET is west). */
+function etOffsetMs(atMs: number): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_TZ, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(atMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? "0");
+  // hour12:false emits "24" for midnight in some engines.
+  const hour = get("hour") % 24;
+  return Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second")) - atMs;
+}
+
+/** The yyyy-mm-dd Eastern calendar day an instant falls on — the floor's day. */
+function etDayOf(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-CA", { timeZone: ET_TZ });
+}
+
+/** The UTC instant at which Eastern midnight opens `day`. Noon UTC is the same
+ *  calendar date in Eastern all year round, so it is a safe probe for whether
+ *  that day is EDT or EST. */
+function etDayStartMs(day: string): number {
+  const [y, m, d] = day.split("-").map(Number);
+  const probe = Date.UTC(y, (m || 1) - 1, d || 1, 12, 0, 0);
+  return Date.UTC(y, (m || 1) - 1, d || 1, 0, 0, 0) - etOffsetMs(probe);
+}
+
+/** Pure calendar arithmetic on a yyyy-mm-dd — no timezone involved. */
+function addDays(day: string, n: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + n)).toISOString().slice(0, 10);
+}
+
+/** Today in Eastern. */
+function etToday(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: ET_TZ });
+}
+
+/** Every day from `from` to `to` inclusive, NEWEST FIRST. A day with nothing in
+ *  it is still a row: a day the vendor delivered nothing is the finding, and a
+ *  gap in a table reads as "no data" when it means "no leads". */
+function etDaysDescending(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = to; d >= from; d = addDays(d, -1)) {
+    out.push(d);
+    if (out.length > 800) break; // ~2 years; a runaway range cannot hang the browser
+  }
+  return out;
+}
+
+function etDayLabel(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1)).toLocaleDateString("en-US", {
+    timeZone: "UTC", month: "short", day: "numeric",
+  });
+}
+function etWeekdayLabel(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1)).toLocaleDateString("en-US", {
+    timeZone: "UTC", weekday: "short",
+  });
+}
+
+/** The reader's stored range, or null when there isn't one / it can't be read.
+ *  Private windows and blocked site data both throw here; neither is an error
+ *  worth showing, they just mean "no stored preference". */
+function readStoredDailyRange(): { from: string; to: string } | null {
+  try {
+    const raw = window.localStorage.getItem(DAILY_RANGE_STORE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { from?: unknown; to?: unknown };
+    const ok = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    if (!ok(v.from) || !ok(v.to) || v.from > v.to) return null;
+    return { from: v.from, to: v.to };
+  } catch {
+    return null;
+  }
+}
+function writeStoredDailyRange(from: string, to: string): void {
+  try {
+    window.localStorage.setItem(DAILY_RANGE_STORE_KEY, JSON.stringify({ from, to }));
+  } catch {
+    /* storage unavailable — the range still works for this session */
+  }
+}
+
+const DAILY_DEAL_COLS =
+  `${SOURCE_DEAL_COLS},created_by,customer_id,first_call_due_at,customer:customers!customer_id(phone)`;
+
+/** A SourceDeal plus the four things only this table needs: the creation facts
+ *  the phantom-send rule is made of, the merchant the signature hangs off, the
+ *  deal's own speed-to-lead clock, and the phone — because WAVV rows are matched
+ *  to a deal BY PHONE, so a merchant with no number on file is one we are blind
+ *  to rather than one nobody called. deal_speed_to_lead() calls that same case
+ *  'unverified'; this table must not call it "never dialed". */
+interface DailyDeal extends SourceDeal {
+  created_by: string | null;
+  customer_id: string | null;
+  first_call_due_at: string | null;
+  customer: { phone: string | null } | null;
+}
+
+/** Everything the fold needs besides the deals. A null map is UNREADABLE — the
+ *  column renders "?" and the banner names the read that failed. It is never
+ *  rendered as zero. */
+interface DailyContext {
+  history: Record<string, CallHistory> | null;
+  signed: Set<string> | null;
+  /** Canonical phantom flags, for the mirror cross-check. */
+  canonical: Map<string, { born_at_application_sent: boolean }> | null;
+  submitted: Set<string> | null;
+  /** False on Live Transfers: the merchant is already on the phone, so there is
+   *  no clock and the three timing columns must render "—", never 0. */
+  clockApplies: boolean;
+}
+
+interface DailyMetrics {
+  arrived: number;
+  /** null = the call history could not be read at all. */
+  reached: number | null;
+  /** Arrivals whose call history was missing from the RPC's answer. */
+  reachUnknown: number;
+  /** The funnel's own Contacted rung over the same rows — carried ONLY for the
+   *  reconciliation line, never rendered as a column. */
+  contactedRung: number;
+  appSent: number;
+  appPhantom: number;
+  signed: number | null;
+  submitted: number | null;
+  /** Arrivals carrying a first_call_due_at — the SLA denominator. */
+  clocked: number;
+  within5: number;
+  neverCalled: number;
+  /** Clocked arrivals whose first dial could not be established. */
+  ttcUnknown: number;
+  /** Minutes from arrival to first dial, one per clocked arrival that had one. */
+  ttcMinutes: number[];
+}
+
+function summariseDaily(deals: DailyDeal[], ctx: DailyContext): DailyMetrics {
+  const m: DailyMetrics = {
+    arrived: 0, reached: ctx.history ? 0 : null, reachUnknown: 0, contactedRung: 0,
+    appSent: 0, appPhantom: 0, signed: ctx.signed ? 0 : null, submitted: ctx.submitted ? 0 : null,
+    clocked: 0, within5: 0, neverCalled: 0, ttcUnknown: 0, ttcMinutes: [],
+  };
+  for (const d of deals) {
+    m.arrived++;
+    if (pipelineDepth(d) >= IDX("contacted")) m.contactedRung++;
+    if (d.application_sent_at) {
+      if (isPhantomApplicationSend(d)) m.appPhantom++;
+      else m.appSent++;
+    }
+    if (ctx.signed && ctx.signed.has(d.id)) m.signed = (m.signed ?? 0) + 1;
+    if (ctx.submitted && ctx.submitted.has(d.id)) m.submitted = (m.submitted ?? 0) + 1;
+
+    const arrivedMs = d.created_at ? Date.parse(d.created_at) : NaN;
+    const hist = ctx.history ? ctx.history[d.id] : undefined;
+
+    // ── Reached ──────────────────────────────────────────────────────────────
+    if (ctx.history) {
+      if (!hist) {
+        m.reachUnknown++;
+      } else {
+        const talked = (hist.calls ?? []).some(
+          (c) =>
+            !!c.disposition &&
+            CONVERSATION_DISPOSITIONS.includes(c.disposition) &&
+            (!Number.isFinite(arrivedMs) || Date.parse(c.at) >= arrivedMs),
+        );
+        if (talked) m.reached = (m.reached ?? 0) + 1;
+      }
+    }
+
+    // ── The clock ────────────────────────────────────────────────────────────
+    if (!ctx.clockApplies || !d.first_call_due_at || !Number.isFinite(arrivedMs)) continue;
+    m.clocked++;
+    if (!ctx.history || !hist) { m.ttcUnknown++; continue; }
+    // The RPC returns at most the 60 most recent calls. When it truncated, the
+    // FIRST dial since arrival may be one of the ones it dropped, so the clock
+    // is unknown — not "they were called late", which would be an accusation
+    // built on a missing row.
+    const truncated = hist.attempts > (hist.calls?.length ?? 0);
+    const sinceArrival = (hist.calls ?? [])
+      .map((c) => Date.parse(c.at))
+      .filter((t) => Number.isFinite(t) && t >= arrivedMs);
+    if (sinceArrival.length === 0) {
+      // No phone on file means the WAVV half of the union cannot match this
+      // deal at all, so "no calls found" is our blindness, not their failure.
+      const dialable = !!(d.customer?.phone ?? "").replace(/\D/g, "");
+      if (truncated || !dialable) m.ttcUnknown++; else m.neverCalled++;
+      continue;
+    }
+    if (truncated) { m.ttcUnknown++; continue; }
+    const firstMs = Math.min(...sinceArrival);
+    m.ttcMinutes.push((firstMs - arrivedMs) / 60000);
+    if (firstMs <= Date.parse(d.first_call_due_at)) m.within5++;
+  }
+  return m;
+}
+
+/** percentile_cont(0.5) — the mean of the two middles on an even count, which
+ *  is what the database would have said. */
+function medianOf(xs: number[]): number | null {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** A span of minutes a manager can read at a glance. */
+function ttcText(minutes: number | null): string {
+  if (minutes === null) return "—";
+  if (minutes < 1) return "<1 min";
+  if (minutes < 90) return `${minutes.toFixed(1)} min`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${hours.toFixed(1)} h`;
+  return `${(hours / 24).toFixed(1)} d`;
+}
+
+/** The SLA colour. NO INVENTED PERCENTAGE THRESHOLD: green only when every
+ *  clocked lead met the five-minute clock, red when none did, amber when some
+ *  were missed. The clock is defined; a "good enough" share of it is not. */
+function slaTone(within: number, clocked: number): string {
+  if (clocked === 0) return "text-gray-400 dark:text-gray-500";
+  if (within === clocked) return "text-emerald-600 dark:text-emerald-400";
+  if (within === 0) return "text-red-600 dark:text-red-400";
+  return "text-amber-600 dark:text-amber-400";
+}
+
+type DailyLoad =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | {
+      kind: "ready";
+      deals: DailyDeal[];
+      ctx: DailyContext;
+      truncated: boolean;
+      historyError: string | null;
+      signedError: string | null;
+      submittedError: string | null;
+      /** Newest arrival of this lead source ALL TIME, so an empty range can say
+       *  when the pipe last delivered instead of looking like a broken query. */
+      lastArrivalAt: string | null;
+      lastArrivalUnreadable: boolean;
+    };
+
+function SourceDailyTable({ def }: { def: SourceTabDef }) {
+  const today = etToday();
+  const stored = useMemo(() => readStoredDailyRange(), []);
+  const [fromDay, setFromDay] = useState<string>(stored?.from ?? DAILY_TABLE_ANCHOR);
+  // A stored end date goes stale overnight; the owner's stored "to" is honoured
+  // as picked, but the default follows today rather than freezing on the day he
+  // first opened the tab.
+  const [toDay, setToDay] = useState<string>(stored?.to ?? today);
+  const [calOpen, setCalOpen] = useState(false);
+  const [load, setLoad] = useState<DailyLoad>({ kind: "loading" });
+
+  const pick = useCallback((f: string, t: string) => {
+    setFromDay(f);
+    setToDay(t);
+    writeStoredDailyRange(f, t);
+  }, []);
+
+  const clockApplies = def.id === "realtime";
+  const leadSource = def.leadSource;
+
+  const run = useCallback(async () => {
+    setLoad({ kind: "loading" });
+    const fromIso = new Date(etDayStartMs(fromDay)).toISOString();
+    const toIso = new Date(etDayStartMs(addDays(toDay, 1))).toISOString();
+
+    // ── 1. The cohort. Paged, because PostgREST truncates a .limit() at
+    //       max-rows in silence and a short-read here would under-report every
+    //       column at once.
+    const deals: DailyDeal[] = [];
+    let truncated = false;
+    try {
+      for (let offset = 0; offset < DAILY_DEAL_CAP; offset += DAILY_PAGE_SIZE) {
+        const { data, error } = await supabase
+          .from("deals")
+          .select(DAILY_DEAL_COLS)
+          .eq("lead_source", leadSource)
+          .gte("created_at", fromIso)
+          .lt("created_at", toIso)
+          .order("created_at", { ascending: false })
+          .range(offset, offset + DAILY_PAGE_SIZE - 1);
+        if (error) throw new Error(error.message);
+        // `as unknown as` for the same reason PRODUCTIVE_DEAL_COLS needs it:
+        // the generated types render a to-one embed as an array.
+        const page = (data ?? []) as unknown as DailyDeal[];
+        deals.push(...page);
+        if (page.length < DAILY_PAGE_SIZE) break;
+        if (deals.length >= DAILY_DEAL_CAP) { truncated = true; break; }
+      }
+    } catch (e) {
+      setLoad({ kind: "error", message: e instanceof Error ? e.message : "Failed to read deals" });
+      return;
+    }
+
+    // ── 2. When the pipe last delivered. Read whatever the range holds, so an
+    //       empty range can name the last arrival instead of going blank.
+    let lastArrivalAt: string | null = null;
+    let lastArrivalUnreadable = false;
+    {
+      const { data, error } = await supabase
+        .from("deals")
+        .select("created_at")
+        .eq("lead_source", leadSource)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (error) lastArrivalUnreadable = true;
+      else lastArrivalAt = ((data ?? [])[0] as { created_at: string | null } | undefined)?.created_at ?? null;
+    }
+
+    const ids = deals.map((d) => d.id);
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += DAILY_ID_CHUNK) chunks.push(ids.slice(i, i + DAILY_ID_CHUNK));
+
+    // ── 3. Call history — Reached and the clock, from the one canonical union
+    //       of WAVV + VibeReach + hand-logged calls.
+    let history: Record<string, CallHistory> | null = ids.length === 0 ? {} : null;
+    let historyError: string | null = null;
+    if (ids.length > 0) {
+      const results = await Promise.all(chunks.map((c) => loadCallHistory(c)));
+      const failed = results.find((r) => r.kind === "error");
+      if (failed && failed.kind === "error") {
+        historyError = failed.message;
+      } else {
+        const merged: Record<string, CallHistory> = {};
+        for (const r of results) if (r.kind === "ready") Object.assign(merged, r.byDeal);
+        history = merged;
+      }
+    }
+
+    // ── 4. Signatures + the canonical phantom flag, from the one RPC that owns
+    //       the doc-name rule. Nothing here re-implements it.
+    let signed: Set<string> | null = ids.length === 0 ? new Set() : null;
+    let canonical: Map<string, { born_at_application_sent: boolean }> | null =
+      ids.length === 0 ? new Map() : null;
+    let signedError: string | null = null;
+    if (ids.length > 0) {
+      const results = await Promise.all(
+        chunks.map((c) => supabase.rpc("deal_application_status", { p_deal_ids: c })),
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) {
+        signedError = failed.error.message;
+      } else {
+        const set = new Set<string>();
+        const map = new Map<string, { born_at_application_sent: boolean }>();
+        for (const r of results) {
+          for (const row of ((r.data ?? []) as unknown as DealApplicationStatus[])) {
+            if (row.app_signed_state === "signed") set.add(row.deal_id);
+            map.set(row.deal_id, { born_at_application_sent: row.born_at_application_sent });
+          }
+        }
+        signed = set;
+        canonical = map;
+      }
+    }
+
+    // ── 5. Submissions — a ROW, never a status.
+    let submitted: Set<string> | null = ids.length === 0 ? new Set() : null;
+    let submittedError: string | null = null;
+    if (ids.length > 0) {
+      const results = await Promise.all(
+        chunks.map((c) => supabase.from("deal_submissions").select("deal_id").in("deal_id", c)),
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) {
+        submittedError = failed.error.message;
+      } else {
+        const set = new Set<string>();
+        for (const r of results) {
+          for (const row of ((r.data ?? []) as { deal_id: string | null }[])) {
+            if (row.deal_id) set.add(row.deal_id);
+          }
+        }
+        submitted = set;
+      }
+    }
+
+    setLoad({
+      kind: "ready",
+      deals,
+      ctx: { history, signed, canonical, submitted, clockApplies },
+      truncated,
+      historyError,
+      signedError,
+      submittedError,
+      lastArrivalAt,
+      lastArrivalUnreadable,
+    });
+  }, [fromDay, toDay, leadSource, clockApplies]);
+
+  useEffect(() => { void run(); }, [run]);
+
+  const days = useMemo(() => etDaysDescending(fromDay, toDay), [fromDay, toDay]);
+
+  const folded = useMemo(() => {
+    if (load.kind !== "ready") return null;
+    const byDay = new Map<string, DailyDeal[]>();
+    for (const d of load.deals) {
+      const k = etDayOf(d.created_at);
+      if (!k) continue;
+      const bucket = byDay.get(k);
+      if (bucket) bucket.push(d); else byDay.set(k, [d]);
+    }
+    const rows = days.map((day) => ({ day, m: summariseDaily(byDay.get(day) ?? [], load.ctx) }));
+    return { rows, total: summariseDaily(load.deals, load.ctx) };
+  }, [load, days]);
+
+  /** The phantom-send rule this table applies, against the database's own. A
+   *  mirror nobody checks is how the doc-name rule drifted into nine copies. */
+  const mirror = useMemo(() => {
+    if (load.kind !== "ready") return null;
+    return checkPhantomMirror(
+      load.deals.filter((d) => d.application_sent_at),
+      (d) => d.id,
+      (d) => d.id.slice(0, 8),
+      load.ctx.canonical,
+    );
+  }, [load]);
+
+  const header = (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+          <CalendarDaysIcon className="w-5 h-5 text-mint-green" /> Day by day — {def.label}
+        </h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          One row per <b>Eastern</b> calendar day, newest first. Every column is a property of the{" "}
+          <b>arrival day's cohort</b> measured as of now — a {def.noun} that lands Monday and signs Thursday is{" "}
+          <b>Monday's</b> signature, because Monday is the day whose delivery is being judged.
+        </p>
+      </div>
+      <div className="relative shrink-0">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCalOpen((v) => !v)}
+            className="btn btn-xs btn-outline gap-1"
+            title="Pick the first and last day of the range. Eastern calendar days."
+          >
+            <CalendarDaysIcon className="w-3.5 h-3.5" />
+            {etDayLabel(fromDay)} – {etDayLabel(toDay)} <span className="opacity-60">ET</span>
+          </button>
+          {(fromDay !== DAILY_TABLE_ANCHOR || toDay !== today) && (
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost"
+              onClick={() => { pick(DAILY_TABLE_ANCHOR, today); setCalOpen(false); }}
+              title={`Back to ${etDayLabel(DAILY_TABLE_ANCHOR)} — the first day this lead source delivered — through today`}
+            >
+              Since {etDayLabel(DAILY_TABLE_ANCHOR)}
+            </button>
+          )}
+          <button type="button" className="btn btn-xs btn-ghost" onClick={() => void run()} title="Re-read">
+            <ArrowPathIcon className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        {calOpen && (
+          <div className="absolute right-0 z-30">
+            <DayRangeCalendar
+              from={fromDay}
+              to={toDay}
+              maxDay={today}
+              onPick={pick}
+              onClose={() => setCalOpen(false)}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  if (load.kind === "loading") {
+    return (
+      <div className="card bg-base-100 border border-base-300 shadow-sm">
+        <div className="card-body p-4 space-y-3">
+          {header}
+          <div className="flex items-center gap-2 text-gray-400 text-sm">
+            <span className="loading loading-spinner loading-sm" /> Reading {def.label.toLowerCase()} day by day…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (load.kind === "error") {
+    return (
+      <div className="card bg-base-100 border border-base-300 shadow-sm">
+        <div className="card-body p-4 space-y-3">
+          {header}
+          <div className="alert alert-error">
+            <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+            <div>
+              <div className="font-semibold">Could not read the daily table.</div>
+              <div className="text-sm opacity-90">
+                {load.message} — this is <b>unreadable</b>, not an empty range. No day below is being shown as zero.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = folded?.rows ?? [];
+  const total = folded?.total ?? null;
+  const rate = (n: number | null, d: number): string =>
+    n === null ? "—" : d > 0 ? `${((n / d) * 100).toFixed(0)}%` : "—";
+
+  const nothingArrived = (total?.arrived ?? 0) === 0;
+  const lastArrivalDay = etDayOf(load.lastArrivalAt);
+
+  return (
+    <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card-body p-4 space-y-3">
+        {header}
+
+        {load.truncated && (
+          <div className="alert alert-warning">
+            <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+            <span>
+              <b>Partial read.</b> This range holds more than {DAILY_DEAL_CAP.toLocaleString()} {def.noun}s and only
+              the {DAILY_DEAL_CAP.toLocaleString()} most recent were read, so every count below is a floor, not a
+              total. Narrow the range.
+            </span>
+          </div>
+        )}
+
+        {(load.historyError || load.signedError || load.submittedError) && (
+          <div className="alert alert-error">
+            <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+            <div className="text-sm">
+              <div className="font-semibold">Part of this table is unreadable — those columns show “?”, not 0.</div>
+              {load.historyError && (
+                <div>
+                  <b>Reached / timing:</b> the call history read failed ({load.historyError}).
+                </div>
+              )}
+              {load.signedError && (
+                <div>
+                  <b>Signed:</b> the application-status read failed ({load.signedError}).
+                </div>
+              )}
+              {load.submittedError && (
+                <div>
+                  <b>Submitted:</b> the submissions read failed ({load.submittedError}).
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {nothingArrived && (
+          <div className="alert">
+            <InformationCircleIcon className="w-5 h-5 shrink-0" />
+            <span>
+              <b>No {def.noun}s arrived in this range.</b>{" "}
+              {load.lastArrivalUnreadable
+                ? "When this source last delivered could not be read, so nothing is being claimed about it."
+                : lastArrivalDay
+                  ? <>The last {def.noun} arrived <b>{etDayLabel(lastArrivalDay)}</b> ({etStamp(load.lastArrivalAt)} ET). The rows below are real zeros — the vendor delivered nothing, which is not the same as a broken read.</>
+                  : <>This source has <b>never</b> delivered a {def.noun}. The rows below are real zeros.</>}
+            </span>
+          </div>
+        )}
+
+        <div className={TABLE_WRAP}>
+          <table className={TABLE}>
+            <thead className={THEAD}>
+              <tr>
+                <th className={TH}>Date</th>
+                <th className={TH}>Day</th>
+                <th className={TH_NUM} title={`${def.noun}s created with lead_source = ${def.leadSource} on this Eastern day`}>
+                  Arrived
+                </th>
+                <th className={TH_NUM} title={CONVERSATION_HELP}>Reached</th>
+                <th
+                  className={TH_NUM}
+                  title="An application_sent_at stamp on this day's arrivals, phantom stamps excluded — a stage the GHL opportunity mirror stamped inside the creating transaction is not a send."
+                >
+                  App sent
+                </th>
+                <th
+                  className={TH_NUM}
+                  title="The merchant signed the APPLICATION — public.is_application_doc_name() in SQL, which excludes the Broker Compensation Disclosure. A merchant nobody has read yet counts as not-signed here, so this is a floor."
+                >
+                  Signed
+                </th>
+                <th
+                  className={`${TH_NUM} ${GROUP_EDGE}`}
+                  title="At least one public.deal_submissions row exists for the deal — a package that was actually sent to a funder, never deals.status, which can be dragged."
+                >
+                  Submitted
+                </th>
+                <th
+                  className={TH_NUM}
+                  title={clockApplies
+                    ? "Median time from the lead arriving to the first dial on record (WAVV + VibeReach + hand-logged), counted only from arrival forward."
+                    : "A live transfer has no speed-to-lead clock — the merchant is already on the phone."}
+                >
+                  Median TTC
+                </th>
+                <th
+                  className={TH_NUM}
+                  title={clockApplies
+                    ? "The slowest first dial of that day's arrivals — the one lead that waited longest."
+                    : "A live transfer has no speed-to-lead clock."}
+                >
+                  Worst TTC
+                </th>
+                <th
+                  className={TH_NUM}
+                  title={clockApplies
+                    ? "Share of that day's arrivals whose first dial landed inside the deal's own first_call_due_at (created_at + 5 minutes). Green only when EVERY lead met it, red when none did, amber when any was missed — there is no invented “good enough” percentage."
+                    : "A live transfer has no five-minute clock to meet."}
+                >
+                  ≤5 min
+                </th>
+              </tr>
+            </thead>
+            <tbody className={TBODY}>
+              {rows.map(({ day, m }) => {
+                const dead = m.arrived === 0;
+                return (
+                  <tr key={day} className={TR}>
+                    <td className={`${TD} whitespace-nowrap font-medium text-gray-900 dark:text-white`}>
+                      {etDayLabel(day)}
+                    </td>
+                    <td className={`${TD} whitespace-nowrap text-gray-500 dark:text-gray-400`}>{etWeekdayLabel(day)}</td>
+                    <td className={`${TD_NUM} ${dead ? "text-gray-400 dark:text-gray-500" : "font-semibold text-gray-900 dark:text-white"}`}>
+                      {m.arrived}
+                    </td>
+                    <td className={TD_NUM}>{m.reached === null ? <span className="text-gray-400">?</span> : m.reached}</td>
+                    <td className={TD_NUM}>{m.appSent}</td>
+                    <td className={TD_NUM}>{m.signed === null ? <span className="text-gray-400">?</span> : m.signed}</td>
+                    <td className={`${TD_NUM} ${GROUP_EDGE}`}>
+                      {m.submitted === null ? <span className="text-gray-400">?</span> : m.submitted}
+                    </td>
+                    {clockApplies ? (
+                      <>
+                        <td className={TD_NUM}>{ttcText(medianOf(m.ttcMinutes))}</td>
+                        <td className={TD_NUM}>
+                          {ttcText(m.ttcMinutes.length > 0 ? Math.max(...m.ttcMinutes) : null)}
+                        </td>
+                        <td className={TD_NUM}>
+                          {m.clocked === 0 ? (
+                            <span className="text-gray-400">—</span>
+                          ) : (
+                            <>
+                              <div className={`font-semibold ${slaTone(m.within5, m.clocked)}`}>
+                                {((m.within5 / m.clocked) * 100).toFixed(0)}%
+                              </div>
+                              <div className="text-[10px] text-gray-400 dark:text-gray-500">
+                                {m.within5}/{m.clocked}
+                                {m.neverCalled > 0 && <> · {m.neverCalled} never called</>}
+                              </div>
+                            </>
+                          )}
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                        <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                        <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+            {total && (
+              <tfoot>
+                <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                  <td className={`${TD} text-gray-900 dark:text-white`} colSpan={2}>
+                    {etDayLabel(fromDay)} – {etDayLabel(toDay)}
+                  </td>
+                  <td className={TD_NUM}>
+                    <div className="text-gray-900 dark:text-white">{total.arrived}</div>
+                    <div className="text-[10px] font-normal text-gray-400">arrived</div>
+                  </td>
+                  <td className={TD_NUM}>
+                    <div className="text-gray-900 dark:text-white">
+                      {total.reached === null ? <span className="text-gray-400">?</span> : total.reached}
+                    </div>
+                    <div className="text-[10px] font-normal text-gray-400">
+                      {rate(total.reached, total.arrived)} of arrived
+                    </div>
+                  </td>
+                  <td className={TD_NUM}>
+                    <div className="text-gray-900 dark:text-white">{total.appSent}</div>
+                    <div className="text-[10px] font-normal text-gray-400">
+                      {total.reached === null ? "—" : rate(total.appSent, total.reached)} of reached
+                    </div>
+                  </td>
+                  <td className={TD_NUM}>
+                    <div className="text-gray-900 dark:text-white">
+                      {total.signed === null ? <span className="text-gray-400">?</span> : total.signed}
+                    </div>
+                    <div className="text-[10px] font-normal text-gray-400">
+                      {total.signed === null ? "—" : rate(total.signed, total.appSent)} of apps sent
+                    </div>
+                  </td>
+                  <td className={`${TD_NUM} ${GROUP_EDGE}`}>
+                    <div className="text-gray-900 dark:text-white">
+                      {total.submitted === null ? <span className="text-gray-400">?</span> : total.submitted}
+                    </div>
+                    <div className="text-[10px] font-normal text-gray-400">
+                      {total.submitted === null || total.signed === null ? "—" : rate(total.submitted, total.signed)} of signed
+                    </div>
+                  </td>
+                  {clockApplies ? (
+                    <>
+                      <td className={TD_NUM}>
+                        <div className="text-gray-900 dark:text-white">{ttcText(medianOf(total.ttcMinutes))}</div>
+                        <div className="text-[10px] font-normal text-gray-400">across the range</div>
+                      </td>
+                      <td className={TD_NUM}>
+                        <div className="text-gray-900 dark:text-white">
+                          {ttcText(total.ttcMinutes.length > 0 ? Math.max(...total.ttcMinutes) : null)}
+                        </div>
+                        <div className="text-[10px] font-normal text-gray-400">slowest lead</div>
+                      </td>
+                      <td className={TD_NUM}>
+                        {total.clocked === 0 ? (
+                          <span className="text-gray-400">—</span>
+                        ) : (
+                          <>
+                            <div className={slaTone(total.within5, total.clocked)}>
+                              {((total.within5 / total.clocked) * 100).toFixed(1)}%
+                            </div>
+                            <div className="text-[10px] font-normal text-gray-400">
+                              {total.within5}/{total.clocked} met the clock
+                            </div>
+                          </>
+                        )}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                      <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                      <td className={TD_NUM}><span className="text-gray-400">—</span></td>
+                    </>
+                  )}
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+
+        {/* ── What the columns are, and the one place they DON'T reconcile ──── */}
+        <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1.5">
+          {!clockApplies && (
+            <div>
+              <b className="text-gray-700 dark:text-gray-200">
+                Median TTC, Worst TTC and ≤5 min are “—” on this tab, and that is the right answer, not a gap.
+              </b>{" "}
+              A live transfer hands the setter a merchant who is <b>already on the phone</b>, so there is no
+              speed-to-lead clock to start: <code>deals.first_call_due_at</code> is null on 96 of the 100 transfers on
+              file. Scoring a product against an SLA it does not have would make a working product read as broken.
+            </div>
+          )}
+          {!clockApplies && (
+            <div>
+              <b className="text-gray-700 dark:text-gray-200">Reached reads low on transfers by construction.</b> It
+              counts a dial <i>we</i> made and dispositioned; the conversation that matters on a transfer happens on
+              the vendor's line before the deal exists, so it is not one of our calls and never will be. Read the
+              App sent and Signed columns as the real outcome here, and the funnel above for the stage reading.
+            </div>
+          )}
+          {total && total.reached !== null && (
+            <div>
+              <b className="text-gray-700 dark:text-gray-200">Reached is not the funnel's “Contacted” above, and here is the gap.</b>{" "}
+              Over this range: <b className="tabular-nums">{total.reached}</b> reached (a call the setter{" "}
+              <i>dispositioned</i> as a live conversation) against{" "}
+              <b className="tabular-nums">{total.contactedRung}</b> at the funnel's Contacted rung (a stage stamp or a
+              status at-or-past Contacted).{" "}
+              {total.reached === total.contactedRung ? (
+                <>They agree over this range.</>
+              ) : total.reached > total.contactedRung ? (
+                <>
+                  <b className="tabular-nums">{total.reached - total.contactedRung}</b> merchant
+                  {total.reached - total.contactedRung === 1 ? " was" : "s were"} talked to without the deal ever
+                  being moved off New — pipeline hygiene, not a bad number. The two are measured from two different
+                  systems of record and this table shows the dial-side one, because a conversation is the thing the
+                  vendor is being paid to produce.
+                </>
+              ) : (
+                <>
+                  <b className="tabular-nums">{total.contactedRung - total.reached}</b> deal
+                  {total.contactedRung - total.reached === 1 ? " sits" : "s sit"} at-or-past Contacted with no
+                  dispositioned conversation behind it — an un-dispositioned call, or a stage moved by hand.
+                </>
+              )}
+            </div>
+          )}
+          {total && total.reachUnknown > 0 && (
+            <div className="text-amber-600 dark:text-amber-400">
+              <b className="tabular-nums">{total.reachUnknown}</b> arrival
+              {total.reachUnknown === 1 ? "" : "s"} came back with no call history at all, so{" "}
+              {total.reachUnknown === 1 ? "it is" : "they are"} counted in <b>Arrived</b> and in nothing else. Not
+              zero calls — unread.
+            </div>
+          )}
+          {clockApplies && total && total.ttcUnknown > 0 && (
+            <div className="text-amber-600 dark:text-amber-400">
+              <b className="tabular-nums">{total.ttcUnknown}</b> clocked arrival
+              {total.ttcUnknown === 1 ? "'s" : "s'"} first dial could not be established, so{" "}
+              {total.ttcUnknown === 1 ? "it is" : "they are"} left out of the median, the worst and the ≤5 min share
+              rather than scored as late.
+            </div>
+          )}
+          {total && total.appPhantom > 0 && (
+            <div>
+              <b className="tabular-nums">{total.appPhantom}</b> in-range{" "}
+              <code>application_sent_at</code> stamp{total.appPhantom === 1 ? " is" : "s are"} excluded from{" "}
+              <b>App sent</b>: the GHL opportunity mirror wrote{total.appPhantom === 1 ? " it" : " them"} when the
+              deal was imported, so we have no record of a send — which is not the same as the merchant never
+              receiving one.
+            </div>
+          )}
+          {mirror && mirror.divergences.length > 0 && (
+            <div className="text-red-600 dark:text-red-400">
+              <b>The phantom-send rule disagrees with itself</b> on{" "}
+              <b className="tabular-nums">{mirror.divergences.length}</b> deal
+              {mirror.divergences.length === 1 ? "" : "s"} ({mirror.divergences.map((v) => v.label).join(", ")}) —
+              this page's copy (<code>src/lib/phantomApplicationSend.ts</code>) and{" "}
+              <code>public.is_phantom_application_send</code> no longer give the same answer, so <b>App sent</b>{" "}
+              cannot be trusted until they are put back in step.
+            </div>
+          )}
+          {mirror && mirror.unchecked && (
+            <div className="text-amber-600 dark:text-amber-400">
+              <b>Not cross-checked this load.</b> The phantom-send rule above could not be compared against the
+              database's own, because the application-status read returned nothing for the{" "}
+              <b className="tabular-nums">{mirror.candidates}</b> stamped deal
+              {mirror.candidates === 1 ? "" : "s"} in this range.
+            </div>
+          )}
+          <div>
+            <b className="text-gray-700 dark:text-gray-200">A zero row is a real zero.</b> A day the vendor delivered
+            nothing renders as 0, not as a missing row — an outage is a finding, and a gap in a table reads as “no
+            data” when it means “no leads”. Anything genuinely <b>unreadable</b> renders “?” and is named in a banner
+            above.
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
