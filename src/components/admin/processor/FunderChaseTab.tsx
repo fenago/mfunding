@@ -1,23 +1,28 @@
 // FunderChaseTab — the processor's funder chase surface.
 //
-// One SECTION PER SUBMITTED DEAL, stacked on a single scrollable tab. Expanding
-// a section renders the full FunderWorkspace — the identical panel the Revenue
-// Playbook shows on Step 7: funder cards side by side with their ⏳/💰/❌ state,
-// the whole message timeline (submitted, each message out, the green "Opened"
-// badge, view-email links) and the collapsed "Submit to more funders" picker.
+// A LIST OF MERCHANTS. One row per merchant with a deal out to funders (9 rows,
+// not 33 — a merchant's funders belong together). Clicking a row opens it in
+// place to reveal ALL of that merchant's funders at once, rendered by the same
+// FunderWorkspace the Revenue Playbook shows on Step 7: a card per funder with
+// its ⏳/💰/❌ state and "sent 21h ago", the message timeline beneath each
+// (submitted, every message out with its subject, the green "Opened" badge,
+// view-email links), and the "Submit to more funders" picker.
 //
-// A compressed row-per-submission table was tried first and thrown out: it
-// dropped the open-tracking, the message threads and the view-email links,
-// which ARE the chase tools. The header is a summary to triage by, never a
-// replacement for the panel.
+// Two earlier shapes were tried and discarded, and the reasons are worth
+// keeping: a row per SUBMISSION split a merchant's funders across the table and
+// could only carry one "opened" flag, losing the threads that are the actual
+// chase tools; always-expanded panels made the page unusable past a few deals.
+// A collapsed merchant row carries the summary, the panel carries the work.
 //
-// Collapsed by default, because ten expanded panels is not a usable page — and
-// because FunderWorkspace mounts FunderPicker, which scores every funder in the
-// network. Rendering it only on expand keeps that work lazy instead of firing
-// it ten times on page load.
+// The collapsed row must surface its WORST funder, not an average — otherwise
+// an overdue Cashable hides inside a row that looks calm.
 //
-// Ordered oldest-silent first: the deal that has gone longest without a funder
-// touch sits at the top, and a deal past a funder's OWN quoted turnaround
+// One merchant open at a time, and opening one never disturbs the filter or the
+// sort. Expansion is also what mounts FunderWorkspace, which mounts FunderPicker
+// and scores the whole funder network — lazy on purpose, not merely tidy.
+//
+// Ordered oldest-silent first: the merchant that has gone longest without a
+// funder touch sits at the top, and one past a funder's OWN quoted turnaround
 // (lenders.funding_speed) sorts above everything.
 //
 // HONESTY: a failed read renders RED with a retry. "Nothing outstanding" from a
@@ -74,8 +79,11 @@ interface DealGroup {
    *  later. The chase clock runs from here. */
   lastTouchAt: string | null;
   breached: boolean;
-  /** The tightest quoted turnaround among the funders sitting silent. */
+  /** The WORST offender among the funders sitting silent, named. */
   breachedLabel: string | null;
+  /** True when not one silent funder has a turnaround on file — absence of a
+   *  breach flag then means "unknown", not "on time". */
+  noQuotedTurnaround: boolean;
 }
 
 type Load =
@@ -101,10 +109,31 @@ function bucketOfDeal(subs: SubSummary[]): Filter {
   return "declined";
 }
 
+/** "2 funders · both awaiting" / "3 funders · 2 awaiting · 1 declined" — enough
+ *  to decide whether this merchant needs opening. */
+function funderSummary(subs: SubSummary[]): string {
+  const n = subs.length;
+  const tally = new Map<string, number>();
+  for (const s of subs) {
+    const l = stateOf(s).label;
+    tally.set(l, (tally.get(l) ?? 0) + 1);
+  }
+  const head = `${n} funder${n === 1 ? "" : "s"}`;
+  if (tally.size === 1) {
+    const [label] = [...tally.keys()];
+    if (n === 1) return `${head} · ${label.toLowerCase()}`;
+    return `${head} · ${n === 2 ? "both" : "all"} ${label.toLowerCase()}`;
+  }
+  const parts = [...tally.entries()].map(([label, c]) => `${c} ${label.toLowerCase()}`);
+  return `${head} · ${parts.join(" · ")}`;
+}
+
 export default function FunderChaseTab() {
   const [state, setState] = useState<Load>({ kind: "loading" });
   const [filter, setFilter] = useState<Filter>("outstanding");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // ONE open at a time — this is a list you scan, not a set of panels you leave
+  // lying open. Filter and sort are separate state, so opening never moves the list.
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -185,17 +214,24 @@ export default function FunderChaseTab() {
         }
       }
 
-      // Breach is judged per still-silent funder against ITS own promise.
+      // Breach is judged per still-silent funder against ITS own promise, and
+      // the WORST one is what the row reports.
       let breached = false;
       let breachedLabel: string | null = null;
+      let worstOver = -1;
+      let awaitingCount = 0;
+      let awaitingWithQuote = 0;
       for (const s of subs) {
         if (stateOf(s).key !== "awaiting") continue;
+        awaitingCount += 1;
         const q = quotedDecisionHours(s.fundingSpeed);
+        if (q != null) awaitingWithQuote += 1;
         const h = hoursSince(s.submittedAt);
-        if (q != null && h != null && h > q) {
+        if (q != null && h != null && h > q && h - q > worstOver) {
+          worstOver = h - q;
           breached = true;
           const promise = q < 1 ? `${Math.round(q * 60)}-min` : `${q}h`;
-          breachedLabel = `${s.lenderName} is past its own ${promise} promise`;
+          breachedLabel = `${s.lenderName} is past its own ${promise} promise — silent ${relTime(s.submittedAt)}`;
         }
       }
 
@@ -215,6 +251,10 @@ export default function FunderChaseTab() {
         lastTouchAt,
         breached,
         breachedLabel,
+        // No awaiting funder publishes a turnaround → we cannot say this row is
+        // "on time", only that we don't know. Said out loud on the row, so an
+        // un-flagged merchant never reads as "within their promise".
+        noQuotedTurnaround: awaitingCount > 0 && awaitingWithQuote === 0,
       });
     }
 
@@ -244,15 +284,8 @@ export default function FunderChaseTab() {
     });
   }, [groups, filter]);
 
-  const allExpanded = visible.length > 0 && visible.every((g) => expanded.has(g.dealId));
-
   function toggle(dealId: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(dealId)) next.delete(dealId);
-      else next.add(dealId);
-      return next;
-    });
+    setOpenId((cur) => (cur === dealId ? null : dealId));
   }
 
   if (state.kind === "error") {
@@ -290,27 +323,15 @@ export default function FunderChaseTab() {
           <PaperAirplaneIcon className="w-4 h-4 text-ocean-blue" />
           <h2 className="text-sm font-bold text-gray-900 dark:text-white">Funder chase</h2>
           <span className="text-[11px] text-gray-400">
-            every submitted deal · longest silence first · open one to work its funders
+            one row per merchant · longest silence first · click a merchant to work its funders
           </span>
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                setExpanded(allExpanded ? new Set() : new Set(visible.map((g) => g.dealId)))
-              }
-              disabled={visible.length === 0}
-              className="text-[11px] font-semibold text-ocean-blue hover:underline disabled:opacity-40"
-            >
-              {allExpanded ? "Collapse all" : "Expand all"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1"
-            >
-              <ArrowPathIcon className="w-3.5 h-3.5" /> Refresh
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="ml-auto text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1"
+          >
+            <ArrowPathIcon className="w-3.5 h-3.5" /> Refresh
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -344,11 +365,11 @@ export default function FunderChaseTab() {
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 text-sm text-gray-500 dark:text-gray-400">
           {filter === "outstanding"
             ? "Nothing outstanding — every funder holding a file has answered."
-            : "No deals in this view."}
+            : "No merchants in this view."}
         </div>
       ) : (
         visible.map((g) => {
-          const isOpen = expanded.has(g.dealId);
+          const isOpen = openId === g.dealId;
           const hrs = hoursSince(g.lastTouchAt);
           const tone = g.breached ? "breached" : chaseTone(hrs, null);
           const stageCfg = g.status ? DEAL_STATUS_CONFIG[g.status as DealStatus] : undefined;
@@ -361,31 +382,19 @@ export default function FunderChaseTab() {
                   : "border-gray-200 dark:border-gray-700"
               }`}
             >
-              {/* ── Header: enough to decide whether to open it ── */}
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 p-3">
-                <button
-                  type="button"
-                  onClick={() => toggle(g.dealId)}
-                  aria-expanded={isOpen}
-                  className="flex items-center gap-1.5 text-left min-w-0"
-                >
-                  <ChevronRightIcon
-                    className={`w-4 h-4 shrink-0 text-gray-400 transition-transform ${isOpen ? "rotate-90" : ""}`}
-                  />
-                  <span className="text-sm font-bold text-gray-900 dark:text-white truncate">
-                    {g.businessName}
-                  </span>
-                </button>
-
-                {g.dealNumber && (
-                  <Link
-                    to={`/admin/deals/${g.dealId}`}
-                    className="text-[11px] text-gray-400 hover:text-ocean-blue inline-flex items-center gap-0.5"
-                  >
-                    {g.dealNumber}
-                    <ArrowTopRightOnSquareIcon className="w-3 h-3" />
-                  </Link>
-                )}
+              {/* ── The merchant row: enough to triage without opening ── */}
+              <button
+                type="button"
+                onClick={() => toggle(g.dealId)}
+                aria-expanded={isOpen}
+                className="w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 hover:bg-gray-50 dark:hover:bg-gray-700/40 rounded-xl"
+              >
+                <ChevronRightIcon
+                  className={`w-4 h-4 shrink-0 text-gray-400 transition-transform ${isOpen ? "rotate-90" : ""}`}
+                />
+                <span className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                  {g.businessName}
+                </span>
 
                 {stageCfg && (
                   <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${stageCfg.bgColor} ${stageCfg.color}`}>
@@ -399,32 +408,39 @@ export default function FunderChaseTab() {
                   </span>
                 )}
 
-                {/* Per-funder state chips — the triage signal. */}
-                <span className="flex flex-wrap items-center gap-1">
-                  {g.subs.map((s) => {
-                    const st = stateOf(s);
-                    return (
-                      <span
-                        key={s.id}
-                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${st.cls}`}
-                        title={`${s.lenderName} — ${st.label}${s.submittedAt ? ` · sent ${relTime(s.submittedAt)}` : ""}`}
-                      >
-                        {st.emoji} {s.lenderName}
-                      </span>
-                    );
-                  })}
+                {/* How many funders are out, and what they're doing. */}
+                <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                  {funderSummary(g.subs)}
                 </span>
 
-                <span className={`ml-auto text-[11px] whitespace-nowrap ${CHASE_TONE_CLS[tone]}`}>
-                  {g.lastTouchAt ? `last funder contact ${relTime(g.lastTouchAt)}` : "never stamped"}
-                </span>
-              </div>
-
-              {g.breached && g.breachedLabel && (
-                <div className="px-3 pb-2 -mt-1">
-                  <span className="text-[11px] font-bold text-red-700 dark:text-red-300">
-                    ⚠ {g.breachedLabel}
+                <span className="ml-auto text-right">
+                  <span className={`block text-[11px] whitespace-nowrap ${CHASE_TONE_CLS[tone]}`}>
+                    {g.lastTouchAt ? `silent ${relTime(g.lastTouchAt)}` : "never stamped"}
                   </span>
+                  {/* Absence of a breach flag is not a clean bill of health when
+                      nobody published a turnaround. Say which it is. */}
+                  {!g.breached && g.noQuotedTurnaround && (
+                    <span className="block text-[10px] text-gray-400">no quoted turnaround on file</span>
+                  )}
+                </span>
+              </button>
+
+              {(g.breached || g.dealNumber) && (
+                <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {g.breached && g.breachedLabel && (
+                    <span className="text-[11px] font-bold text-red-700 dark:text-red-300">
+                      ⚠ {g.breachedLabel}
+                    </span>
+                  )}
+                  {g.dealNumber && (
+                    <Link
+                      to={`/admin/deals/${g.dealId}`}
+                      className="ml-auto text-[10px] text-gray-400 hover:text-ocean-blue inline-flex items-center gap-0.5"
+                    >
+                      {g.dealNumber}
+                      <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                    </Link>
+                  )}
                 </div>
               )}
 
