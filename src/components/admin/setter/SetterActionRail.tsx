@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { BoltIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
 import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
+import MerchantLinksMenu from "../MerchantLinksMenu";
 import QuickAppModal from "../processor/QuickAppModal";
 import SetterDndButton from "./SetterDndButton";
 import { ensureDealStageAtLeast } from "../../../services/dealService";
@@ -74,6 +75,15 @@ export default function SetterActionRail({
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <AdHocSendMenu
           dealId={deal.id}
+          merchantEmail={deal.customer?.email}
+          ghlContactId={deal.ghl_contact_id}
+        />
+        {/* The two links a setter texts: their application (the per-recipient
+            signing link — no login) and their upload link. Both live inside the
+            Send-docs menu too, but two clicks deep and mixed in with the sends;
+            the owner asked for them available to copy at a glance, because he
+            had to ask for one by hand. */}
+        <MerchantLinksMenu
           merchantEmail={deal.customer?.email}
           ghlContactId={deal.ghl_contact_id}
         />

@@ -472,9 +472,10 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           Sits directly above the profile: it knocks funders off the shortlist,
           so it has to be read first. Additive —
           runs stored before the detector shipped render nothing here. */}
-      {m.collection_activity?.detected && (
+      {(m.collection_activity?.detected ||
+        (m.collection_activity?.settlement_servicers ?? []).length > 0) && (
         <CollectionActivitySection
-          ca={m.collection_activity}
+          ca={m.collection_activity!}
           summary={m.profile?.collection_activity_summary ?? null}
           excluded={m.profile?.excluded_note ?? []}
         />
@@ -720,6 +721,7 @@ const COLLECTION_TYPE_LABEL: Record<UWCollectionType, string> = {
   garnishment: "Garnishment",
   tax_levy: "Tax levy",
   judgment: "Judgment / writ",
+  debt_settlement: "Debt-settlement program",
 };
 const collectionTypeLabel = (t: string) =>
   COLLECTION_TYPE_LABEL[t as UWCollectionType] ?? t.replace(/_/g, " ");
@@ -759,11 +761,17 @@ function CollectionActivitySection({
   const types = ca.types ?? [];
   const ucc = ca.ucc_corroboration;
   const knockedOut = (excluded ?? []).filter((e) => e.collections_exclusion === true);
+  // A settlement servicer matched on NAME alone (medium) does not fire the gate — it
+  // must not knock funders off a shortlist on an unverified descriptor — but the
+  // setter still has to see it, so the section renders with honest wording instead.
+  const possibleOnly = !ca.detected;
 
   return (
     <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-4">
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <h4 className="font-bold text-red-800 dark:text-red-200">⚠ Collection activity detected</h4>
+        <h4 className="font-bold text-red-800 dark:text-red-200">
+          {possibleOnly ? "⚠ Possible debt-settlement servicer" : "⚠ Collection activity detected"}
+        </h4>
         {types.map((t) => (
           <span
             key={t}
@@ -772,15 +780,18 @@ function CollectionActivitySection({
             {collectionTypeLabel(t)}
           </span>
         ))}
-        <span className="ml-auto text-xs font-medium text-red-700 dark:text-red-300 capitalize">
-          {ca.confidence} confidence
-        </span>
+        {!possibleOnly && (
+          <span className="ml-auto text-xs font-medium text-red-700 dark:text-red-300 capitalize">
+            {ca.confidence} confidence
+          </span>
+        )}
       </div>
 
       {summary && summary.trim() && (
         <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-2">{summary}</p>
       )}
 
+      {!possibleOnly && (
       <div className="text-sm text-red-700 dark:text-red-300 mb-2">
         <span className="font-semibold">{num(items.length)}</span> flagged item{items.length === 1 ? "" : "s"} across{" "}
         <span className="font-semibold">{num(ca.months_with_activity)}</span> month
@@ -790,11 +801,45 @@ function CollectionActivitySection({
           <span className="text-red-600 dark:text-red-400"> · {ca.monthly_count.toFixed(1)} per month</span>
         )}
       </div>
+      )}
 
       {ca.note && <p className="text-sm text-red-700 dark:text-red-300 mb-2">{ca.note}</p>}
 
+      {/* Named debt-settlement servicers — the thing a setter must see before
+          submitting. Additive: runs stored before the settlement detector shipped
+          have no settlement_servicers key and this renders nothing. */}
+      {(ca.settlement_servicers ?? []).length > 0 && (
+        <div className="mb-2 rounded-lg border border-red-300 dark:border-red-800 bg-white/70 dark:bg-black/25 p-2.5">
+          <div className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300 mb-1.5">
+            Debt-settlement servicer — not a position
+          </div>
+          <div className="space-y-1.5">
+            {(ca.settlement_servicers ?? []).map((sv, i) => (
+              <div key={i} className="text-sm text-red-800 dark:text-red-200">
+                <span className="font-semibold">{sv.servicer}</span>
+                {sv.confidence !== "high" && (
+                  <span className="ml-1.5 px-1.5 py-0.5 text-[11px] font-semibold rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200">
+                    possible — verify the statement line
+                  </span>
+                )}
+                <span className="opacity-80">
+                  {" "}· {money(sv.amount)}
+                  {sv.occurrences > 1 ? ` × ${sv.occurrences}` : ""}
+                  {sv.month ? ` (${sv.month})` : ""} · “{sv.desc}”
+                </span>
+                <div className="text-xs opacity-75">{sv.reason}</div>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-red-700 dark:text-red-300 mt-1.5">
+            Excluded from the position count and the consolidation math — a settlement
+            servicer is a program the merchant is enrolled in, not an advance to be bought out.
+          </p>
+        </div>
+      )}
+
       {/* ≤4 items read at a glance; anything longer folds, like the rest of the panel. */}
-      {items.length > 0 && (
+      {!possibleOnly && items.length > 0 && (
         items.length <= 4 ? (
           <CollectionItemRows items={items} />
         ) : (

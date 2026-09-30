@@ -29,6 +29,7 @@ import {
 import SchedulePicker from "./SchedulePicker";
 import GateTracker from "./GateTracker";
 import QuickAppModal from "./QuickAppModal";
+import MerchantLinksMenu from "../MerchantLinksMenu";
 import {
   appComplete,
   hasReachedApplicationSent,
@@ -649,13 +650,29 @@ export default function ProcessorDetailDrawer({
           {/* Quick App — the fast mandatory-only application (live-transfer script,
               auto-fill, safe defaults). The processor's first move on a live call. */}
           {state.kind === "ready" && (
-            <button
-              type="button"
-              onClick={() => setQuickApp(true)}
-              className="w-full inline-flex items-center justify-center gap-2 text-sm font-bold px-3 py-2.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600"
-            >
-              <BoltIcon className="w-4 h-4" /> Quick App — fast fill + send
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setQuickApp(true)}
+                className="flex-1 inline-flex items-center justify-center gap-2 text-sm font-bold px-3 py-2.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600"
+              >
+                <BoltIcon className="w-4 h-4" /> Quick App — fast fill + send
+              </button>
+              {/* The two links the processor texts a merchant: their application
+                  (the per-recipient signing link — opens and signs with no
+                  login) and their email-prefilled upload link. Owner request:
+                  he had to ask for one of these by hand. Self-contained — it
+                  reads the documents itself through readDocsStatus so an
+                  unreadable answer can never render as "nothing sent". */}
+              <MerchantLinksMenu
+                merchantEmail={(customer?.email as string | null) ?? null}
+                ghlContactId={(deal?.ghl_contact_id as string | null) ?? null}
+                compact
+                // The drawer is pinned to the right edge, so a left-anchored
+                // panel would run off the screen.
+                align="right"
+              />
+            </div>
           )}
           {state.kind === "loading" && (
             <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-10">

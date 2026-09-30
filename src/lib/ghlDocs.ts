@@ -52,6 +52,12 @@ export type GhlDoc = {
   signed: boolean;
   updatedAt: string | null;
   url: string | null;
+  /** GHL's signing link for this document has expired. The function has always
+   *  returned it; it became load-bearing when the copy-a-link controls started
+   *  routing through unifyDocs (src/lib/merchantLinks.ts), which needs to know
+   *  an expired link from a live one. Optional so existing readers are
+   *  unaffected. */
+  isExpired?: boolean;
 };
 
 /** The full ghl-docs-status payload. The fields after `uploads` exist so a

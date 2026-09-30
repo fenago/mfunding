@@ -267,7 +267,11 @@ export interface UWExcludedFunder {
 // ── Collection activity — collections / garnishment / tax levy / judgment ────
 // Additive: runs stored before the detector shipped have no collection_activity
 // key at all, so every read must be null-guarded.
-export type UWCollectionType = "collections" | "garnishment" | "tax_levy" | "judgment";
+// 'debt_settlement' = a debit into a debt-settlement / restructuring program through
+// its escrow servicer (RAM Payment, Global Holdings, …). Additive: runs stored before
+// the settlement detector shipped never carry it, so nothing may switch exhaustively
+// on this union without a default.
+export type UWCollectionType = "collections" | "garnishment" | "tax_levy" | "judgment" | "debt_settlement";
 export type UWConfidence = "high" | "medium" | "low";
 
 export interface UWCollectionItem {
@@ -278,6 +282,21 @@ export interface UWCollectionItem {
   month: string | null;
   confidence: UWConfidence;
   source: "ai" | "keyword";
+}
+
+/** A debt-settlement / restructuring servicer found on the statements. */
+export interface UWSettlementServicer {
+  /** The servicer, e.g. "RAM Payment / Reliant". */
+  servicer: string;
+  /** The statement descriptor, verbatim. */
+  desc: string;
+  funder: string | null;
+  amount: number;
+  occurrences: number;
+  month: string | null;
+  /** 'high' = verified escrow processor; 'medium' = name match only, read as POSSIBLE. */
+  confidence: UWConfidence;
+  reason: string;
 }
 
 /** Secondary signal only — existing financed positions/liens, NOT collection activity. */
@@ -300,6 +319,14 @@ export interface UWCollectionActivity {
   total_amount: number;
   note: string;
   ucc_corroboration: UWUccCorroboration | null;
+  /** Settlement servicers found on the statements — present even when `detected` is
+   *  false (a lone medium name match is a POSSIBLE read, not a verdict).
+   *  Additive; older persisted runs lack it. */
+  settlement_servicers?: UWSettlementServicer[];
+  /** Coverage, so "not found" is never read as "none exists". Additive. */
+  months_read?: number;
+  documents_unreadable?: number;
+
 }
 
 /** Merchant side of the criteria gate — what the shortlist was matched against. */

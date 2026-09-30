@@ -379,7 +379,21 @@ function extractionSystem(enabledCategories: string[]): string {
     "Management, Cavalry Portfolio, LVNV Funding, Transworld Systems, Nationwide Recovery); a WAGE or BANK " +
     "GARNISHMENT; a TAX LEVY / IRS LEVY / state revenue levy; a JUDGMENT, WRIT OF EXECUTION, court-ordered " +
     "attachment, or sheriff's levy; a lien payoff being enforced. Set type to one of 'collections', " +
-    "'garnishment', 'tax_levy', 'judgment'. " +
+    "'garnishment', 'tax_levy', 'judgment', 'debt_settlement'. " +
+    "DEBT-SETTLEMENT SERVICERS are the most commonly MISSED kind, and they matter most. A debt-settlement / " +
+    "debt-restructuring program does not debit the merchant under the program's own name — it debits through an " +
+    "ESCROW/TRUST-ACCOUNT PROCESSOR, and that processor is what prints on the statement. If a RECURRING debit goes " +
+    "to RAM Payment ('RAM PMT'), Reliant Account Management, Global Holdings ('GLOBAL GHLLC.COM'), Global Client " +
+    "Solutions, Secure Account Service, CFTPay, Corporate Turnaround, Americor, Century Support Services, ClearOne " +
+    "Advantage, Beyond Finance, Creditors Relief, MCA Resolve or National Credit Partners — or if the descriptor " +
+    "names a 'debt settlement', 'debt relief' or 'debt resolution' program outright — then the merchant is ENROLLED " +
+    "IN A SETTLEMENT PROGRAM. Put that debit in collection_debits with type 'debt_settlement', and do NOT put it in " +
+    "mca_debits: it is not a financing position, and counting it as one inflates the merchant's position count and " +
+    "the consolidation payoff. " +
+    "DO NOT match on a bare token: 'RAM' alone is Reliant Energy, RAM Capital Funding (a real MCA funder), RAM Tool " +
+    "Construction Supply, Ramp corporate cards or a Dodge Ram truck payment; 'Global' alone is Global Payments, a " +
+    "card processor; 'Century' alone is CenturyLink or Century Business Solutions; 'Americor' is not AmeriCorps. " +
+    "Require the full payee phrase. " +
     "BE CONSERVATIVE — this flag can cost the merchant a funder, so do NOT guess. An ordinary vendor, supplier, " +
     "insurance, payroll-service or software payment is NOT collection activity even if the company's NAME happens " +
     "to contain a word like 'lien', 'recovery', 'collection' or 'levy' (e.g. 'Lien Solutions' is a UCC filing " +
@@ -487,12 +501,12 @@ const EXTRACTION_TOOL = {
       },
       collection_debits: {
         type: "array",
-        description: "Debits showing a debt being collected FROM the merchant (collection agency, garnishment, tax levy, judgment/writ). Empty array when none — the normal case. Never include ordinary vendor payments.",
+        description: "Debits showing a debt being collected FROM the merchant (collection agency, garnishment, tax levy, judgment/writ) OR paid into a debt-settlement program through its escrow servicer (type 'debt_settlement'). Empty array when none — the normal case. Never include ordinary vendor payments.",
         items: {
           type: "object",
           properties: {
             date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
-            type: { type: "string", description: "'collections' | 'garnishment' | 'tax_levy' | 'judgment'" },
+            type: { type: "string", description: "'collections' | 'garnishment' | 'tax_levy' | 'judgment' | 'debt_settlement' (a debit to a debt-settlement escrow servicer such as RAM Payment/'RAM PMT' or Global Holdings/'GLOBAL GHLLC.COM' — never also list it in mca_debits)" },
             confidence: { type: "string", description: "'high' | 'medium' | 'low'" },
             reason: { type: "string", description: "Short why — what in the descriptor makes this collection activity." },
           },
@@ -1391,6 +1405,31 @@ Deno.serve(async (req) => {
       }
     };
 
+    // Debt-settlement servicer debits, pulled OUT of the financing stream. Built
+    // here because this loop already walks every debit; the MCA-position block below
+    // skips the same debits via the SAME predicate (settlementRead) — one definition,
+    // not two. A settlement debit is not a tradeline: counting it as one is what
+    // inflated Spirit Drilling to 5 positions and put $503.60/day of settlement
+    // payments into a consolidation payoff we quoted to a funder.
+    interface SettlementHit {
+      servicer: string; desc: string; funder: string | null; amount: number;
+      occurrences: number; month: string | null; confidence: CollectionConfidence; reason: string;
+    }
+    const settlementHits: SettlementHit[] = [];
+    const noteSettlement = (
+      hit: { label: string; confidence: CollectionConfidence; reason: string },
+      desc: string, funder: string | null, amount: number, occurrences: number, month: string | null,
+    ) => {
+      const prior = settlementHits.find(
+        (h) => h.servicer === hit.label && Math.round(h.amount) === Math.round(amount) && h.month === month,
+      );
+      if (prior) { prior.occurrences = Math.max(prior.occurrences, occurrences); return; }
+      settlementHits.push({
+        servicer: hit.label, desc, funder, amount: round2(amount),
+        occurrences, month, confidence: hit.confidence, reason: hit.reason,
+      });
+    };
+
     for (const s of analyzed) {
       const mLabel = s.month ?? null;
       // (1) Model-flagged candidates.
@@ -1407,6 +1446,8 @@ Deno.serve(async (req) => {
         // own word is capped at medium — an unverifiable AI hunch never hard-gates.
         const confidence: CollectionConfidence =
           kw && kw.confidence === "high" ? "high" : modelConf === "high" ? "medium" : modelConf;
+        const sHit = settlementRead(desc, null);
+        if (sHit) noteSettlement(sHit, desc, null, Math.abs(numOr0(c.amount)), 1, mLabel);
         pushCollection({
           date: c.date ? String(c.date) : null, desc, amount: round2(Math.abs(numOr0(c.amount))),
           type, month: mLabel, confidence, source: "ai",
@@ -1416,6 +1457,24 @@ Deno.serve(async (req) => {
       for (const d of (s.mca_debits ?? [])) {
         const desc = String(d.desc ?? d.funder ?? "").trim();
         if (!desc) continue;
+        // A settlement servicer the model filed as a financing debit. Checked on the
+        // descriptor AND the model's cleaned funder name, because the funder name is
+        // often all that survives ("Ram Payments"). The backstop normally promotes
+        // only UNMISTAKABLE hits so an AI hunch is never overridden on a hunch;
+        // settlement servicers are the exception at 'medium' too, since they are
+        // matched on a specific company name rather than ambient wording. A medium
+        // hit still does NOT fire the gate alone — it reads as POSSIBLE.
+        const sHit = settlementRead(d.desc, d.funder);
+        if (sHit) {
+          const amt = Math.abs(numOr0(d.amount));
+          const occ = Math.max(1, Math.round(numOr0(d.occurrences) || 1));
+          noteSettlement(sHit, desc, d.funder ? String(d.funder).trim() : null, amt, occ, mLabel);
+          pushCollection({
+            date: d.date ? String(d.date) : null, desc, amount: round2(amt),
+            type: "debt_settlement", month: mLabel, confidence: sHit.confidence, source: "keyword",
+          });
+          continue;
+        }
         const kw = readCollectionText(desc);
         if (!kw || kw.confidence !== "high") continue; // backstop only promotes unmistakable hits
         pushCollection({
@@ -1442,6 +1501,7 @@ Deno.serve(async (req) => {
     const TYPE_LABEL: Record<CollectionType, string> = {
       collections: "collection-agency payment", garnishment: "garnishment",
       tax_levy: "tax levy/lien", judgment: "judgment / writ",
+      debt_settlement: "debt-settlement program",
     };
 
     // ── SECONDARY: UCC corroboration (a DISTINCT signal, never conflated) ────────
@@ -1481,14 +1541,31 @@ Deno.serve(async (req) => {
       console.warn("[underwrite-deal] ucc corroboration lookup failed:", e instanceof Error ? e.message : e);
     }
 
+    // COVERAGE — what the check could actually see. "We did not find collections" and
+    // "there are none" are different sentences, and the wrong one is what we told
+    // ourselves about Spirit Drilling. Documents that failed extraction were never
+    // read, so the negative finding is scoped to the months that WERE.
+    const unreadableDocs = perStatement.length - analyzed.length;
+    const coverageCaveat = unreadableDocs > 0
+      ? ` ⚠ ${unreadableDocs} uploaded document(s) could not be read, so this check did not cover them.`
+      : "";
+    const settlementNames = [...new Set(settlementHits.map((h) => h.servicer))];
+    const settlementAside = settlementNames.length
+      ? ` Debt-settlement servicer on the statements: ${settlementNames.join(", ")} — a recurring debit to a settlement servicer means the merchant is enrolled in a settlement/restructuring program. It is NOT an MCA position and has been excluded from the position count and the consolidation math.`
+      : "";
+
     const collectionNote = collectionDetected
       ? `${firingItems.length} collection-activity debit(s) across ${collectionMonths.size || 1} statement month(s) — ` +
-        `${collectionTypes.map((t) => TYPE_LABEL[t]).join(", ")}${collectionTotal > 0 ? `, ${money(collectionTotal)} total` : ""}. ` +
-        `Several funders auto-decline on active collection activity, so confirm this with the merchant before submitting.` +
-        (collectionConfidence !== "high" ? " Read is MEDIUM confidence — verify the descriptors on the statements." : "")
+        `${collectionTypes.map((t) => TYPE_LABEL[t]).join(", ")}${collectionTotal > 0 ? `, ${money(collectionTotal)} total` : ""}.` +
+        settlementAside +
+        ` Several funders auto-decline on active collection activity, so confirm this with the merchant before submitting.` +
+        (collectionConfidence !== "high" ? " Read is MEDIUM confidence — verify the descriptors on the statements." : "") +
+        coverageCaveat
       : collectionItems.length > 0
-        ? `No collection activity detected. ${collectionItems.length} debit(s) carried collections-adjacent wording but read as ordinary business payments — not flagged.`
-        : "No collection activity detected in the analyzed statements — no garnishments, levies, judgments or collection-agency debits.";
+        ? `No collection activity found in the ${monthsCovered} statement month(s) read. ${collectionItems.length} debit(s) carried collections-adjacent wording but read as ordinary business payments — not flagged.` +
+          settlementAside + coverageCaveat
+        : `No collection activity found in the ${monthsCovered} statement month(s) read — no debt-settlement servicer debits, garnishments, levies, judgments or collection-agency debits appeared in them. That is what these statements show; it is not a representation that none exists outside them.` +
+          coverageCaveat;
 
     const collectionActivity = {
       detected: collectionDetected,
@@ -1500,6 +1577,13 @@ Deno.serve(async (req) => {
       total_amount: collectionTotal,
       note: collectionNote,
       ucc_corroboration: uccCorroboration,
+      // Debt-settlement servicers found on the statements, named, with the descriptor
+      // quoted. Present even when `detected` is false (a single MEDIUM name match is
+      // a POSSIBLE read, not a verdict) — the flag below is what surfaces those.
+      settlement_servicers: settlementHits,
+      // COVERAGE — so no reader can mistake "not found" for "none exists".
+      months_read: monthsCovered,
+      documents_unreadable: unreadableDocs,
     };
 
     // ── MCA POSITIONS — grouped, classified, LATEST-MONTH-anchored ──────────────
@@ -1557,6 +1641,12 @@ Deno.serve(async (req) => {
       for (const dbt of (s.mca_debits ?? [])) {
         const amt = Math.abs(numOr0(dbt.amount));
         if (amt <= 0) continue;
+        // A debt-settlement servicer is NOT a financing position. Code forces this —
+        // the model does not get a vote — using the SAME predicate the collections
+        // block above used to flag it. Green Note declined Spirit Drilling because
+        // RAM Payment was in the statements; we had it in active_positions as a
+        // $503.60/day MCA tradeline and in the consolidation payoff.
+        if (settlementRead(dbt.desc, dbt.funder)) continue;
         const rawFunder = (dbt.funder && String(dbt.funder).trim()) || String(dbt.desc ?? "").trim() || "Unknown";
         const funderKey = normFunder(rawFunder) || "UNKNOWN";
         const cadence = (dbt.cadence || "unknown").toLowerCase();
@@ -2449,15 +2539,41 @@ Deno.serve(async (req) => {
           });
     }
 
+    // ── DEBT-SETTLEMENT SERVICER FLAG ──────────────────────────────────────────
+    // Fires independently of the collections gate. A single MEDIUM name match does
+    // not make `detected` true (one unverified brand name should not knock funders
+    // off a shortlist), but the setter still has to SEE it before submitting — which
+    // is the whole failure being fixed. Names the servicer and quotes the descriptor
+    // so it can be checked against the statement rather than taken on faith.
+    if (settlementHits.length > 0) {
+      const names = [...new Set(settlementHits.map((h) => h.servicer))];
+      const certain = settlementHits.some((h) => h.confidence === "high");
+      const evidence = settlementHits
+        .slice(0, 3)
+        .map((h) => `"${h.desc}" ${money(h.amount)}${h.month ? ` (${h.month})` : ""}`)
+        .join("; ");
+      flags.push({
+        code: "debt_settlement_servicer",
+        severity: certain ? "critical" : "warn",
+        message:
+          (certain
+            ? `Debt-settlement servicer in the statements — ${names.join(", ")}. `
+            : `POSSIBLE debt-settlement servicer in the statements — ${names.join(", ")}. This is a payee-NAME match whose bank descriptor is not independently verified: read the statement line before acting on it. `) +
+          `${evidence}. A recurring debit to a settlement servicer means the merchant is enrolled in a debt-settlement / restructuring program — funders read that as collections and several auto-decline (Green Note Capital: "we dont fund when ram payments is in there as that is collections"). ` +
+          `It is NOT counted as an MCA position and is excluded from the position count and the consolidation math. Confirm with the merchant BEFORE submitting.`,
+      });
+    }
+
     // ── COLLECTION ACTIVITY FLAG (submission risk, not a decline) ──
     if (collectionActivity.detected) {
       flags.push({
         code: "collection_activity",
         severity: collectionActivity.confidence === "high" ? "critical" : "warn",
+        // The removal SENTENCE is written after the shortlist actually runs (see the
+        // amendment below) — a flag must never claim an action that did not happen.
         message: `Collection activity detected — ${collectionActivity.types.join(", ")} across ` +
           `${collectionActivity.months_with_activity || 1} statement month(s). ` +
-          `Funders that auto-decline on collection activity have been removed from the shortlist; ` +
-          `confirm the items with the merchant before submitting.`,
+          `Confirm the items with the merchant before submitting.`,
       });
     }
 
@@ -2856,7 +2972,15 @@ Deno.serve(async (req) => {
       "month (a bank_feed_fraud_mismatch flag), treat it as a POSSIBLE DOCTORED STATEMENT: say so plainly, lean on the " +
       "bank-feed number, and make verification the next step — do not size to the inflated PDF figure. " +
       "COLLECTION ACTIVITY: metrics.collection_activity flags debits that read as a debt being collected FROM the " +
-      "merchant — collection-agency payments, wage/bank garnishments, tax levies, judgments or writs. When " +
+      "merchant — collection-agency payments, wage/bank garnishments, tax levies, judgments or writs — AND debits " +
+      "into a DEBT-SETTLEMENT program through its escrow servicer (type 'debt_settlement'; the named servicers are " +
+      "listed in metrics.collection_activity.settlement_servicers). A settlement-servicer debit is the heaviest of " +
+      "these: it means the merchant is ENROLLED in a settlement / restructuring program, funders read it as " +
+      "collections and several auto-decline outright. Name the servicer explicitly in the narrative and in the " +
+      "risks, and state plainly that it is NOT one of the merchant's positions and is excluded from the position " +
+      "count and any consolidation payoff — never describe it as a tradeline to be bought out. When the settlement " +
+      "read is 'medium' confidence, call it POSSIBLE and say the statement line has to be read before it is acted " +
+      "on. When " +
       "detected is true this is a MATERIAL SUBMISSION RISK and you must name it in the narrative and in the risks: " +
       "several funders (Green Note Capital's own decline email says \"Debt collection activity detected\") " +
       "auto-decline on it, so the file has to be routed to desks that accept it and the merchant has to be asked " +
@@ -3575,6 +3699,19 @@ Deno.serve(async (req) => {
         }))
         .sort((a, b) => a.company_name.localeCompare(b.company_name));
 
+      // Report what the gate ACTUALLY did. "Funders have been removed" was asserted
+      // unconditionally before, including on runs where none were — and a funder with
+      // no collections stance on file (Green Note has none recorded) can never be
+      // removed by it, so the claim has to be the counted one, not the hoped-for one.
+      {
+        const caFlag = flags.find((f) => f.code === "collection_activity");
+        if (caFlag) {
+          caFlag.message += collectionsExclusions.length > 0
+            ? ` ${collectionsExclusions.length} funder(s) that publish a collections auto-decline were removed from the shortlist: ${collectionsExclusions.map((e) => e.company_name).join(", ")}.`
+            : ` NOTE: no funder was removed from the shortlist — none of the funders in this lane has a collections auto-decline recorded on its lender record. That is a gap in the funder data, NOT evidence that these desks accept collections; check the stance with the rep before submitting.`;
+        }
+      }
+
       excludedFunders = [
         ...collectionsExclusions,
         ...eligible
@@ -4008,7 +4145,7 @@ function normDebitClass(raw: unknown): "mca" | "sba_loan" | "equipment_lease" | 
 // Everything here is deliberately conservative. A false positive costs the merchant
 // a funder, so a match needs a real legal/collections read — a vendor whose NAME
 // merely contains "lien", "levy" or "recovery" must not trip it.
-type CollectionType = "collections" | "garnishment" | "tax_levy" | "judgment";
+type CollectionType = "collections" | "garnishment" | "tax_levy" | "judgment" | "debt_settlement";
 type CollectionConfidence = "high" | "medium" | "low";
 
 // Named debt collectors. Distinctive enough to be a HIGH-confidence read on their
@@ -4082,9 +4219,194 @@ const COLLECTION_FALSE_FRIEND_RE = new RegExp([
   String.raw`\bjudgment\s+free\b`,
 ].join("|"), "i");
 
+// ── DEBT-SETTLEMENT / RESTRUCTURING SERVICERS ────────────────────────────────
+// WHY: Spirit Drilling Fluids (MF-2026-0442) was submitted to Green Note Capital
+// as a 5-position consolidation. Dean declined: "we dont fund when ram payments is
+// in there as that is collections." Our own run had classified the $2,518/wk RAM
+// debit as an MCA POSITION and reported "No collection activity detected" — wrong
+// twice, in front of a live direct funder.
+//
+// RAM Payment LLC (d/b/a Reliant, f/k/a Reliant Account Management) is a licensed
+// money transmitter that runs the escrow/trust account for debt-SETTLEMENT firms:
+// it debits the enrolled client and pays the creditors out of the held funds. So a
+// recurring RAM debit means the merchant is IN a settlement program — which is why
+// funders read it as collections. The descriptor is verified by underwriters
+// reading real statements ("RAM PMT" — dailyfunder.com/showthread.php/11261 and
+// /17673), and Reliant markets the service for "MCA (merchant cash advance)
+// settlements" (reliantpayment.com/solutions/debt-settlement/business-debt).
+//
+// The structural finding from the research: the RELIEF COMPANY's name almost never
+// reaches the bank statement — the ESCROW PROCESSOR's does. So the processors are
+// the high-confidence signal (one hit fires the gate) and relief-company brand
+// names are POSSIBLE reads that need corroboration before they gate anything.
+//
+// NOTHING here matches on a bare token. "RAM" alone collides with Reliant Energy,
+// RAM Capital Funding (a real MCA funder), RAM Tool Construction Supply, Ramp and
+// Dodge Ram truck payments; "Global" with Global Payments; "Century" with
+// CenturyLink and Century Business Solutions; "Americor" with AmeriCorps. Every
+// pattern is a multi-token phrase or a distinctive compound, and SETTLEMENT_VETO_RE
+// kills the near-misses outright. A false positive here costs a fundable merchant
+// every funder that gates on collections — the exact mirror of the bug being fixed.
+interface SettlementServicer {
+  re: RegExp;
+  label: string;
+  // 'high' = a verified escrow processor or unmistakable program language; one hit
+  // fires the gate. 'medium' = a real settlement firm whose statement descriptor is
+  // NOT verified; reported as POSSIBLE and needs a second signal to fire.
+  confidence: CollectionConfidence;
+  what: string;
+}
+
+// Near-misses that must NEVER read as a settlement servicer. Checked FIRST.
+const SETTLEMENT_VETO_RE = new RegExp([
+  String.raw`reliant\s+(?:energy|capital|bank|credit|insur|medical|staffing)`,
+  String.raw`\bram\s+(?:capital|tool|truck|jack|board|mount|air)`,
+  String.raw`\bdodge\b|\bram\s*1500|\bram\s*2500|\bram\s*3500`,
+  String.raw`\bramp\b`,                                   // Ramp corporate cards
+  String.raw`global\s+(?:payments?|industr|logistic|express|shipping|indemnity|equipment|transport)`,
+  String.raw`century\s+(?:link|business|bank|insur|communicat|21|tel)`,
+  String.raw`clearone\s+communicat`,
+  String.raw`americorps?\b`,                              // AmeriCorps stipend ACH
+  String.raw`accredited\s+collection`,                    // a collector, a different signal
+  String.raw`\bmca\s+servicing\b|\bbitty\b`,              // Bitty Advance's own descriptor — a FUNDER
+  String.raw`\bcorporate\s+service\s+company\b|\bcsc\b`,  // UCC filing agent
+].join("|"), "i");
+
+const SETTLEMENT_SERVICERS: SettlementServicer[] = [
+  // ── TIER 1 — escrow/trust-account PROCESSORS with a descriptor verified from
+  // underwriters reading real statements, plus unambiguous program language.
+  {
+    re: /\bram[\s.\-*_]{0,3}(?:pmt|pmnt|payments?)\b/i,
+    label: "RAM Payment / Reliant",
+    confidence: "high",
+    what: 'RAM Payment LLC (d/b/a Reliant, f/k/a Reliant Account Management) is the escrow/trust-account processor debt-settlement firms use to debit an enrolled client; it debits as "RAM PMT" and Reliant sells the service for MCA settlements',
+  },
+  {
+    re: /\breliant\s+account\s+mana/i,
+    label: "Reliant Account Management",
+    confidence: "high",
+    what: "Reliant Account Management is RAM Payment's former name — the same debt-settlement escrow processor",
+  },
+  {
+    re: /\bghllc(?:\.com)?\b/i,
+    label: "Global Holdings (GLOBAL GHLLC.COM)",
+    confidence: "high",
+    what: 'Global Holdings LLC (f/k/a Global Client Solutions) administers the dedicated account for debt-settlement programs; its own FAQ states the debit "will appear on your bank statement as GLOBAL GHLLC.COM"',
+  },
+  {
+    re: /\bglobal\s+(?:client\s+solutions|holdings\s+llc)\b/i,
+    label: "Global Client Solutions / Global Holdings",
+    confidence: "high",
+    what: "Global Client Solutions (now Global Holdings LLC) is the dedicated-account administrator for debt-settlement programs",
+  },
+  {
+    re: /\bdebt\s+(?:settlement|relief|resolution|adjust(?:er|ers|ment))\b/i,
+    label: "debt-settlement program",
+    confidence: "high",
+    what: "the descriptor names a debt settlement / debt relief program outright",
+  },
+  // ── TIER 2 — real settlement / restructuring firms whose statement descriptor is
+  // NOT verified. Named so a setter sees them, but 'medium' on purpose: one alone
+  // never fires the gate, it reads as POSSIBLE pending the statement.
+  {
+    re: /\bsecure\s?account\s?ser(?:vice|vices)?\b/i,
+    label: "Secure Account Service",
+    confidence: "medium",
+    what: "Secure Account Service LLC (AZ) is an escrow account for settlement companies (single underwriter source; CA DFPI desist order 2014) — verify the descriptor",
+  },
+  {
+    re: /\bcorp(?:orate)?\s+turnaround\b/i,
+    label: "Corporate Turnaround",
+    confidence: "medium",
+    what: "Corporate Turnaround (Paramus NJ) is a business-debt restructuring/settlement firm that debits under its own name — but legitimate middle-market turnaround advisors share the phrasing, so confirm which this is",
+  },
+  {
+    re: /\bcft\s?pay\b|\bcrossroads\s+financial\s+tech/i,
+    label: "CFTPay / Crossroads Financial Technologies",
+    confidence: "medium",
+    what: "CFTPay is the payment processor Century Support Services routes settlement clients through — descriptor unverified",
+  },
+  {
+    re: /\bcentury\s+support\s+serv/i,
+    label: "Century Support Services",
+    confidence: "medium",
+    what: "Century Support Services is a consumer debt-settlement company — descriptor unverified",
+  },
+  {
+    re: /\bamericor\b/i,
+    label: "Americor",
+    confidence: "medium",
+    what: "Americor is a debt-settlement company; its own consent agreement names Global Holdings and RAM Payment as its processors — descriptor unverified",
+  },
+  {
+    re: /\bclearone\s+advantage\b/i,
+    label: "ClearOne Advantage",
+    confidence: "medium",
+    what: "ClearOne Advantage is a debt-settlement company — descriptor unverified",
+  },
+  {
+    re: /\bbeyond\s+finance\b/i,
+    label: "Beyond Finance",
+    confidence: "medium",
+    what: "Beyond Finance is a debt-settlement company (Accredited Debt Relief is its DBA) — descriptor unverified",
+  },
+  {
+    re: /\bcreditors?\s+relief\b/i,
+    label: "Creditors Relief",
+    confidence: "medium",
+    what: "Creditors Relief is an MCA-debt relief firm that settles through RAM Payment — descriptor unverified",
+  },
+  {
+    re: /\bmca\s+resolve\b/i,
+    label: "MCA Resolve",
+    confidence: "medium",
+    what: "MCA Resolve is an MCA-debt settlement firm that settles through RAM Payment — descriptor unverified",
+  },
+  {
+    re: /\bnational\s+credit\s+partners\b/i,
+    label: "National Credit Partners",
+    confidence: "medium",
+    what: "National Credit Partners is a business-debt restructuring firm — descriptor unverified",
+  },
+];
+
+/**
+ * Deterministic read of ONE descriptor (or funder name) against the settlement /
+ * restructuring servicer list. Never guesses from an amount or a cadence — only
+ * from the payee name. Returns null for everything it is not certain enough about.
+ *
+ * DELIBERATELY NOT INCLUDED, and why:
+ *  - Meracord / NoteWorld — ceased operations c.2015 after a CFPB penalty and a
+ *    $1.45B default judgment. Any 2026 hit is noise.
+ *  - "CRS" / Corporate Restructure — could not be verified as an operating company
+ *    (corporaterestructure.com serves a parked for-sale page), and bare "CRS" is a
+ *    three-letter collision.
+ *  - Money Management International — a 501(c)(3) credit-counselling agency running
+ *    DMPs, where creditors are paid in full. Different animal from settlement; it
+ *    does not belong in an auto-decline bucket.
+ *  - Second Wind Consultants — its Article 9 model accumulates funds in the
+ *    merchant's OWN account, so there is no third-party debit to see, and "second
+ *    wind" collides with breweries, gyms and thrift stores.
+ */
+function readSettlementServicer(text: string): { label: string; confidence: CollectionConfidence; reason: string } | null {
+  const t = (text || "").trim();
+  if (!t) return null;
+  if (SETTLEMENT_VETO_RE.test(t)) return null;
+  for (const s of SETTLEMENT_SERVICERS) {
+    if (s.re.test(t)) return { label: s.label, confidence: s.confidence, reason: s.what };
+  }
+  return null;
+}
+
+/** The ONE predicate the rest of the file uses: is this debit a settlement debit? */
+function settlementRead(desc: unknown, funder: unknown): { label: string; confidence: CollectionConfidence; reason: string } | null {
+  return readSettlementServicer(String(desc ?? "")) ?? readSettlementServicer(String(funder ?? ""));
+}
+
 function normCollectionType(raw: unknown): CollectionType | null {
   const s = String(raw ?? "").toLowerCase().trim();
-  if (s === "collections" || s === "garnishment" || s === "tax_levy" || s === "judgment") return s as CollectionType;
+  if (s === "collections" || s === "garnishment" || s === "tax_levy" || s === "judgment" || s === "debt_settlement") return s as CollectionType;
+  if (s.includes("settle") || s.includes("relief") || s.includes("restructur")) return "debt_settlement";
   if (s.includes("garnish")) return "garnishment";
   if (s.includes("levy") || s.includes("tax")) return "tax_levy";
   if (s.includes("judg") || s.includes("writ") || s.includes("court")) return "judgment";
@@ -4106,6 +4428,11 @@ function readCollectionText(text: string): { type: CollectionType; confidence: C
   const t = (text || "").trim();
   if (!t) return null;
   if (COLLECTION_FALSE_FRIEND_RE.test(t)) return null;
+  // Settlement servicers are read BEFORE the legal-collection patterns: they are a
+  // distinct kind of event (the merchant is enrolled in a program, not being seized
+  // from) and funders gate on them the same way.
+  const settle = readSettlementServicer(t);
+  if (settle) return { type: "debt_settlement", confidence: settle.confidence, reason: `${settle.label} — ${settle.reason}` };
   if (GARNISH_RE.test(t)) return { type: "garnishment", confidence: "high", reason: "descriptor names a garnishment" };
   if (TAX_LEVY_RE.test(t)) return { type: "tax_levy", confidence: "high", reason: "descriptor names a tax levy/lien" };
   if (JUDGMENT_RE.test(t)) return { type: "judgment", confidence: "high", reason: "descriptor names a judgment / writ / court order" };

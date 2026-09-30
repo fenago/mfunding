@@ -14,6 +14,11 @@ import { getSetting } from "../../services/platformService";
 import { parseEdgeError } from "../../lib/edgeError";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { readDocsStatus, duplicateContactNote, type GhlDocsStatus } from "../../lib/ghlDocs";
+// The upload-link URL rule and the clipboard write both live in one place now
+// (shared with MerchantLinksMenu on the Processor and Setter Ops surfaces) —
+// two copies of "how do you build the prefilled upload link" is exactly how this
+// codebase has drifted before.
+import { uploadLinkFor, copyText, copyFailureMessage } from "../../lib/merchantLinks";
 
 interface AdhocDocDef {
   key: string;
@@ -63,6 +68,10 @@ interface NoteState {
   text: string;
   signingUrl?: string | null;
   onMintAnyway?: (() => void) | null;
+  /** The clipboard refused. Shown as selectable text so the link can still be
+   *  copied by hand — a copy that silently does nothing leaves someone pasting
+   *  whatever was on the clipboard before. */
+  fallbackUrl?: string;
 }
 
 export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: Props) {
@@ -163,10 +172,17 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     setBusy(null);
     setNote(n);
     if (noteTimer.current) clearTimeout(noteTimer.current);
-    const ttl = n.signingUrl || n.onMintAnyway ? 30000 : 8000;
+    const ttl = n.fallbackUrl ? 45000 : n.signingUrl || n.onMintAnyway ? 30000 : 8000;
     noteTimer.current = setTimeout(() => setNote(null), ttl);
   };
-  const flash = (ok: boolean, text: string) => finish({ ok, text });
+  /** Copy, and say what happened either way. The menu closes first: the note is
+   *  anchored to the same corner, so an open menu sits on top of it. */
+  const copyAndFlash = async (url: string, confirmation: string) => {
+    setOpen(false);
+    const r = await copyText(url);
+    if (r.ok) finish({ ok: true, text: confirmation });
+    else finish({ ok: false, text: copyFailureMessage(r.reason), fallbackUrl: url });
+  };
 
   const sendApp = async (kind: "partial" | "blank" | "prefill", mintAnyway = false) => {
     const label =
@@ -303,10 +319,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
               {d.public_link && (
                 <button
                   type="button"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(d.public_link!);
-                    flash(true, "📋 Blank form link copied — paste it into a text.");
-                  }}
+                  onClick={() => void copyAndFlash(d.public_link!, "📋 Blank form link copied — paste it into a text.")}
                   className="w-full text-left px-3 pb-1.5 -mt-0.5 text-[11px] text-ocean-blue hover:underline"
                   title="Copies the public blank form link for this document — anyone with the link can fill and sign"
                 >
@@ -326,13 +339,12 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  const url = merchantEmail
-                    ? `${uploadFormUrl}?email=${encodeURIComponent(merchantEmail)}`
-                    : uploadFormUrl;
-                  void navigator.clipboard.writeText(url);
-                  finish({ ok: true, text: "📤 Upload link copied — text it; their files land on this contact automatically." });
-                }}
+                onClick={() =>
+                  void copyAndFlash(
+                    uploadLinkFor(uploadFormUrl, merchantEmail),
+                    "📤 Upload link copied — text it; their files land on this contact automatically.",
+                  )
+                }
                 className={itemCls}
                 title="Copies the secure upload-form link (bank statements, ID, voided check) prefilled with their email so uploads attach to this merchant"
               >
@@ -399,10 +411,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
                   <button
                     key={i}
                     type="button"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(l.url!);
-                      flash(true, `📋 Copied their "${l.name}" link — paste it into a text.`);
-                    }}
+                    onClick={() => void copyAndFlash(l.url!, `📋 Copied their "${l.name}" link — paste it into a text.`)}
                     className={itemCls}
                     title={`Copies this merchant's own link for ${l.name}`}
                   >
@@ -419,14 +428,25 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
         <div className={`absolute left-0 top-full mt-1 w-72 text-[11px] z-30 rounded-md px-2 py-1 border ${note.ok ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800" : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800"}`}>
           <p>{note.text}</p>
 
+          {/* The clipboard refused (insecure origin, unfocused document, denied
+              permission). Put the URL on screen, selectable, rather than letting
+              the copy be a silent no-op. */}
+          {note.fallbackUrl && (
+            <textarea
+              readOnly
+              rows={3}
+              value={note.fallbackUrl}
+              onFocus={(e) => e.currentTarget.select()}
+              onClick={(e) => e.currentTarget.select()}
+              className="mt-1 w-full select-all rounded border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 px-1.5 py-1 font-mono text-[10px] leading-snug text-gray-800 dark:text-gray-100"
+            />
+          )}
+
           {/* Success that minted a per-recipient link → one tap to text it. */}
           {note.ok && note.signingUrl && (
             <button
               type="button"
-              onClick={() => {
-                void navigator.clipboard.writeText(note.signingUrl!);
-                flash(true, "📋 Signing link copied — paste it into a text.");
-              }}
+              onClick={() => void copyAndFlash(note.signingUrl!, "📋 Signing link copied — paste it into a text.")}
               className="mt-1 w-full text-left font-semibold text-ocean-blue hover:underline"
               title="Copies this merchant's own signing link for the document just sent"
             >
