@@ -46,6 +46,7 @@ import {
   freqOf,
   funderMessagePrefill,
   isLive,
+  isNoTypedText,
   logDealActivity,
   logOffer as logOfferShared,
   markFunderDeclined as markFunderDeclinedShared,
@@ -124,6 +125,8 @@ interface SubRow {
   withdrawnAt: string | null;
   // AI reply classification (from poll-funder-replies; may be null).
   responseType: string | null;
+  /** response_data.parsed.method — "llm" | "heuristic" | "no_typed_text". */
+  parseMethod: string | null;
   responseSummary: string | null;
   declineCategory: string | null;
   requestedItems: string[];
@@ -628,7 +631,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         .eq("deal_id", deal.id);
       if (qErr) throw qErr;
       const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
-        const parsed = (r.response_data as { parsed?: { decline_reason_category?: string | null; requested_items?: unknown } } | null)?.parsed;
+        const parsed = (r.response_data as { parsed?: { decline_reason_category?: string | null; requested_items?: unknown; method?: string | null } } | null)?.parsed;
         const items = Array.isArray(parsed?.requested_items)
           ? (parsed!.requested_items as unknown[]).filter((x) => typeof x === "string") as string[]
           : [];
@@ -649,6 +652,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           courtesySentAt: (r.courtesy_sent_at as string | null) ?? null,
           withdrawnAt: (r.withdrawn_at as string | null) ?? null,
           responseType: (r.response_type as string | null) ?? null,
+          parseMethod: (parsed?.method as string | null) ?? null,
           responseSummary: (r.response_summary as string | null) ?? null,
           declineCategory: (parsed?.decline_reason_category as string | null) ?? null,
           requestedItems: items,
@@ -957,6 +961,19 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                   <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-medium ${st.cls}`}>
                     <span>{st.emoji}</span> {st.label}
                   </span>
+                  {/* They replied and typed nothing — the body was only the
+                      quoted thread, so whatever they sent is in the
+                      attachments and no human has read it. Said beside the
+                      chip, not instead of it: this IS a reply that needs the
+                      reply affordances, it just isn't one anybody has read.
+                      Branching on the parse METHOD, never on the classifier's
+                      type or is_decline, both of which are defaults rather
+                      than verdicts on this path. */}
+                  {isNoTypedText(s) && (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-px text-[9px] font-bold">
+                      ⚠ no typed text — open it
+                    </span>
+                  )}
                   {isBest && <span className="text-[9px] uppercase tracking-wide text-emerald-600 font-semibold">best value</span>}
                   {st.key === "awaiting" && s.submittedAt && (
                     <span className="inline-flex items-center gap-0.5 text-gray-400"><ClockIcon className="w-3 h-3" /> sent {relTime(s.submittedAt)}</span>
