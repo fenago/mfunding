@@ -16,6 +16,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
+import { type ProductId, hasAnyProduct, hasProduct } from "@/lib/lenderProducts";
 import {
   type FunderCriteria,
   acceptsPositions,
@@ -30,24 +31,34 @@ import {
 } from "@/lib/funderCriteria";
 
 // ── Product columns ───────────────────────────────────────────────────────────
-// A product "checks" if any of its underlying lender_types is on the record.
-// MCA folds in revenue_based + working_capital (all future-receivables advances,
-// never "loans"); the rest map 1:1.
-type Product = { id: string; label: string; types: string[] };
+// Which products a funder does is answered by ONE shared helper
+// (@/lib/lenderProducts), because the catalog records it in two columns —
+// `lender_types` and `category->'products'` — that were populated by different
+// processes and disagree in both directions. This page used to read
+// `lender_types` alone and under-reported term loans by 49 funders. The alias
+// map that folds revenue_based + working_capital into MCA lives in that helper
+// and must never be copied back out: the cheat sheet reads the same one.
+type Product = { id: ProductId; label: string };
 const PRODUCTS: Product[] = [
-  { id: "mca", label: "MCA", types: ["mca", "revenue_based", "working_capital"] },
-  { id: "term_loan", label: "Term", types: ["term_loan"] },
-  { id: "sba", label: "SBA", types: ["sba"] },
-  { id: "line_of_credit", label: "LOC", types: ["line_of_credit"] },
-  { id: "equipment", label: "Equip", types: ["equipment"] },
-  { id: "invoice_factoring", label: "Factoring", types: ["invoice_factoring"] },
-  { id: "startup", label: "Startup", types: ["startup"] },
+  { id: "mca", label: "MCA" },
+  { id: "term_loan", label: "Term" },
+  { id: "sba_loan", label: "SBA" },
+  { id: "line_of_credit", label: "LOC" },
+  { id: "equipment_financing", label: "Equip" },
+  { id: "invoice_factoring", label: "Factoring" },
+  { id: "startup_robs_401k", label: "Startup" },
 ];
 
 // Loan/traditional products used by the analysis buckets. MCA is deliberately
 // excluded here — the analysis answers "who can do a real loan today".
-const LOAN_TERM_TYPES = ["sba", "term_loan"];
-const PROSPECT_TYPES = ["sba", "term_loan", "line_of_credit", "equipment", "invoice_factoring"];
+const LOAN_TERM_TYPES: ProductId[] = ["sba_loan", "term_loan"];
+const PROSPECT_TYPES: ProductId[] = [
+  "sba_loan",
+  "term_loan",
+  "line_of_credit",
+  "equipment_financing",
+  "invoice_factoring",
+];
 
 // ── Status bands (render + collapse order) ────────────────────────────────────
 type Band = {
@@ -141,10 +152,9 @@ const consoLabel = (l: Lender) => {
 };
 
 // ── Derivations ───────────────────────────────────────────────────────────────
-const hasType = (l: Lender, types: string[]) =>
-  (l.lender_types ?? []).some((t) => types.includes(t));
+const hasType = (l: Lender, products: ProductId[]) => hasAnyProduct(l, products);
 
-const doesProduct = (l: Lender, p: Product) => hasType(l, p.types);
+const doesProduct = (l: Lender, p: Product) => hasProduct(l, p.id);
 
 // Red-flag phrases the owner wants surfaced inline, never buried.
 const WARN_RX = /not a funder|deactivated|hard no/i;
@@ -213,7 +223,9 @@ function StatusChip({ status }: { status: string }) {
 // A merchant-facing "small deal / low-revenue" fit: an MCA-family funder whose
 // recorded box reaches down to small merchants — floor ≤ $15K/mo, OR min deal
 // ≤ $10K, OR max deal ≤ $50K, OR notes explicitly flag micro/gig/freelancer.
-const MCA_FAMILY = ["mca", "revenue_based", "working_capital"];
+// The three enum values that all mean MCA collapse to one canonical product in
+// the shared helper, so this list is now just ["mca"].
+const MCA_FAMILY: ProductId[] = ["mca"];
 const MICRO_NOTE_RX = /\bmicro\b|\bgig\b|freelanc|sole prop/i;
 const isMicroMca = (l: Lender) =>
   hasType(l, MCA_FAMILY) &&
@@ -242,7 +254,7 @@ const hasCatProduct = (l: Lender, rx: RegExp) => catProducts(l).some((p) => rx.t
 type Bucket = { id: string; label: string; test: (l: Lender) => boolean };
 const BUCKETS: Bucket[] = [
   { id: "mca", label: "MCA", test: (l) => hasType(l, MCA_FAMILY) || hasCatProduct(l, /mca|advance|revenue/) },
-  { id: "sba", label: "SBA", test: (l) => flags(l).sba === true || hasType(l, ["sba"]) },
+  { id: "sba", label: "SBA", test: (l) => flags(l).sba === true || hasType(l, ["sba_loan"]) },
   {
     id: "real_estate",
     label: "Real estate",
@@ -251,7 +263,8 @@ const BUCKETS: Bucket[] = [
   {
     id: "equipment",
     label: "Equipment",
-    test: (l) => flags(l).equipment === true || hasType(l, ["equipment"]) || hasCatProduct(l, /equipment/),
+    test: (l) =>
+      flags(l).equipment === true || hasType(l, ["equipment_financing"]) || hasCatProduct(l, /equipment/),
   },
   {
     id: "micro",
@@ -474,7 +487,7 @@ export default function LenderCatalogPage() {
       .sort((a, b) => a.company_name.localeCompare(b.company_name));
     // "One approval away"
     const oneAway = inFilter
-      .filter((l) => l.status === "application_submitted" && hasType(l, ["term_loan", "sba", "line_of_credit"]))
+      .filter((l) => l.status === "application_submitted" && hasType(l, ["term_loan", "sba_loan", "line_of_credit"]))
       .sort((a, b) => a.company_name.localeCompare(b.company_name));
     // "Prospects worth applying to"
     const prospects = inFilter
@@ -541,7 +554,9 @@ export default function LenderCatalogPage() {
           <span>
             <b>Lender categorization not deployed yet.</b> The <code>lenders.category</code> column is
             missing, so paper tiers, the consolidation shortlist, and the paper / consolidation /
-            bucket filters will come up empty. Everything else on this page is live.
+            bucket filters will come up empty — and the product columns are reading{" "}
+            <code>lender_types</code> alone, which is a NARROWER answer than usual, not a complete one.
+            Everything else on this page is live.
           </span>
         </div>
       )}
@@ -1438,13 +1453,13 @@ function OfferingsSection({
 
   const standardMcaLive = lenders.filter((l) => l.status === "live_vendor" && hasType(l, MCA_FAMILY));
 
-  const countType = (types: string[], statuses?: string[]) =>
+  const countType = (types: ProductId[], statuses?: string[]) =>
     lenders.filter((l) => hasType(l, types) && (statuses ? statuses.includes(l.status) : true));
 
   const loc = countType(["line_of_credit"]);
-  const equip = countType(["equipment"]);
+  const equip = countType(["equipment_financing"]);
   const factoring = countType(["invoice_factoring"]);
-  const startup = countType(["startup"]);
+  const startup = countType(["startup_robs_401k"]);
 
   // Referral partners that actually exist as live rows, with their real status.
   const refCards = REFERRAL_PARTNERS.map((rp) => ({ rp, lender: byName(rp.match) })).filter(
