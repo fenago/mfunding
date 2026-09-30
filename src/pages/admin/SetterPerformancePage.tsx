@@ -1726,17 +1726,17 @@ const PACE_MIN_DAYS = 14;
 // packs cells so tightly that a number runs into the percentage beside it
 // ("43056.9%"), so padding is set explicitly here instead. Numeric columns are
 // right-aligned and tabular so digits line up in a column.
-const TABLE_WRAP = "overflow-x-auto rounded-lg border border-base-300";
+const TABLE_WRAP = "overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700";
 const TABLE = "table w-full";
-const THEAD = "bg-base-200/60 dark:bg-gray-800/50";
-const TH = "px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap border-b border-base-300";
+const THEAD = "bg-gray-100/60 dark:bg-gray-800/50";
+const TH = "px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap border-b border-gray-200 dark:border-gray-700";
 const TH_NUM = `${TH} text-right`;
 const TD = "px-3 py-2.5 text-sm text-gray-700 dark:text-gray-200";
 const TD_NUM = `${TD} text-right tabular-nums whitespace-nowrap`;
-const TBODY = "divide-y divide-base-300/70";
-const TR = "hover:bg-base-200/40 dark:hover:bg-gray-800/30 transition-colors";
+const TBODY = "divide-y divide-gray-200 dark:divide-gray-700";
+const TR = "hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors";
 /** The vertical rule that separates the two column GROUPS in the Setters table. */
-const GROUP_EDGE = "border-l border-base-300";
+const GROUP_EDGE = "border-l border-gray-200 dark:border-gray-700";
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
 // Ranges are chosen in the MANAGER'S LOCAL DAY (a shift is a local-clock thing),
@@ -4840,7 +4840,7 @@ export default function SetterPerformancePage() {
         <div
           role="group"
           aria-label="Date range"
-          className="inline-flex items-center gap-1 rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-1"
+          className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/60 dark:bg-gray-800/50 p-1"
         >
           {(Object.keys(RANGE_LABELS) as RangeKey[]).map((k) => {
             const active = rangeKey === k;
@@ -4862,7 +4862,7 @@ export default function SetterPerformancePage() {
                 className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
                   active
                     ? "bg-mint-green text-gray-900 shadow-sm"
-                    : "text-gray-600 dark:text-gray-300 hover:bg-base-100 dark:hover:bg-gray-700/60"
+                    : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/60"
                 }`}
               >
                 {RANGE_LABELS[k]}
@@ -5162,7 +5162,7 @@ export default function SetterPerformancePage() {
                     { label: "Talk time", value: funnel.talkSeconds, fmt: hms, help: "Total seconds across every dial in range" },
                     { label: "Unique leads", value: funnel.uniqueLeads, fmt: (v: number) => v.toLocaleString(), help: "Distinct merchant phone numbers dialed" },
                   ].map((kpi) => (
-                    <div key={kpi.label} className="card bg-base-100 border border-base-300 shadow-sm" title={kpi.help}>
+                    <div key={kpi.label} className="card shadow-sm" title={kpi.help}>
                       <div className="card-body p-4">
                         <div className="text-xs uppercase tracking-wide text-gray-400">{kpi.label}</div>
                         <div className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -5220,7 +5220,7 @@ export default function SetterPerformancePage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <span className="text-xs uppercase tracking-wide text-gray-400">Group the funnel by</span>
-                    <div role="tablist" aria-label="Funnel grouping" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+                    <div role="tablist" aria-label="Funnel grouping" className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/60 dark:bg-gray-800/50 p-0.5">
                       {FUNNEL_VIEWS.map((v) => (
                         <button
                           key={v.id}
@@ -5229,7 +5229,7 @@ export default function SetterPerformancePage() {
                           onClick={() => setFunnelView(v.id)}
                           className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                             funnelView === v.id
-                              ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                              ? "bg-white text-gray-900 dark:text-white shadow-sm"
                               : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                           }`}
                         >
@@ -5254,7 +5254,7 @@ export default function SetterPerformancePage() {
                     onApplicationsClick={jumpToApplications}
                     appsForScope={appsRungCombined}
                   >
-                    <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                    <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
                       <div>
                         <span className="font-semibold text-gray-700 dark:text-gray-200">Conversation</span> = the setter
                         reached a live person and dispositioned the call — Interested, Not Interested, Appointment Set,
@@ -5385,8 +5385,8 @@ export default function SetterPerformancePage() {
                 {/* ── Positive dispositions, call by call ── */}
                 <div
                   ref={positivesRef}
-                  className={`card bg-base-100 border shadow-sm scroll-mt-4 transition-colors ${
-                    positivesHighlight ? "border-mint-green" : "border-base-300"
+                  className={`card border shadow-sm scroll-mt-4 transition-colors ${
+                    positivesHighlight ? "border-mint-green" : "border-gray-200 dark:border-gray-700"
                   }`}
                 >
                   <div className="card-body p-4 space-y-3">
@@ -5439,7 +5439,7 @@ export default function SetterPerformancePage() {
                     </div>
 
                     {positiveRows.length === 0 ? (
-                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                      <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
                         <b className="text-gray-700 dark:text-gray-200">No positive dispositions in this range.</b> Every
                         dial was dispositioned something else, or left undispositioned — an undispositioned call never
                         counts here, so this can read empty on a day that had real interest.
@@ -5592,7 +5592,7 @@ export default function SetterPerformancePage() {
                                           type="button"
                                           onClick={() => togglePositiveRow(row.key)}
                                           aria-expanded={open}
-                                          className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:border-mint-green/50 hover:text-mint-green"
+                                          className="shrink-0 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-100/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400 hover:border-mint-green/50 hover:text-mint-green"
                                           title={`${row.calls.length} calls to this merchant in this range${row.dispositions.length > 1 ? ` (dispositioned ${row.dispositions.join(" → ")})` : ` — all dispositioned "${row.disposition}"`}. They are ONE row because the unit is the merchant, not the call, and this row shows the latest. Click to see every call with its own time, length and disposition; nothing was thrown away.`}
                                         >
                                           {open ? "▾" : "▸"} {row.calls.length} calls
@@ -5702,7 +5702,7 @@ export default function SetterPerformancePage() {
                                     its own length and its own disposition, and
                                     the one this row stands for is marked. */}
                                 {folded && open && (
-                                  <tr className="bg-base-200/40 dark:bg-gray-800/30">
+                                  <tr className="bg-gray-100/40 dark:bg-gray-800/30">
                                     <td colSpan={10} className="px-3 py-2">
                                       <div className="text-[11px] text-gray-500 dark:text-gray-400">
                                         <b className="text-gray-700 dark:text-gray-200">
@@ -5808,7 +5808,7 @@ export default function SetterPerformancePage() {
                         day with a sent application and no positive disposition
                         at all is the version of this confusion that hurts most. */}
                     {applicationRows !== null && applicationRows.length > 0 && (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-2">
                         <button
                           type="button"
                           onClick={jumpToApplications}
@@ -5835,8 +5835,8 @@ export default function SetterPerformancePage() {
                     dispositions is the day this card was specified. */}
                 <div
                   ref={applicationsRef}
-                  className={`card bg-base-100 border shadow-sm scroll-mt-4 transition-colors ${
-                    applicationsHighlight ? "border-indigo-400" : "border-base-300"
+                  className={`card border shadow-sm scroll-mt-4 transition-colors ${
+                    applicationsHighlight ? "border-indigo-400" : "border-gray-200 dark:border-gray-700"
                   }`}
                 >
                   <div className="card-body p-4 space-y-3">
@@ -6038,7 +6038,7 @@ export default function SetterPerformancePage() {
                         <span className="loading loading-spinner loading-sm" /> Loading applications…
                       </div>
                     ) : applicationRows.length === 0 ? (
-                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                      <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
                         <b className="text-gray-700 dark:text-gray-200">No application was sent in this range.</b>{" "}
                         The pipeline read fine — this is a real zero, not a failed read. A call dispositioned
                         “Full Application” with no application actually sent still shows in{" "}
@@ -6227,7 +6227,7 @@ export default function SetterPerformancePage() {
                                             about someone who did the thing. */}
                                         {!alsoDispositioned && callState.kind === "dispositioned" && callState.latest?.disposition && (
                                           <span
-                                            className="shrink-0 rounded-full border border-base-300 bg-base-200/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400"
+                                            className="shrink-0 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-100/70 dark:bg-gray-800/60 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-400"
                                             title={`The call to this merchant in this range was dispositioned "${callState.latest.disposition}" — logged, just not a positive disposition, so this merchant is not in the table above.`}
                                           >
                                             call: {callState.latest.disposition}
@@ -6379,7 +6379,7 @@ export default function SetterPerformancePage() {
 
                 {/* The insight — the thing a manager should act on */}
                 {funnelView === "combined" && funnel.dials > 0 && (
-                  <div className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div className="card shadow-sm">
                     <div className="card-body p-4">
                       <h2 className="font-semibold text-gray-900 dark:text-white">Where the floor is losing the day</h2>
                       <ul className="mt-2 space-y-2 text-sm text-gray-600 dark:text-gray-300">
@@ -6430,7 +6430,7 @@ export default function SetterPerformancePage() {
                 merged into it. The dial funnel counts dispositions; this counts
                 stage stamps on real merchants. The GAP between them is the
                 finding, so the two are shown side by side and never summed. */}
-            <div className="card bg-base-100 border border-base-300 shadow-sm">
+            <div className="card shadow-sm">
               <div className="card-body p-4 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -6483,7 +6483,7 @@ export default function SetterPerformancePage() {
                     <span className="loading loading-spinner loading-sm" /> Loading productive contacts…
                   </div>
                 ) : !productiveRows || productiveRows.length === 0 ? (
-                  <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                  <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
                     <b className="text-gray-700 dark:text-gray-200">
                       No deal carried a stage stamp in this range.
                     </b>{" "}
@@ -6569,7 +6569,7 @@ export default function SetterPerformancePage() {
                     pace cannot be honestly extrapolated from a short window, so
                     on a short range the band is shown alone and the reason is
                     printed rather than a scaled-up guess. */}
-                <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-2">
                   <span className="font-semibold text-gray-600 dark:text-gray-300">Rep economics:</span>
                   <BenchmarkChip id="deals_per_rep_month" value={industryValues.deals_per_rep_month ?? null} />
                   {repMonthlyPace === null ? (
@@ -6650,7 +6650,7 @@ export default function SetterPerformancePage() {
           {tab === "setters" && (
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
               <div className="space-y-4">
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card shadow-sm">
                   <div className="card-body p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -6854,7 +6854,7 @@ export default function SetterPerformancePage() {
                           )}
                         </tbody>
                         <tfoot>
-                          <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                          <tr className="font-semibold bg-gray-100/60 dark:bg-gray-800/50 border-t-2 border-gray-200 dark:border-gray-700">
                             <td className={`${TD} text-gray-900 dark:text-white`}>Team</td>
                             <td className={TD_NUM}>{funnel.dials.toLocaleString()}</td>
                             <td className={TD_NUM}><Metric value={null} /></td>
@@ -6962,7 +6962,7 @@ export default function SetterPerformancePage() {
                 </div>
 
                 {/* ── Dials vs talk, by line ── */}
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card shadow-sm">
                   <div className="card-body p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -7038,7 +7038,7 @@ export default function SetterPerformancePage() {
                                   </div>
                                   {/* The talk-vs-machine split of the answered clock, as one bar. */}
                                   <div
-                                    className="mt-1.5 h-1.5 w-full max-w-[11rem] rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden flex"
+                                    className="mt-1.5 h-1.5 w-full max-w-[11rem] rounded bg-gray-200 dark:bg-gray-700/40 overflow-hidden flex"
                                     title={
                                       answeredMin > 0
                                         ? `${hms(r.talkSeconds)} with a live person · ${hms(r.machineSeconds)} on machines / unanswered pickups`
@@ -7123,7 +7123,7 @@ export default function SetterPerformancePage() {
                           )}
                         </tbody>
                         <tfoot>
-                          <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                          <tr className="font-semibold bg-gray-100/60 dark:bg-gray-800/50 border-t-2 border-gray-200 dark:border-gray-700">
                             <td className={`${TD} text-gray-900 dark:text-white`}>
                               Whole floor
                               <div className="text-[11px] font-normal text-gray-400 mt-0.5">
@@ -7188,7 +7188,7 @@ export default function SetterPerformancePage() {
                 />
 
                 {/* ── The one genuinely per-person signal ── */}
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card shadow-sm">
                   <div className="card-body p-4">
                     <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                       <UserGroupIcon className="w-5 h-5 text-mint-green" /> Clocked hours, per setter
@@ -7214,7 +7214,7 @@ export default function SetterPerformancePage() {
                         </div>
                       </div>
                     ) : clockedByUser.size === 0 ? (
-                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
+                      <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
                         <b className="text-gray-700 dark:text-gray-200">No check-in was logged by anyone in this range.</b>{" "}
                         The clock read cleanly and came back empty — nobody submitted hours for these days.
                       </div>
@@ -7270,7 +7270,7 @@ export default function SetterPerformancePage() {
 
                     {/* ── Floor occupancy — the only level the ratio is honest at ── */}
                     {floorOccupancy !== null && floorOccupancy.people > 0 && (
-                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 mt-3">
+                      <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 mt-3">
                         <div className="text-xs uppercase tracking-wide text-gray-400">Floor occupancy</div>
                         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 mt-1.5">
                           {(() => {
@@ -7346,7 +7346,7 @@ export default function SetterPerformancePage() {
                         : ""),
                   },
                 ].map((panel) => (
-                  <div key={panel.title} className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div key={panel.title} className="card shadow-sm">
                     <div className="card-body p-4">
                       <h2 className="font-semibold text-gray-900 dark:text-white">{panel.title}</h2>
                       <p className="text-xs text-gray-400">{panel.note} Across {funnel.dials.toLocaleString()} outbound calls in range.</p>
@@ -7380,7 +7380,7 @@ export default function SetterPerformancePage() {
                                     <td className={TD_NUM}>{d.count.toLocaleString()}</td>
                                     <td className={TD_NUM}>{d.pct.toFixed(1)}%</td>
                                     <td className={`${TD} min-w-[8rem]`}>
-                                      <div className="h-2 w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden">
+                                      <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-700/40 overflow-hidden">
                                         <div className={`h-full ${d.positive ? "bg-emerald-500" : "bg-sky-600"}`} style={{ width: `${Math.min(100, d.pct)}%` }} />
                                       </div>
                                     </td>
@@ -7426,7 +7426,7 @@ export default function SetterPerformancePage() {
               disposition that is null / "None" / "Agent Canceled". */}
           {tab === "review" && (
             <div className="space-y-4">
-              <div className="card bg-base-100 border border-base-300 shadow-sm">
+              <div className="card shadow-sm">
                 <div className="card-body p-4 space-y-2">
                   <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                     <ExclamationTriangleIcon className="w-5 h-5 text-amber-500" />
@@ -7440,7 +7440,7 @@ export default function SetterPerformancePage() {
                     <b>pipeline</b> says about that merchant, so a talk that produced an application is
                     visible even though the dial record claims nothing happened.
                   </p>
-                  <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                  <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
                     <b>This is a coaching queue, not a metric.</b> A row here is a question — "what actually
                     happened on this call?" — and the answer is the recording, on the Call log tab. Nothing on
                     this tab is counted as a positive or a conversation anywhere else: an un-dispositioned
@@ -7452,7 +7452,7 @@ export default function SetterPerformancePage() {
               {emptyRange ? (
                 <EmptyRange total={totalRowsEver} />
               ) : reviewCalls.length === 0 ? (
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card shadow-sm">
                   <div className="card-body p-8 text-center">
                     <CheckCircleIcon className="w-10 h-10 mx-auto text-emerald-500/70" />
                     <p className="mt-2 text-sm font-semibold text-gray-700 dark:text-gray-200">
@@ -7465,7 +7465,7 @@ export default function SetterPerformancePage() {
                   </div>
                 </div>
               ) : (
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card shadow-sm">
                   <div className="card-body p-4 space-y-3">
                     {reviewDealsError && (
                       <div className="alert alert-warning text-sm">
@@ -7553,7 +7553,7 @@ export default function SetterPerformancePage() {
                                     </span>
                                   ) : (
                                     <div className="flex flex-wrap items-center gap-1.5">
-                                      <span className="inline-flex items-center rounded-full border border-base-300 bg-base-200/60 dark:bg-gray-800/50 px-2 py-0.5 text-xs">
+                                      <span className="inline-flex items-center rounded-full border border-gray-200 dark:border-gray-700 bg-gray-100/60 dark:bg-gray-800/50 px-2 py-0.5 text-xs">
                                         {stage ?? "stage unknown"}
                                       </span>
                                       {deal.application_sent_at && (
@@ -7611,11 +7611,11 @@ export default function SetterPerformancePage() {
           {/* ═══════════════ TRENDS ═══════════════ */}
           {tab === "trends" && (
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
-              <div className="card bg-base-100 border border-base-300 shadow-sm">
+              <div className="card shadow-sm">
                 <div className="card-body p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="font-semibold text-gray-900 dark:text-white">Daily activity</h2>
-                    <span className="badge badge-sm bg-base-200 dark:bg-gray-700 border-0 text-gray-600 dark:text-gray-300">
+                    <span className="badge badge-sm bg-gray-200 dark:bg-gray-700 border-0 text-gray-600 dark:text-gray-300">
                       {trend.length} {trend.length === 1 ? "day" : "days"} plotted
                     </span>
                     {trendAutoWidened && (
@@ -7661,7 +7661,7 @@ export default function SetterPerformancePage() {
 
           {/* ═══════════════ CALL LOG ═══════════════ */}
           {tab === "log" && (
-            <div className="card bg-base-100 border border-base-300 shadow-sm">
+            <div className="card shadow-sm">
               <div className="card-body p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -7947,12 +7947,12 @@ export default function SetterPerformancePage() {
                                         ) : (
                                           <>
                                             {(m.summary ?? r.summary) && (
-                                              <div className="mb-1.5 p-2 rounded bg-base-200">
+                                              <div className="mb-1.5 p-2 rounded bg-gray-100 dark:bg-gray-700/40">
                                                 <span className="font-semibold">Summary: </span>{m.summary ?? r.summary}
                                               </div>
                                             )}
                                             {m.transcript
-                                              ? <div className="whitespace-pre-wrap p-2 rounded bg-base-200 max-h-48 overflow-y-auto leading-relaxed">{m.transcript}</div>
+                                              ? <div className="whitespace-pre-wrap p-2 rounded bg-gray-100 dark:bg-gray-700/40 max-h-48 overflow-y-auto leading-relaxed">{m.transcript}</div>
                                               : <span className="text-gray-400">Recorded, but WAVV has not published a transcript for this call yet — they appear a few minutes after the call ends. Try again shortly.</span>}
                                           </>
                                         )}
@@ -7984,7 +7984,7 @@ export default function SetterPerformancePage() {
 
           {/* ═══════════════ NUMBERS (admin only) ═══════════════ */}
           {tab === "numbers" && canManageNumbers && (
-            <div className="card bg-base-100 border border-base-300 shadow-sm">
+            <div className="card shadow-sm">
               <div className="card-body p-4">
                 <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                   <HashtagIcon className="w-5 h-5 text-mint-green" /> Outbound numbers → setters
@@ -8184,7 +8184,7 @@ function FunnelCard({
   if (funnel.dials === 0) return null;
 
   return (
-    <div className="card bg-base-100 border border-base-300 shadow-sm">
+    <div className="card shadow-sm">
       <div className={`card-body ${compact ? "p-3.5 space-y-3" : "p-4 space-y-4"}`}>
         <div className={`flex flex-wrap justify-between gap-x-3 ${subtitle ? "items-start gap-y-1" : "items-center gap-y-3"}`}>
           <div className="min-w-0">
@@ -8369,7 +8369,7 @@ function StageBars({
               <span className={compact ? "truncate" : undefined}>{ofDials}</span>
             );
             const bar = (
-              <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden`}>
+              <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-gray-200 dark:bg-gray-700/40 overflow-hidden`}>
                 <div
                   className={`h-full ${i === 0 ? "bg-sky-500" : RAG_BAR[rag]} transition-all`}
                   style={{ width: `${widthPct}%` }}
@@ -8413,7 +8413,7 @@ function StageBars({
                 } font-medium ${
                   s.kindNote.tone === "file"
                     ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300"
-                    : "border-base-300 bg-base-200/70 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400"
+                    : "border-gray-200 dark:border-gray-700 bg-gray-100/70 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400"
                 }`}
                 title={
                   s.kindNote.tone === "file"
@@ -8618,7 +8618,7 @@ function ActivityHeatmap({
   const gridCols = { gridTemplateColumns: `5.5rem repeat(${hours.length}, minmax(0, 1fr))` };
 
   return (
-    <div className="card bg-base-100 border border-base-300 shadow-sm">
+    <div className="card shadow-sm">
       <div className="card-body p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -8635,7 +8635,7 @@ function ActivityHeatmap({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div role="tablist" aria-label="Heatmap metric" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+            <div role="tablist" aria-label="Heatmap metric" className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/60 dark:bg-gray-800/50 p-0.5">
               {([["talk", "Talk minutes"], ["dials", "Dials"]] as const).map(([id, label]) => (
                 <button
                   key={id}
@@ -8644,7 +8644,7 @@ function ActivityHeatmap({
                   onClick={() => onMetric(id)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     metric === id
-                      ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                      ? "bg-white text-gray-900 dark:text-white shadow-sm"
                       : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                   }`}
                 >
@@ -8653,7 +8653,7 @@ function ActivityHeatmap({
               ))}
             </div>
             {days.length > 1 && (
-              <div role="tablist" aria-label="Heatmap rows" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+              <div role="tablist" aria-label="Heatmap rows" className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/60 dark:bg-gray-800/50 p-0.5">
                 {([["day", "By day"], ["combined", "All days"]] as const).map(([id, label]) => (
                   <button
                     key={id}
@@ -8662,7 +8662,7 @@ function ActivityHeatmap({
                     onClick={() => setScopeOverride(id)}
                     className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                       scope === id
-                        ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                        ? "bg-white text-gray-900 dark:text-white shadow-sm"
                         : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                     }`}
                   >
@@ -8675,7 +8675,7 @@ function ActivityHeatmap({
         </div>
 
         {hours.length === 0 || blocks.length === 0 ? (
-          <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
+          <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
             No dial carries a start time in this range, so there is no hour-of-day picture to draw.
           </div>
         ) : (
@@ -8683,7 +8683,7 @@ function ActivityHeatmap({
             <div className="overflow-x-auto mt-3">
               <div className="min-w-[38rem] space-y-4">
                 {blocks.map((block) => (
-                  <div key={block.key} className={block.isFloor ? "pb-3 border-b border-base-300" : undefined}>
+                  <div key={block.key} className={block.isFloor ? "pb-3 border-b border-gray-200 dark:border-gray-700" : undefined}>
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1.5">
                       <span className="text-sm font-medium text-gray-900 dark:text-white">{block.title}</span>
                       <span className="text-[11px] text-gray-400">{block.subtitle}</span>
@@ -8712,7 +8712,7 @@ function ActivityHeatmap({
                           return (
                             <div
                               key={h}
-                              className="h-6 rounded-sm border border-base-300/60 bg-base-200/40 dark:bg-gray-800/40"
+                              className="h-6 rounded-sm border border-gray-200/60 dark:border-gray-700/60 bg-gray-100/40 dark:bg-gray-800/40"
                               style={{ backgroundColor: heatFill(v, max) }}
                               title={`${c.title} · ${hourLabel(h)} — ${v > 0 ? `${fmt(v)} ${unit}` : `no ${unit}`}`}
                             />
@@ -8731,7 +8731,7 @@ function ActivityHeatmap({
               <span>none</span>
               <span className="flex items-center gap-px">
                 {[0.2, 0.4, 0.6, 0.8, 1].map((f) => (
-                  <span key={f} className="w-5 h-3 rounded-sm border border-base-300/60" style={{ backgroundColor: heatFill(f * max, max) }} />
+                  <span key={f} className="w-5 h-3 rounded-sm border border-gray-200/60 dark:border-gray-700/60" style={{ backgroundColor: heatFill(f * max, max) }} />
                 ))}
               </span>
               <span className="tabular-nums">{fmt(max)} {unit} — the busiest hour on any single LINE</span>
@@ -8801,7 +8801,7 @@ function SourceFunnelPanel({
   const filteredName = filtered ? (view?.groups[0]?.name ?? "this closer") : null;
 
   const header = (
-    <div className="card bg-base-100 border border-base-300 shadow-sm">
+    <div className="card shadow-sm">
       <div className="card-body p-4 space-y-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -8830,7 +8830,7 @@ function SourceFunnelPanel({
           )}
         </div>
         <p className="text-sm text-gray-500 dark:text-gray-400">{def.blurb}</p>
-        <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+        <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <div>
             <b className="text-gray-700 dark:text-gray-200">These are pipeline outcomes from Deals, not WAVV dial counts.</b>{" "}
             Nothing on this tab is a dial, a connect or a disposition — every number is a deal position.
@@ -9000,7 +9000,7 @@ function SourceFunnelPanel({
       {/* Summary tiles */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {tiles.map((t) => (
-          <div key={t.label} className="card bg-base-100 border border-base-300 shadow-sm" title={t.help}>
+          <div key={t.label} className="card shadow-sm" title={t.help}>
             <div className="card-body p-4">
               <div className="text-xs uppercase tracking-wide text-gray-400 flex items-center gap-1">
                 {t.label === "Funded $" && <BanknotesIcon className="w-3.5 h-3.5" />}
@@ -9014,7 +9014,7 @@ function SourceFunnelPanel({
       </div>
 
       {/* Team funnel */}
-      <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card shadow-sm">
         <div className="card-body p-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -9044,7 +9044,7 @@ function SourceFunnelPanel({
           {/* The industry band on the last rung. These leads are VENDOR-WARM,
               so the 20–30% warm band applies here — not the 8–15% cold band
               the outbound floor is read against on the Funnel tab. */}
-          <div className="flex flex-wrap items-center gap-2 border-t border-base-300 pt-2">
+          <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 dark:border-gray-700 pt-2">
             <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Application → funded:</span>
             <BenchmarkChip
               id="app_to_fund_warm"
@@ -9061,7 +9061,7 @@ function SourceFunnelPanel({
       </div>
 
       {/* Per-setter breakdown */}
-      <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card shadow-sm">
         <div className="card-body p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -9113,7 +9113,7 @@ function SourceFunnelPanel({
                   findings, so the footer only appears unfiltered. */}
               {!filtered && (
                 <tfoot>
-                  <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                  <tr className="font-semibold bg-gray-100/60 dark:bg-gray-800/50 border-t-2 border-gray-200 dark:border-gray-700">
                     <PipeCells name="Team" counts={c} def={def} targetFor={targetFor} />
                   </tr>
                 </tfoot>
@@ -9124,7 +9124,7 @@ function SourceFunnelPanel({
       </div>
 
       {/* The thing to act on */}
-      <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card shadow-sm">
         <div className="card-body p-4">
           <h2 className="font-semibold text-gray-900 dark:text-white">What this cohort is telling you</h2>
           <ul className="mt-2 space-y-2 text-sm text-gray-600 dark:text-gray-300">
@@ -9901,7 +9901,7 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
 
   if (load.kind === "loading") {
     return (
-      <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card shadow-sm">
         <div className="card-body p-4 space-y-3">
           {header}
           <div className="flex items-center gap-2 text-gray-400 text-sm">
@@ -9914,7 +9914,7 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
 
   if (load.kind === "error") {
     return (
-      <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card shadow-sm">
         <div className="card-body p-4 space-y-3">
           {header}
           <div className="alert alert-error">
@@ -9996,7 +9996,7 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
     lastVendorDay && lastVendorDay <= today ? businessDaysSince(lastVendorDay, today) : null;
 
   return (
-    <div className="card bg-base-100 border border-base-300 shadow-sm">
+    <div className="card shadow-sm">
       <div className="card-body p-4 space-y-3">
         {header}
 
@@ -10420,7 +10420,7 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
             </tbody>
             {total && (
               <tfoot>
-                <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                <tr className="font-semibold bg-gray-100/60 dark:bg-gray-800/50 border-t-2 border-gray-200 dark:border-gray-700">
                   <td className={`${TD} text-gray-900 dark:text-white`} colSpan={2}>
                     {etDayLabel(fromDay)} – {etDayLabel(toDay)}
                   </td>
@@ -10499,7 +10499,7 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
         </div>
 
         {/* ── What the columns are, and the one place they DON'T reconcile ──── */}
-        <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1.5">
+        <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1.5">
           {!clockApplies && (
             <div>
               <b className="text-gray-700 dark:text-gray-200">

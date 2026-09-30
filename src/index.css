@@ -667,22 +667,25 @@ body, .card, .input-field, .bg-background, .bg-white {
    DaisyUI is deliberately NOT loaded
    ===================================
 
-   `daisyui` is in package.json, but Tailwind v4 only activates a plugin via an
-   explicit `@plugin "daisyui"` and this file has none — on purpose. Loading it
-   would apply DaisyUI's own `.card` (display:flex; flex-direction:column;
-   position:relative) to the 115 `.card` elements in this app, and its `.alert`
-   (display:grid; grid-auto-flow:column) to every banner. The `.card` defined
-   above only overrides background/border/radius/shadow, so it would NOT shield
-   them from that layout change. It is an app-wide restyle, not a colour fix.
+   The dependency was removed in Sep 2026. It had sat in package.json for
+   months without ever being loaded — Tailwind v4 only activates a plugin via
+   an explicit `@plugin "daisyui"`, and this file never had one. So every
+   DaisyUI class in the app silently compiled to nothing.
 
-   Consequence to remember: every DaisyUI utility compiles to NOTHING here.
-   `bg-base-100`, `border-base-300`, `text-base-content` etc. are dead — and a
-   dead `border-base-300` is worse than a no-op, because Tailwind v4's preflight
-   is `border: 0 solid` (no colour), so a bare `border` paints in currentColor,
-   i.e. the element's own text colour. Use the app's gray scale instead:
-       bg-base-100   -> bg-white            (already theme-correct, see above)
-       bg-base-200   -> bg-gray-100  dark:bg-gray-800
-       border-base-300 -> border-gray-200 dark:border-gray-700
+   Do not add it back to "fix" a `base-*` class. DaisyUI's `.card` sets
+   display:flex / flex-direction:column / position:relative, and the `.card`
+   defined above overrides only background/border/radius/shadow — so it would
+   NOT shield the ~115 cards in this app from that layout change. Its `.alert`
+   likewise brings display:grid. Loading it is an app-wide restyle wearing a
+   colour fix's clothing.
+
+   If you meet a `base-*` class in old code, it is dead. A dead `border-base-300`
+   is worse than a no-op: Tailwind v4's preflight is `border: 0 solid` (no
+   colour), so a bare `border` paints in currentColor — the element's own text
+   colour. Reach for the app's gray scale instead:
+       bg-base-100     -> bg-white  (theme-correct on its own, see above)
+       bg-base-200     -> bg-gray-100  dark:bg-gray-800
+       border-base-300 -> border-gray-200  dark:border-gray-700
 
    The component classes below are OURS. They are named after their DaisyUI
    counterparts only so existing markup keeps working, and they live in
