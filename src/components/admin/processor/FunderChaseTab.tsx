@@ -39,6 +39,24 @@ import {
 import supabase from "@/supabase";
 import FunderWorkspace from "@/components/admin/FunderWorkspace";
 import DeclineCloseOut from "@/components/admin/DeclineCloseOut";
+// The cheat sheet's disclosure blocks, extracted by cheatsheet-products so this
+// page mounts them rather than owning a second copy. The credential guard, the
+// link-classification chips and the unreadable-vs-absent split all come with
+// them — hand-rolling any of the three here would re-ship a leak or a lie.
+import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
+import { FunderLinksBlock } from "@/components/admin/funder/FunderLinksBlock";
+import { FunderProgramBox } from "@/components/admin/funder/FunderProgramBox";
+import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
+import {
+  loadDocs,
+  loadPrograms,
+  loadProfiles,
+  progKey,
+  type ContactFields,
+  type DocState,
+  type ProfileState,
+  type ProgramState,
+} from "@/lib/funderDisclosure";
 import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import {
   CHASE_TONE_CLS,
@@ -56,6 +74,7 @@ import {
  *  detail is FunderWorkspace's job once the section is expanded. */
 interface SubSummary {
   id: string;
+  lenderId: string;
   lenderName: string;
   fundingSpeed: string | null;
   status: string;
@@ -115,6 +134,22 @@ function bucketOfDeal(subs: SubSummary[]): Filter {
   return "declined";
 }
 
+/** The batched disclosure bundle, loaded once per page and passed down. */
+type DiscState =
+  // Split rather than { kind: "idle" | "loading" }: a member whose discriminant
+  // is itself a union can't be narrowed OUT by an equality check, so the ready
+  // branch never narrows and every field read errors.
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | {
+      kind: "ready";
+      lenders: Record<string, ContactFields & { id: string; company_name: string }>;
+      profiles: ProfileState;
+      docs: DocState;
+      programs: ProgramState;
+    };
+
 /**
  * ONE LINE PER FUNDER, rendered in the COLLAPSED merchant row.
  *
@@ -124,7 +159,13 @@ function bucketOfDeal(subs: SubSummary[]): Filter {
  * tell you that Highland Hill is 4 hours out and Uplyft is 50 days out. Each
  * funder carries its own chip, its own clock and its own open state.
  */
-function FunderLine({ s }: { s: SubSummary }) {
+function FunderLine({
+  s,
+  disc,
+}: {
+  s: SubSummary;
+  disc: DiscState;
+}) {
   const st = stateOf(s);
   const quoted = quotedDecisionHours(s.fundingSpeed);
   const hrs = hoursSince(s.submittedAt);
@@ -156,6 +197,87 @@ function FunderLine({ s }: { s: SubSummary }) {
       {awaiting && quoted == null && (
         <span className="text-[10px] text-gray-400">no quoted turnaround on file</span>
       )}
+
+      {/* The cheat sheet's two disclosures, on the row she is already reading.
+          Collapsed: the value of this tab is scanning many funders at once and
+          these blocks are tall. */}
+      <FunderDisclosures s={s} disc={disc} />
+    </div>
+  );
+}
+
+/** The two green disclosures from /admin/cheat-sheet, per funder.
+ *  `.fcs fcs-embed` is required: the blocks' CSS is scoped to `.fcs`, and
+ *  `fcs-embed` drops the page background/min-height so it sits inside this
+ *  panel instead of painting over it. */
+function FunderDisclosures({ s, disc }: { s: SubSummary; disc: DiscState }) {
+  if (disc.kind === "loading" || disc.kind === "idle") {
+    return <span className="text-[10px] text-gray-400">loading contacts…</span>;
+  }
+  if (disc.kind === "error") {
+    return (
+      <span className="text-[10px] text-red-600 dark:text-red-400">
+        contacts unreadable — {disc.message}
+      </span>
+    );
+  }
+  const l = disc.lenders[s.lenderId];
+  if (!l) {
+    return <span className="text-[10px] text-gray-400">funder record not readable</span>;
+  }
+  const profile = disc.profiles.map[s.lenderId];
+  const progs = Object.values(disc.programs.byKey).filter((p) => p.lender_id === s.lenderId);
+
+  // basis-full forces its own line inside FunderLine's flex-wrap row. A DIV, not
+  // a span: the blocks emit block-level markup, and a <div> inside a <span> gets
+  // re-parented by the browser, which no typecheck or build would have caught.
+  return (
+    <div className="basis-full">
+      <div className="fcs fcs-embed">
+        <details className="mt-1">
+          <summary className="cursor-pointer select-none text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+            Who to call · submission links ↓
+          </summary>
+          <div className="mt-1">
+            <FunderContactBlock
+              l={l}
+              profile={profile}
+              profilesReadable={disc.profiles.readable}
+              docs={disc.docs}
+            />
+            <FunderLinksBlock
+              l={l}
+              profile={profile}
+              profilesReadable={disc.profiles.readable}
+              docs={disc.docs}
+            />
+          </div>
+        </details>
+
+        <details className="mt-1">
+          <summary className="cursor-pointer select-none text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+            The full box ↓
+          </summary>
+          <div className="mt-1">
+            {!disc.programs.readable ? (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                The criteria table isn&apos;t readable from this account — this is not &ldquo;no criteria
+                recorded&rdquo;.
+              </p>
+            ) : progs.length === 0 ? (
+              <p className="text-[10px] text-gray-400">No criteria recorded for this funder.</p>
+            ) : (
+              progs.map((p) => (
+                <FunderProgramBox
+                  key={progKey(p.lender_id, p.product_type ?? "mca")}
+                  p={p}
+                  productLabel={(p.product_type ?? "mca").replace(/_/g, " ")}
+                />
+              ))
+            )}
+          </div>
+        </details>
+      </div>
     </div>
   );
 }
@@ -223,6 +345,14 @@ export default function FunderChaseTab() {
   // ONE open at a time — this is a list you scan, not a set of panels you leave
   // lying open. Filter and sort are separate state, so opening never moves the list.
   const [openId, setOpenId] = useState<string | null>(null);
+  // ── Funder disclosures ──
+  // ONE batched load for every funder on screen, not one per row: up to six
+  // funders per merchant across nine merchants is 50+ round trips if each block
+  // fetches its own. The loaders come from funderDisclosure so their chunking
+  // AND their unreadable-vs-absent discriminator come with them — passing a
+  // hand-made `readable: true` would make the blocks say "not recorded" to
+  // someone who simply isn't allowed to read the table.
+  const [disc, setDisc] = useState<DiscState>({ kind: "idle" });
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -232,7 +362,7 @@ export default function FunderChaseTab() {
     const { data: subData, error: subErr } = await supabase
       .from("deal_submissions")
       .select(
-        "id, deal_id, status, submitted_at, response_at, opened_at, open_count, offer_amount, factor_rate, " +
+        "id, deal_id, lender_id, status, submitted_at, response_at, opened_at, open_count, offer_amount, factor_rate, " +
           "daily_payment, weekly_payment, total_payback, " +
           "lender:lenders!lender_id ( company_name, funding_speed )",
       );
@@ -251,6 +381,7 @@ export default function FunderChaseTab() {
       const lender = r.lender as { company_name?: string; funding_speed?: string | null } | null;
       const s: SubSummary = {
         id: r.id as string,
+        lenderId: r.lender_id as string,
         lenderName: lender?.company_name ?? "Funder",
         fundingSpeed: lender?.funding_speed ?? null,
         status: r.status as string,
@@ -351,6 +482,54 @@ export default function FunderChaseTab() {
 
   const groups = useMemo(() => (state.kind === "ready" ? state.groups : []), [state]);
 
+  // Fire once the rows land, keyed on the SET of funders actually on screen.
+  const lenderIdKey = useMemo(
+    () => [...new Set(groups.flatMap((g) => g.subs.map((x) => x.lenderId)))].sort().join(","),
+    [groups],
+  );
+
+  const loadDisclosures = useCallback(async () => {
+    const ids = lenderIdKey ? lenderIdKey.split(",") : [];
+    if (ids.length === 0) {
+      setDisc({ kind: "idle" });
+      return;
+    }
+    setDisc({ kind: "loading" });
+    try {
+      // `lenders` is ours to fetch (the shared module owns profiles/docs/programs).
+      // Chunked for the same reason theirs are: 121 ids was a 4.7KB URL and a 414.
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += 40) chunks.push(ids.slice(i, i + 40));
+      const lenderRows: Record<string, ContactFields & { id: string; company_name: string }> = {};
+      for (const c of chunks) {
+        const { data, error } = await supabase
+          .from("lenders")
+          .select(
+            "id, company_name, primary_contact_name, primary_contact_email, primary_contact_phone, " +
+              "contacts, submission_email, submission_portal_url, submission_notes, website, notes",
+          )
+          .in("id", c);
+        if (error) throw new Error(error.message);
+        for (const row of (data ?? []) as unknown as (ContactFields & { id: string; company_name: string })[]) {
+          lenderRows[row.id] = row;
+        }
+      }
+      const [profiles, docs, programs] = await Promise.all([
+        loadProfiles(ids),
+        loadDocs(ids),
+        loadPrograms(ids),
+      ]);
+      setDisc({ kind: "ready", lenders: lenderRows, profiles, docs, programs });
+    } catch (e) {
+      setDisc({ kind: "error", message: e instanceof Error ? e.message : "Could not load funder contacts." });
+    }
+  }, [lenderIdKey]);
+
+  useEffect(() => {
+    void loadDisclosures();
+  }, [loadDisclosures]);
+
+
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { outstanding: 0, offers: 0, declined: 0, all: groups.length };
     for (const g of groups) c[bucketOfDeal(g.subs)] += 1;
@@ -440,6 +619,9 @@ export default function FunderChaseTab() {
 
   return (
     <div className="space-y-3">
+      {/* The disclosure blocks' CSS, injected once for the whole page. */}
+      <FunderDisclosureStyles />
+
       {/* Controls */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -575,7 +757,7 @@ export default function FunderChaseTab() {
               {/* The detail he reads BEFORE opening anything — a line per funder. */}
               <div className="pb-2 space-y-0.5">
                 {g.subs.map((sub) => (
-                  <FunderLine key={sub.id} s={sub} />
+                  <FunderLine key={sub.id} s={sub} disc={disc} />
                 ))}
               </div>
 
