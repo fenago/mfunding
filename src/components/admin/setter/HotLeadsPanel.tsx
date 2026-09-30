@@ -659,6 +659,13 @@ function HotLeadRow({
   // same merchant on a purchased list last month says nothing about whether this
   // transfer was answered inside its five minutes, and letting that suppress the
   // badge would hide a genuinely missed window.
+  //
+  // `=== 0` is a bare comparison ON PURPOSE, and it is only safe because
+  // loadCallHistory now VALIDATES that the RPC returned the field. Between
+  // 2026-09-18 and 2026-09-30 it did not: a function rebuild dropped the key,
+  // `undefined === 0` was false every time, and this badge never once appeared.
+  // A missing field is now an unreadable history (hist === null), which
+  // suppresses the badge visibly instead of failing this test forever in silence.
   const dueMs =
     r.first_call_due_at && hist && hist.attempts_since_arrival === 0
       ? Date.parse(r.first_call_due_at) - now
