@@ -324,14 +324,18 @@ export function funderMessagePrefill(args: {
 // Funder chase tab and the Playbook's FunderWorkspace so the words the merchant
 // receives, and the guards around sending them, are identical on both.
 
-/** Where a closed-out deal lands. `nurture` is the default on purpose: these
- *  merchants requalify, Sequences C and F exist to bring them back, and `dead`
- *  is far harder to walk back than it is to set. */
-export type CloseOutOutcome = "nurture" | "dead";
+/** Where a closed-out deal lands. All three are ParkedStatus values, so
+ *  updateDealStatus's overload demands a LostReason for every one of them.
+ *
+ *  `nurture` stays the default on purpose: 45-60% of merchants come back for
+ *  capital within six months, Sequences C and F exist to work them, and it is
+ *  the only one of the three that is cheap to reverse. */
+export type CloseOutOutcome = "nurture" | "declined" | "dead";
 
 export const CLOSE_OUT_OUTCOMES: { key: CloseOutOutcome; label: string; hint: string }[] = [
-  { key: "nurture", label: "Nurture", hint: "stays in the book — re-engagement sequences keep working it" },
-  { key: "dead", label: "Dead", hint: "off the board for good — hard to walk back" },
+  { key: "nurture", label: "Nurture", hint: "comes back to the board later — the re-engagement sequences keep working it" },
+  { key: "declined", label: "Declined", hint: "file closed on a funder outcome — the accurate record of what happened" },
+  { key: "dead", label: "Dead", hint: "gone for good — the hardest of the three to reverse" },
 ];
 
 /**
