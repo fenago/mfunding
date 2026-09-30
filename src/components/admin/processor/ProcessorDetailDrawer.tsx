@@ -17,7 +17,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckIcon } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
-import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
+import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import { dateTimeET } from "@/utils/time";
 import { openGhlUploadViaProxy } from "@/lib/ghlDocs";
@@ -39,6 +39,7 @@ import {
   type PipelineRow,
 } from "./types";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import FunderWorkspace from "@/components/admin/FunderWorkspace";
 import type { SignatureState } from "@/lib/applicationSignature";
 
 // ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
@@ -286,6 +287,38 @@ export default function ProcessorDetailDrawer({
   const [noGoOpen, setNoGoOpen] = useState(false);
   const [noGoReason, setNoGoReason] = useState("");
   const [quickApp, setQuickApp] = useState(false);
+  // Has this deal gone out to any funder? Gates the funder workspace below.
+  //
+  // Deliberately gated on the EXISTENCE OF A deal_submissions ROW, never on
+  // deals.status / deals.submitted_at: a submission currently writes the
+  // submission row without advancing the stage, so a status gate would hide
+  // this panel on exactly the deals that need it.
+  //
+  // "unreadable" is its own state. A failed count must never collapse into
+  // "no submissions" — that reads as "no funder has responded", which is the
+  // most expensive wrong answer this screen can give.
+  const [subs, setSubs] = useState<
+    { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; count: number }
+  >({ kind: "loading" });
+
+  const loadSubs = useCallback(async () => {
+    if (!dealId) return;
+    setSubs({ kind: "loading" });
+    const { count, error } = await supabase
+      .from("deal_submissions")
+      .select("id", { count: "exact", head: true })
+      .eq("deal_id", dealId);
+    if (error) {
+      setSubs({ kind: "error", message: error.message });
+      return;
+    }
+    // A null count with no error is still not a readable zero.
+    if (count == null) {
+      setSubs({ kind: "error", message: "The submissions count came back empty." });
+      return;
+    }
+    setSubs({ kind: "ready", count });
+  }, [dealId]);
 
   const load = useCallback(async () => {
     if (!dealId) return;
@@ -341,8 +374,11 @@ export default function ProcessorDetailDrawer({
     setDndArmed(false);
     setNoGoOpen(false);
     setNoGoReason("");
-    if (dealId) void load();
-  }, [dealId, load]);
+    if (dealId) {
+      void load();
+      void loadSubs();
+    }
+  }, [dealId, load, loadSubs]);
 
   // Esc closes the drawer.
   useEffect(() => {
@@ -529,6 +565,17 @@ export default function ProcessorDetailDrawer({
   const decision: "go" | "no_go" | null =
     (qa?.decision as "go" | "no_go" | null) ?? (row?.qa_decision ?? null);
   const canGo = gateApp && gateStmts && allQaTicked;
+
+  // The REAL deal for the funder panels. processor_deal_detail returns the whole
+  // deals row + the whole customers row, so this carries deals.id, customer_id,
+  // deal_type, amount_requested, ghl_contact_id and ai_lender_recommendations —
+  // everything FunderResponsesBoard / FunderPicker read.
+  //
+  // NOT toDealArg(row): that builds a deliberately narrow completeness-only
+  // shape with NO id, and the funder panels key every read and write on deal.id.
+  const dealForFunders = detail?.deal
+    ? ({ ...(detail.deal as Record<string, unknown>), customer: detail.customer } as unknown as DealWithCustomer)
+    : null;
   const missingBySection = completeness
     ? (Object.entries(completeness.missingBySection) as [AppSection, number][]).filter(
         ([, n]) => n > 0,
@@ -1127,6 +1174,40 @@ export default function ProcessorDetailDrawer({
                   </>
                 )}
               </section>
+
+              {/* ── Funders — what went out, and what came back ──
+                  The same two panels the Revenue Playbook runs on Step 7, one
+                  implementation (FunderWorkspace), mounted here for submitted
+                  deals. Shown once a deal_submissions row exists — NOT on the
+                  deal's stage, which lags the submission. */}
+              {subs.kind === "error" ? (
+                <section className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-red-600 dark:text-red-400 mb-1">
+                    Funders — unreadable
+                  </h3>
+                  <p className="text-xs text-red-700 dark:text-red-300">
+                    <span className="font-bold">Couldn&apos;t check whether this deal went out to any funder.</span>{" "}
+                    This is <span className="font-bold">not</span> &ldquo;no funders&rdquo; — it is an unread check.
+                  </p>
+                  <p className="mt-0.5 font-mono text-[11px] text-red-700/80 dark:text-red-300/80">{subs.message}</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadSubs()}
+                    className="mt-1.5 text-xs font-semibold text-ocean-blue hover:underline"
+                  >
+                    Try again →
+                  </button>
+                </section>
+              ) : subs.kind === "loading" ? (
+                <p className="text-xs text-gray-400">Checking for funder submissions…</p>
+              ) : subs.count > 0 && dealForFunders ? (
+                <section>
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+                    Funders — {subs.count} submission{subs.count === 1 ? "" : "s"} out
+                  </h3>
+                  <FunderWorkspace deal={dealForFunders} />
+                </section>
+              ) : null}
 
               {/* Full application */}
               <section>

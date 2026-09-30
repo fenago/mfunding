@@ -230,6 +230,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, FunderResult>>({});
   const [existing, setExisting] = useState<Record<string, ExistingSub>>({});
+  // The deal_submissions read is the ONLY thing that knows what already went
+  // out. When it fails, `existing` is empty — which renders identically to
+  // "nothing has been submitted yet" and invites a duplicate submission to a
+  // funder who already has the file. An unread answer is not a zero: hold the
+  // error and block Submit until it reads.
+  const [existingErr, setExistingErr] = useState<string | null>(null);
   // Inline offer capture: which submitted row's "Log offer" form is open, its
   // field values, and which row's "Funder declined" reason box is open.
   const [offerFormFor, setOfferFormFor] = useState<string | null>(null);
@@ -340,6 +346,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           } catch { /* GHL peek is best-effort; app docs still count */ }
         }
         if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); }
+        setExistingErr(
+          subRes.error
+            ? subRes.error.message
+            : subRes.data == null
+              ? "The submissions read came back empty."
+              : null,
+        );
         const emap: Record<string, ExistingSub> = {};
         for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null; response_at: string | null; offer_amount: number | null; factor_rate: number | null; term_months: number | null; daily_payment: number | null; weekly_payment: number | null; total_payback: number | null; decline_reason: string | null }[]) {
           emap[s.lender_id] = {
@@ -1047,6 +1060,18 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         <span className="text-[11px] text-gray-400">each funder gets your package in their format</span>
       </div>
 
+      {/* An unread submissions check is NOT "nothing has been submitted". Say so
+          loudly, because the rows below would otherwise all read as un-submitted
+          and the next click would double-send to a funder who already has it. */}
+      {existingErr && (
+        <div className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <span className="font-bold">Couldn&apos;t read what&apos;s already been submitted.</span> The rows below
+          can&apos;t be trusted to show &ldquo;already submitted&rdquo;, so sending is blocked — this is an unread
+          check, <span className="font-bold">not</span> an empty one.
+          <div className="mt-0.5 font-mono text-[11px] opacity-80">{existingErr}</div>
+        </div>
+      )}
+
       {loading ? (
         <p className="text-sm text-gray-400">Scoring funders…</p>
       ) : matches.length === 0 ? (
@@ -1370,8 +1395,8 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               </button>
               <button
                 type="button"
-                disabled={submitting || selected.size === 0 || !signedAppInApp}
-                title={!signedAppInApp ? "Upload the signed application first — it must attach to every submission" : undefined}
+                disabled={submitting || selected.size === 0 || !signedAppInApp || !!existingErr}
+                title={existingErr ? "Blocked — we can't read what's already been submitted to these funders" : !signedAppInApp ? "Upload the signed application first — it must attach to every submission" : undefined}
                 onClick={() => submit([...selected])}
                 className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
               >
@@ -1588,7 +1613,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 </button>
                 <button
                   type="button"
-                  disabled={submitting || previewSendCount === 0 || !signedAppInApp}
+                  disabled={submitting || previewSendCount === 0 || !signedAppInApp || !!existingErr}
                   onClick={() => { if (armedSend) void sendFromPreview(); else setArmedSend(true); }}
                   className={`text-sm font-semibold px-4 py-2 rounded-lg text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 ${armedSend ? "bg-amber-600" : "bg-ocean-blue"}`}
                 >

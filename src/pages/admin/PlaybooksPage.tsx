@@ -44,6 +44,7 @@ import BusinessPicker, { type PlaybookBusiness } from "../../components/admin/Bu
 import MerchantApplicationModal from "../../components/admin/MerchantApplicationModal";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
+import FunderWorkspace from "../../components/admin/FunderWorkspace";
 import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabilityChecklist";
 import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
@@ -5561,21 +5562,7 @@ function StepCard({
             ❌ Funder declined. Log offers/declines inline; the stage move stays on
             the step button. Rendered on both offer steps that exist in the flow. */}
         {(step.stageKey === "offer_received" || step.stageKey === "offer_presented") && interactive && deal && (
-          <>
-            <FunderResponsesBoard deal={deal} />
-            {/* Second-wave submissions: declines happen, new funders get added —
-                the same picker as Step 6 (already-submitted rows gray out; the
-                signed-app gate still applies) in a collapsed accordion so the
-                closer can widen the net without leaving Step 7. */}
-            <details className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40">
-              <summary className="cursor-pointer select-none px-3 py-2 text-[12px] font-semibold text-gray-700 dark:text-gray-200">
-                ➕ Submit to more funders — declines came back or new funders went live? Widen the net.
-              </summary>
-              <div className="p-3 pt-1">
-                <FunderPicker deal={deal} />
-              </div>
-            </details>
-          </>
+          <FunderWorkspace deal={deal} />
         )}
 
         {/* Accepted-offer summary as context for the Accept + e-sign step. */}
