@@ -28,7 +28,7 @@ import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
-import { getMatchingLenders } from "../../services/lenderMatchingService";
+import { getMatchingLendersRead } from "../../services/lenderMatchingService";
 import { getFunderAvailability } from "../../services/funderAvailability";
 import { updateSubmission } from "../../services/dealService";
 import { uploadSignedApplication } from "../../services/signedApplication";
@@ -48,6 +48,12 @@ interface Match {
   company_name: string;
   score: number;
   reasons: string[];
+  /** True when the scorer matched nothing and this row came from the funder
+   *  AVAILABILITY list instead. Carried so the row can say where it came from
+   *  and so the score partition below doesn't bury it — never faked into a
+   *  score, because a number nobody computed is the thing this file keeps
+   *  getting burned by. */
+  fromAvailability?: boolean;
 }
 
 interface ProfileMeta {
@@ -213,6 +219,19 @@ function methodBadge(m: Method) {
 export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const { session } = useSession();
   const [matches, setMatches] = useState<Match[]>([]);
+  // "We couldn't read the funder network" and "the network has nothing for this
+  // deal" are different sentences and must never share a rendering. The old code
+  // printed "No matching funders. Add funders to your network (Admin → Lenders)
+  // first." for BOTH — on a screen that, two inches higher, was listing 27
+  // funders as ready. A processor read that as her network being empty.
+  const [matchesErr, setMatchesErr] = useState<string | null>(null);
+  // Set when the rows below came from the availability list rather than the
+  // scorer, so the panel can say so instead of passing them off as matches.
+  const [usedAvailability, setUsedAvailability] = useState(false);
+  // Bumped by "Try again" on the unreadable banner. A read that failed once is
+  // often just a read that failed once, and making her reload the whole playbook
+  // to find out is how a transient turns into a day of not submitting.
+  const [reloadKey, setReloadKey] = useState(0);
   const [profiles, setProfiles] = useState<Record<string, ProfileMeta>>({});
   const [lenderDest, setLenderDest] = useState<Record<string, { email: string | null; portal: string | null }>>({});
   // App-side (Supabase customer_documents) and GHL-side doc types are tracked
@@ -296,13 +315,39 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     (async () => {
       setLoading(true);
       try {
-        const m = await getMatchingLenders({
+        const read = await getMatchingLendersRead({
           deal_type: deal.deal_type,
           amount_requested: deal.amount_requested,
           monthly_revenue: deal.customer?.monthly_revenue ?? null,
           time_in_business: deal.customer?.time_in_business ?? null,
           industry: deal.customer?.industry ?? null,
         });
+        let m: Match[] = read.kind === "ok" ? read.value.map((x) => ({ id: x.id, company_name: x.company_name, score: x.score, reasons: x.reasons })) : [];
+        let viaAvailability = false;
+        // FALLBACK, and it has to happen HERE — before `ids` — not in a derived
+        // list further down. Everything the rows need (submission profiles,
+        // destination email/portal, what's already been sent) is loaded by id in
+        // the Promise.all below. Fall back later and every row renders "no
+        // destination" and blocks: an empty panel traded for a dead one.
+        //
+        // The scorer reads `lenders`; availability reads `lender_programs` for
+        // the same live funders. When they disagree, the merchant is not the
+        // one who should pay for it.
+        if (m.length === 0 && read.kind === "ok") {
+          try {
+            const { rows } = await getFunderAvailability(deal);
+            if (rows.length > 0) {
+              viaAvailability = true;
+              m = rows.map((r) => ({
+                id: r.lenderId,
+                company_name: r.name,
+                score: 0,
+                reasons: ["Live for this deal per the funder-availability check — the scorer matched none"],
+                fromAvailability: true,
+              }));
+            }
+          } catch { /* leave the list empty; the copy below says which case this is */ }
+        }
         const ids = m.map((x) => x.id);
         const [profRes, lendRes, docRes, subRes] = await Promise.all([
           ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email").in("lender_id", ids) : Promise.resolve({ data: [] }),
@@ -311,7 +356,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason").eq("deal_id", deal.id),
         ]);
         if (cancelled) return;
-        setMatches(m.map((x) => ({ id: x.id, company_name: x.company_name, score: x.score, reasons: x.reasons })));
+        setMatches(m);
+        setUsedAvailability(viaAvailability);
+        setMatchesErr(read.kind === "unreadable" ? read.why : null);
         const pmap: Record<string, ProfileMeta> = {};
         for (const p of (profRes.data ?? []) as { lender_id: string; method: ProfileMeta["method"]; required_stips: string[] | null; to_email: string | null }[]) {
           pmap[p.lender_id] = { method: p.method, required_stips: p.required_stips ?? [], to_email: p.to_email };
@@ -397,7 +444,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [deal.id, deal.customer_id, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load box-fit reasons once per deal (advisory only — never gates Submit).
   useEffect(() => {
@@ -488,7 +535,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
 
   const { primary, secondary } = useMemo(() => {
     const p: Match[] = [], s: Match[] = [];
-    for (const m of matches) (m.score >= 40 ? p : s).push(m);
+    // A fallback row has no score, so `score >= 40` would file every one of them
+    // under "show misfits" and the panel would look empty all over again.
+    for (const m of matches) (m.fromAvailability || m.score >= 40 ? p : s).push(m);
     return { primary: p, secondary: s };
   }, [matches]);
 
@@ -1111,10 +1160,37 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
 
       {loading ? (
         <p className="text-sm text-gray-400">Scoring funders…</p>
+      ) : matchesErr ? (
+        <div className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <span className="font-bold">Couldn&apos;t read the funder network.</span> This is a failed read,{" "}
+          <span className="font-bold">not</span> an empty network — nothing here says anything about which funders
+          you have or whether this deal fits them.
+          <div className="mt-0.5 font-mono text-[11px] opacity-80">{matchesErr}</div>
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="mt-1.5 rounded border border-red-400 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium hover:bg-red-100 dark:hover:bg-red-900/40"
+          >
+            Try again
+          </button>
+        </div>
       ) : matches.length === 0 ? (
-        <p className="text-sm text-gray-500">No matching funders. Add funders to your network (Admin → Lenders) first.</p>
+        <p className="text-sm text-gray-500">
+          We read the funder network and none of it fits this deal. Check the availability panel above for which
+          funders are live and what they&apos;re waiting on.
+        </p>
       ) : (
         <>
+          {/* These rows did not come from the scorer. Say it plainly — a closer
+              who thinks these are ranked matches will read the order as a
+              recommendation, and there is no ranking here to read. */}
+          {usedAvailability && (
+            <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              <span className="font-bold">Funder scoring returned nothing for this deal, so these are the funders
+              the availability check says are live for it</span> — unranked, and in name order. You can still submit;
+              check the availability panel above for what each one is waiting on.
+            </div>
+          )}
           {/* Package check */}
           <div className="rounded-md bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 px-3 py-2 text-[11px]">
             <span className="font-medium text-gray-600 dark:text-gray-300">Package on file: </span>
