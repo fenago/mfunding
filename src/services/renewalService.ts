@@ -52,11 +52,24 @@ export async function getRenewalCandidates(): Promise<RenewalCandidate[]> {
  *  paydown tag via the notify-merchant edge function (best-effort). */
 export async function updateDealPaydown(dealId: string, paydown: number): Promise<void> {
   // Read the prior paydown so we only notify on an UPWARD milestone crossing.
-  const { data: before } = await supabase
+  //
+  // ⚠ THIS READ GATES AN OUTBOUND MERCHANT EMAIL, so a failed one is not a
+  // display bug. The error used to be unbound: `before` came back null,
+  // `prevMilestone` became null, `(prevMilestone ?? 0)` became 0, and every
+  // milestone from 40 up counted as a fresh upward crossing — re-emailing and
+  // re-tagging a merchant about a milestone they passed weeks ago. A read that
+  // failed cannot establish that this crossing is NEW, and "we don't know" must
+  // not resolve to "yes, notify".
+  //
+  // Unknown therefore SUPPRESSES rather than sends. A missed renewal nudge is
+  // recoverable on the next paydown update; an email to a real merchant is not.
+  const { data: before, error: beforeErr } = await supabase
     .from("deals")
     .select("paydown_percentage")
     .eq("id", dealId)
     .maybeSingle();
+  if (beforeErr) console.warn("[renewal] prior paydown unreadable, suppressing notification:", beforeErr.message);
+  const priorReadable = !beforeErr;
   const prevMilestone = reachedMilestone(before?.paydown_percentage ?? null);
 
   const patch: Record<string, unknown> = { paydown_percentage: paydown };
@@ -67,7 +80,7 @@ export async function updateDealPaydown(dealId: string, paydown: number): Promis
   await mustWrite("update deal paydown", supabase.from("deals").update(patch).eq("id", dealId));
 
   const newMilestone = reachedMilestone(paydown);
-  if (newMilestone !== null && newMilestone > (prevMilestone ?? 0)) {
+  if (priorReadable && newMilestone !== null && newMilestone > (prevMilestone ?? 0)) {
     // Best-effort: the portal message is already handled by the DB trigger.
     try {
       await supabase.functions.invoke("notify-merchant", {
