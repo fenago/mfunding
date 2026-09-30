@@ -23,5 +23,12 @@ module.exports = {
     // "the UI accused a merchant of something the read never proved" incidents.
     // Promote the critical surfaces to 'error' once they're converted.
     'no-absence-from-failed-read': 'warn',
+    // ERROR, not warn — and it can afford to be, because it only fires in files
+    // that already import src/lib/maskedDeal.ts. Migrating a file opts it in, so
+    // there is no day-one flood to downgrade away, and the protected set grows
+    // one file at a time. A withheld money column read bare is a wrong NUMBER
+    // shown to a human, not a missing one, so where it does fire it is not a
+    // judgement call.
+    'no-bare-masked-deal-field': 'error',
   },
 }
