@@ -25,7 +25,12 @@ import {
 } from "@/types/deals";
 import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import { dateTimeET } from "@/utils/time";
-import { openGhlUploadViaProxy } from "@/lib/ghlDocs";
+import {
+  openGhlUploadViaProxy,
+  readDocsStatus,
+  type DocsReadState,
+  type GhlDocsStatus,
+} from "@/lib/ghlDocs";
 import {
   applicationCompleteness,
   SECTION_LABEL,
@@ -282,10 +287,26 @@ export default function ProcessorDetailDrawer({
   // Files living in VibeReach (GHL uploads + e-sign docs) — merchants' emailed /
   // uploaded files often land THERE, not in customer_documents, so the drawer
   // must show both stores or the processor "can't see the files".
+  //
+  // ⚠ TWO INDEPENDENT READS, TWO INDEPENDENT VERDICTS. ghl-docs-status reads the
+  // e-sign documents and the contact's FILE_UPLOAD custom fields separately and
+  // can fail at either half on its own. `docs` is readDocsStatus's verdict,
+  // consumed verbatim (src/lib/ghlDocs.ts is the ONE definition of
+  // unreadable-vs-empty); `uploadsError` is the function's own uploads_error.
+  // Collapsing them would either hide real files behind a document-crawl hiccup
+  // or, worse, print an upload list shortened by a failed call as "nothing
+  // uploaded" — which is how a merchant who sent his statements gets chased.
   const [ghlFiles, setGhlFiles] = useState<
     | { kind: "idle" | "loading" }
     | { kind: "error"; message: string }
-    | { kind: "ready"; uploads: { name: string; url: string }[]; docs: { name: string; signed: boolean; url: string | null }[] }
+    | {
+        kind: "ready";
+        /** One entry per populated FILE_UPLOAD field, each holding its files. */
+        uploads: NonNullable<GhlDocsStatus["uploads"]>;
+        /** Non-null = the upload read failed or was short. NOT "none uploaded". */
+        uploadsError: string | null;
+        docs: DocsReadState;
+      }
   >({ kind: "idle" });
   // QA checklist working state (seeded from the loaded detail's qa.checklist).
   const [qaChecks, setQaChecks] = useState<Record<string, boolean>>({});
@@ -350,16 +371,20 @@ export default function ProcessorDetailDrawer({
         supabase.functions
           .invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
           .then(({ data: gd, error: gerr }) => {
-            const g = gd as {
-              error?: string;
-              uploads?: { name: string; url: string }[];
-              documents?: { name: string; signed: boolean; url: string | null }[];
-            } | null;
-            if (gerr || g?.error) {
-              setGhlFiles({ kind: "error", message: g?.error || "couldn't read VibeReach files" });
-            } else {
-              setGhlFiles({ kind: "ready", uploads: g?.uploads ?? [], docs: g?.documents ?? [] });
+            const g = (gd ?? null) as GhlDocsStatus | null;
+            // readDocsStatus owns the docs verdict AND the "nothing usable came
+            // back at all" message — no second definition of unreadable here.
+            const read = readDocsStatus(g, gerr);
+            if (gerr || !g) {
+              setGhlFiles({ kind: "error", message: read.kind === "unreadable" ? read.why : "couldn't read VibeReach files" });
+              return;
             }
+            setGhlFiles({
+              kind: "ready",
+              uploads: g.uploads ?? [],
+              uploadsError: g.uploads_error ?? null,
+              docs: read,
+            });
           })
           .catch((e) => setGhlFiles({ kind: "error", message: e instanceof Error ? e.message : "couldn't read VibeReach files" }));
       } else {
@@ -552,6 +577,31 @@ export default function ProcessorDetailDrawer({
   const application = detail?.application ?? null;
   const documents = detail?.documents ?? [];
   const qa = detail?.qa ?? null;
+
+  // ── THE APP STORE IS NOT THE ONLY STORE ───────────────────────────────────
+  // customer_documents holds what was uploaded THROUGH THIS APP. A merchant who
+  // uploads through the VibeReach form — which is most of them — never touches
+  // it: Hair Science Systems (MF-2026-0425) had his PNC statement and his
+  // driver's licence sitting on his GHL contact while this panel printed
+  // "Documents (0) — No documents on file yet, chase the bank statements", with
+  // "couldn't read VibeReach files" on the very next line. A zero from ONE
+  // store, on top of a read that admitted it failed, is not a zero.
+  //
+  // So the count below is scoped to the store it counts, and the empty state may
+  // only say "chase him" when BOTH stores were read and both came back empty.
+  //
+  // Only UPLOADS count as "they sent something". The e-sign documents in the same
+  // panel are what WE sent them (disclosures, the application) — counting those
+  // would answer "don't chase, they sent files" with our own outbound paperwork.
+  const vrUploadCount =
+    ghlFiles.kind === "ready" ? ghlFiles.uploads.reduce((n, f) => n + f.files.length, 0) : 0;
+  /** Non-null = VibeReach could not be read. Never render this as a zero. */
+  const vrUnreadable =
+    ghlFiles.kind === "error"
+      ? ghlFiles.message
+      : ghlFiles.kind === "ready"
+        ? (ghlFiles.uploadsError ?? (ghlFiles.docs.kind === "unreadable" ? ghlFiles.docs.why : null))
+        : null;
   const chip = stageChip(deal?.status as string | undefined);
   const title =
     (customer?.business_name as string) ||
@@ -865,12 +915,42 @@ export default function ProcessorDetailDrawer({
               {/* Bank statements + documents */}
               <section>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-                  Documents ({documents.length})
+                  Documents in this app ({documents.length})
                 </h3>
                 {documents.length === 0 ? (
-                  <p className="text-xs text-red-600 dark:text-red-400 font-semibold">
-                    No documents on file yet — chase the bank statements.
-                  </p>
+                  vrUploadCount > 0 ? (
+                    // They did send files — the files just landed in the other store.
+                    <p className="text-xs text-amber-700 dark:text-amber-300 font-semibold">
+                      <span className="font-bold">
+                        Nothing in this app — but {vrUploadCount} uploaded file{vrUploadCount === 1 ? "" : "s"}{" "}
+                        {vrUploadCount === 1 ? "is" : "are"} on their VibeReach contact
+                      </span>{" "}
+                      (listed below). <span className="font-bold">Don't chase</span> — open them there.
+                    </p>
+                  ) : vrUnreadable ? (
+                    // The loud line used to be built on this exact failed read.
+                    <p className="text-xs text-amber-700 dark:text-amber-300 font-semibold">
+                      <span className="font-bold">Can't say whether they've sent anything.</span> Nothing in this
+                      app, and VibeReach couldn't be read — {vrUnreadable}.{" "}
+                      <span className="underline decoration-2">
+                        Not proof they sent nothing. Check before you chase.
+                      </span>
+                    </p>
+                  ) : ghlFiles.kind === "loading" ? (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold">
+                      Nothing in this app — still checking VibeReach…
+                    </p>
+                  ) : ghlFiles.kind === "idle" ? (
+                    <p className="text-xs text-amber-700 dark:text-amber-300 font-semibold">
+                      <span className="font-bold">Nothing in this app</span>, and there's no VibeReach contact
+                      linked — so the other store was never looked in.
+                    </p>
+                  ) : (
+                    // Both stores read, neither holds an upload. Now the chase is earned.
+                    <p className="text-xs text-red-600 dark:text-red-400 font-semibold">
+                      No uploaded documents in either store — chase the bank statements.
+                    </p>
+                  )
                 ) : (
                   <div className="rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
                     {documents.map((d) => (
@@ -922,66 +1002,96 @@ export default function ProcessorDetailDrawer({
                   <p className="text-xs text-gray-400">Checking VibeReach…</p>
                 )}
                 {ghlFiles.kind === "idle" && (
-                  <p className="text-xs text-gray-400">No VibeReach contact linked — nothing to check.</p>
+                  <p className="text-xs text-gray-400">No VibeReach contact linked — nothing was checked here.</p>
                 )}
                 {ghlFiles.kind === "error" && (
                   <p className="text-xs text-red-600 dark:text-red-400">
                     Couldn't read VibeReach files — {ghlFiles.message} (not proof there are none)
                   </p>
                 )}
-                {ghlFiles.kind === "ready" &&
-                  (ghlFiles.uploads.length === 0 && ghlFiles.docs.length === 0 ? (
-                    <p className="text-xs text-gray-400">No files on the VibeReach contact.</p>
-                  ) : (
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
-                      {ghlFiles.uploads.map((u, i) => (
-                        <div key={`u${i}`} className="flex items-center gap-2 px-3 py-2">
-                          <DocumentTextIcon className="w-4 h-4 shrink-0 text-violet-400" />
-                          <div className="min-w-0 flex-1 text-xs font-semibold text-gray-900 dark:text-white truncate">
-                            {u.name || "Uploaded file"}
-                            <span className="ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                              upload
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={ghlFileBusy === u.url}
-                            onClick={() => void openGhlUpload(u.url)}
-                            className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-50"
-                          >
-                            <EyeIcon className="w-3 h-3" /> {ghlFileBusy === u.url ? "Opening…" : "View"}
-                          </button>
-                        </div>
-                      ))}
-                      {ghlFiles.docs.map((d2, i) => (
-                        <div key={`d${i}`} className="flex items-center gap-2 px-3 py-2">
-                          <DocumentTextIcon className="w-4 h-4 shrink-0 text-gray-400" />
-                          <div className="min-w-0 flex-1 text-xs font-semibold text-gray-900 dark:text-white truncate">
-                            {d2.name}
-                            <span
-                              className={`ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                                d2.signed
-                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                                  : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
-                              }`}
-                            >
-                              {d2.signed ? "signed ✓" : "awaiting signature"}
-                            </span>
-                          </div>
-                          {d2.url && (
-                            <a
-                              href={d2.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
-                            >
-                              <EyeIcon className="w-3 h-3" /> View
-                            </a>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
+                {ghlFiles.kind === "ready" && (
+                  <div className="space-y-2">
+                    {/* The two halves report separately — see the state comment above. */}
+                    {ghlFiles.uploadsError && (
+                      <p className="text-xs text-red-600 dark:text-red-400">
+                        Couldn't read their uploaded files — {ghlFiles.uploadsError} (not proof there are none)
+                      </p>
+                    )}
+                    {ghlFiles.docs.kind === "unreadable" && (
+                      <p className="text-xs text-red-600 dark:text-red-400">
+                        Couldn't read the e-sign documents — {ghlFiles.docs.why} (not proof there are none)
+                      </p>
+                    )}
+                    {ghlFiles.docs.kind === "ok" && ghlFiles.docs.caveat && (
+                      <p className="text-xs text-amber-700 dark:text-amber-300">⚠ {ghlFiles.docs.caveat}</p>
+                    )}
+                    {vrUploadCount + (ghlFiles.docs.kind === "ok" ? ghlFiles.docs.docs.length : 0) === 0 ? (
+                      !ghlFiles.uploadsError && ghlFiles.docs.kind === "ok" ? (
+                        <p className="text-xs text-gray-400">No files on the VibeReach contact.</p>
+                      ) : null
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
+                        {/* uploads is one entry PER FIELD, each holding its files —
+                            reading it as a flat {name,url}[] is what rendered two real
+                            PDFs as two nameless "Uploaded file" rows with dead View
+                            buttons. Flatten, and label each row with its field. */}
+                        {ghlFiles.uploads.flatMap((u, fi) =>
+                          u.files.map((f, i) => (
+                            <div key={`u${fi}-${i}`} className="flex items-center gap-2 px-3 py-2">
+                              <DocumentTextIcon className="w-4 h-4 shrink-0 text-violet-400" />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-semibold text-gray-900 dark:text-white truncate">
+                                  {f.name || "Uploaded file"}
+                                  <span className="ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                                    upload
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-gray-400 truncate">{u.field}</div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={!f.url || ghlFileBusy === f.url}
+                                onClick={() => f.url && void openGhlUpload(f.url)}
+                                title={f.url ? "Open through the download proxy" : "VibeReach gave no link for this file"}
+                                className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-50"
+                              >
+                                <EyeIcon className="w-3 h-3" /> {ghlFileBusy === f.url ? "Opening…" : "View"}
+                              </button>
+                            </div>
+                          )),
+                        )}
+                        {ghlFiles.docs.kind === "ok" &&
+                          ghlFiles.docs.docs.map((d2, i) => (
+                            <div key={`d${i}`} className="flex items-center gap-2 px-3 py-2">
+                              <DocumentTextIcon className="w-4 h-4 shrink-0 text-gray-400" />
+                              <div className="min-w-0 flex-1 text-xs font-semibold text-gray-900 dark:text-white truncate">
+                                {d2.name}
+                                <span
+                                  className={`ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                                    d2.signed
+                                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                      : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                                  }`}
+                                >
+                                  {d2.signed ? "signed ✓" : "awaiting signature"}
+                                </span>
+                              </div>
+                              {d2.url && (
+                                <a
+                                  href={d2.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                                >
+                                  <EyeIcon className="w-3 h-3" /> View
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </section>
 
               {/* QA step — gate ④. Tick every item, then mark QA passed. */}
