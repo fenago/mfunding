@@ -9359,6 +9359,7 @@ interface DailyMetrics {
   appPhantom: number;
   signed: number | null;
   submitted: number | null;
+  funded: number;
   /** Arrivals carrying a first_call_due_at — the SLA denominator. */
   clocked: number;
   within5: number;
@@ -9373,11 +9374,14 @@ function summariseDaily(deals: DailyDeal[], ctx: DailyContext): DailyMetrics {
   const m: DailyMetrics = {
     arrived: 0, reached: ctx.history ? 0 : null, reachUnknown: 0, contactedRung: 0,
     appSent: 0, appPhantom: 0, signed: ctx.signed ? 0 : null, submitted: ctx.submitted ? 0 : null,
+    funded: 0,
     clocked: 0, within5: 0, neverCalled: 0, ttcUnknown: 0, ttcMinutes: [],
   };
   for (const d of deals) {
     m.arrived++;
-    if (pipelineDepth(d) >= IDX("contacted")) m.contactedRung++;
+    const depth = pipelineDepth(d);
+    if (depth >= IDX("contacted")) m.contactedRung++;
+    if (depth >= IDX("funded")) m.funded++;
     if (d.application_sent_at) {
       if (isPhantomApplicationSend(d)) m.appPhantom++;
       else m.appSent++;
@@ -9447,6 +9451,98 @@ function ttcText(minutes: number | null): string {
   const hours = minutes / 60;
   if (hours < 48) return `${hours.toFixed(1)} h`;
   return `${(hours / 24).toFixed(1)} d`;
+}
+
+// ── THE CONVERSION FUNNEL — rates BETWEEN STEPS, not shares of arrivals ─────
+// "24% of conversations produce an application" is a sentence a manager can
+// act on. "15% of arrivals produced an application" is the same three numbers
+// arranged so the leak is invisible. The step rate is the whole point, and it
+// is why this ladder is rendered at all rather than six bare counts.
+//
+// THIS IS NOT THE STAGE FUNNEL ABOVE IT, AND MUST NOT BE READ AS ONE. Every
+// rung here is an EVENT we can point at — a dispositioned conversation, a real
+// send, a signature, a submission row. The stage funnel reads deal POSITIONS.
+// They answer different questions and they disagree; where they do, the
+// reconciliation line under the daily table says by how much and which way.
+interface ConversionStep {
+  key: string;
+  label: string;
+  /** null = the underlying read failed. Renders "—", never 0. */
+  n: number | null;
+  /** Rate against the PREVIOUS step. null at the top, or when the previous
+   *  step is zero (nothing to divide by is not 0%) or unreadable. */
+  rate: number | null;
+  ofLabel: string;
+  help: string;
+}
+
+function conversionSteps(m: DailyMetrics, noun: string): ConversionStep[] {
+  const rate = (n: number | null, d: number | null): number | null =>
+    n === null || d === null || d <= 0 ? null : (n / d) * 100;
+  return [
+    {
+      key: "arrived", label: "Arrived", n: m.arrived, rate: null, ofLabel: "",
+      help: `${noun}s delivered in this range — the cohort everything below is a share of`,
+    },
+    {
+      key: "reached", label: "Reached", n: m.reached, rate: rate(m.reached, m.arrived),
+      ofLabel: "of arrived", help: CONVERSATION_HELP,
+    },
+    {
+      key: "app", label: "Application sent", n: m.appSent, rate: rate(m.appSent, m.reached),
+      ofLabel: "of reached",
+      help: "A real application_sent_at stamp on this cohort, phantom mirror stamps excluded",
+    },
+    {
+      key: "signed", label: "Signed", n: m.signed, rate: rate(m.signed, m.appSent),
+      ofLabel: "of sent",
+      help: "The merchant signed the application itself — public.is_application_doc_name() in SQL, so the Broker Compensation Disclosure does not count",
+    },
+    {
+      key: "submitted", label: "Submitted", n: m.submitted, rate: rate(m.submitted, m.signed),
+      ofLabel: "of signed",
+      help: "A deal_submissions row exists — a package actually sent to a funder, never deals.status",
+    },
+    {
+      key: "funded", label: "Funded", n: m.funded, rate: rate(m.funded, m.submitted),
+      ofLabel: "of submitted",
+      help: "A funded_at stamp, or a current status of Funded",
+    },
+  ];
+}
+
+/** The weakest step-to-step conversion, whichever it turns out to be. Steps
+ *  with nothing above them to divide by are skipped — a rate off a zero
+ *  denominator is not a bad rate, it is no rate. */
+function weakestStep(steps: ConversionStep[]): ConversionStep | null {
+  const scored = steps.filter((s) => s.rate !== null);
+  if (scored.length === 0) return null;
+  return scored.reduce((worst, s) => ((s.rate as number) < (worst.rate as number) ? s : worst));
+}
+
+/** Where the first dial landed, as a shape rather than a single number. A
+ *  median of 9.9 minutes hides whether the floor is consistently a bit late or
+ *  half-perfect and half-catastrophic, and those need different fixes. */
+const TTC_BUCKETS: { label: string; hit: (min: number) => boolean; ok: boolean }[] = [
+  { label: "≤5 min", hit: (x) => x <= 5, ok: true },
+  { label: "5–15 min", hit: (x) => x > 5 && x <= 15, ok: false },
+  { label: "15–60 min", hit: (x) => x > 15 && x <= 60, ok: false },
+  { label: "1–4 h", hit: (x) => x > 60 && x <= 240, ok: false },
+  { label: ">4 h", hit: (x) => x > 240, ok: false },
+];
+
+/** Weekdays strictly after `from` up to and including `to`. Weekends are
+ *  structurally empty on this floor, so counting them would raise a "the pipe
+ *  is dry" alarm every Monday morning and train the owner to ignore it. */
+function businessDaysSince(from: string, to: string): number {
+  let n = 0;
+  for (let d = addDays(from, 1); d <= to; d = addDays(d, 1)) {
+    const [y, mo, da] = d.split("-").map(Number);
+    const wd = new Date(Date.UTC(y, (mo || 1) - 1, da || 1)).getUTCDay();
+    if (wd !== 0 && wd !== 6) n++;
+    if (n > 400) break;
+  }
+  return n;
 }
 
 /** The SLA colour. NO INVENTED PERCENTAGE THRESHOLD: green only when every
@@ -9748,6 +9844,47 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
   const nothingArrived = (total?.arrived ?? 0) === 0;
   const lastArrivalDay = etDayOf(load.lastArrivalAt);
 
+  // ── The three analysis blocks that sit above the table ───────────────────
+  const steps = total ? conversionSteps(total, def.noun) : [];
+  // A cohort days old funds nothing yet, so "0% of submitted have funded" is a
+  // statement about the CALENDAR, not about the floor — and it would win the
+  // weakest-step contest every time and bury the real leak. It is excluded
+  // only while it is zero (a real fund rate competes normally), and the
+  // immaturity itself gets said in its own callout below.
+  const leak = weakestStep(steps.filter((s) => !(s.key === "funded" && (s.n ?? 0) === 0)));
+  const ttc = total?.ttcMinutes ?? [];
+  const slaPct = total && total.clocked > 0 ? (total.within5 / total.clocked) * 100 : null;
+
+  /** The worst DAY in range, and the test is "who missed the clock", falling
+   *  back to "who produced nothing" on a product that has no clock. Only a day
+   *  that actually arrived leads can be the worst one — a day the vendor
+   *  delivered nothing is a vendor finding, not a floor finding, and it has
+   *  its own callout. */
+  const worstDay = (() => {
+    const live = rows.filter((r) => r.m.arrived > 0);
+    if (live.length === 0) return null;
+    if (clockApplies) {
+      const scored = live.filter((r) => r.m.clocked > 0);
+      if (scored.length === 0) return null;
+      const w = scored.reduce((a, b) => {
+        const ra = a.m.within5 / a.m.clocked;
+        const rb = b.m.within5 / b.m.clocked;
+        if (ra !== rb) return ra < rb ? a : b;
+        return b.m.arrived - a.m.arrived > 0 ? b : a; // the bigger miss first
+      });
+      // A day where everyone met the clock is not a worst day worth naming.
+      return w.m.within5 < w.m.clocked ? w : null;
+    }
+    const w = live.reduce((a, b) => (b.m.arrived > a.m.arrived ? b : a));
+    return w.m.appSent === 0 ? w : null;
+  })();
+
+  /** Business days since the pipe last delivered anything. Measured against
+   *  the last arrival ANYWHERE, not just in range, so narrowing the range
+   *  cannot manufacture a drought. */
+  const droughtDays =
+    lastArrivalDay && lastArrivalDay <= today ? businessDaysSince(lastArrivalDay, today) : null;
+
   return (
     <div className="card bg-base-100 border border-base-300 shadow-sm">
       <div className="card-body p-4 space-y-3">
@@ -9801,6 +9938,241 @@ function SourceDailyTable({ def }: { def: SourceTabDef }) {
             </span>
           </div>
         )}
+
+        {/* ═══ 1. CONVERSION — the rate BETWEEN steps ═══ */}
+        {total && total.arrived > 0 && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white">
+              Conversion — arrival to funded
+            </h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 mb-2">
+              Each rate is <b>of the step above it</b>, not of arrivals — that is what makes a leak legible. Every
+              rung here is an <b>event we can point at</b> (a dispositioned conversation, a real send, a signature, a
+              submission row), which is why it can disagree with the stage funnel at the top of the tab; the
+              reconciliation is spelled out under the table below.
+            </p>
+            <div className={TABLE_WRAP}>
+              <table className={TABLE}>
+                <thead className={THEAD}>
+                  <tr>
+                    <th className={TH}>Step</th>
+                    <th className={TH_NUM}>n</th>
+                    <th className={TH_NUM}>Rate</th>
+                    <th className={TH}>&nbsp;</th>
+                  </tr>
+                </thead>
+                <tbody className={TBODY}>
+                  {steps.map((s) => {
+                    const isLeak = !!leak && leak.key === s.key && steps.length > 1;
+                    return (
+                      <tr key={s.key} className={TR}>
+                        <td className={`${TD} font-medium text-gray-900 dark:text-white whitespace-nowrap`} title={s.help}>
+                          {s.label}
+                        </td>
+                        <td className={`${TD_NUM} font-semibold text-gray-900 dark:text-white`}>
+                          {s.n === null ? <span className="text-gray-400" title="This read failed — unreadable, not zero">—</span> : s.n.toLocaleString()}
+                        </td>
+                        <td className={`${TD_NUM} ${isLeak ? "text-amber-600 dark:text-amber-400 font-bold" : ""}`}>
+                          {s.rate === null ? <span className="text-gray-400">—</span> : `${s.rate.toFixed(0)}%`}
+                        </td>
+                        <td className={`${TD} text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap`}>
+                          {s.rate === null
+                            ? (s.key === "arrived"
+                                ? "the denominator"
+                                : s.n === null ? "unreadable" : "nothing above it to divide by")
+                            : s.ofLabel}
+                          {isLeak && <b className="ml-2 text-amber-600 dark:text-amber-400">weakest step</b>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ═══ 2. SPEED TO LEAD — Real-Time only ═══ */}
+        {/* Deliberately absent on Live Transfers rather than rendered empty: a
+            warm transfer has no clock, and an SLA block full of dashes reads
+            as a failing product instead of a different one. */}
+        {clockApplies && total && total.clocked > 0 && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              <ClockIcon className="w-4 h-4 text-mint-green" /> Speed to lead — the 5-minute clock
+            </h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 mb-2">
+              Measured against each deal's own <code>first_call_due_at</code> (arrival + 5 minutes), from the first
+              dial on record across WAVV, VibeReach and hand-logged calls — counted only from arrival forward, so a
+              previous campaign's dials cannot make a fresh lead look attended to.
+            </p>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3">
+                <div className="text-[10px] uppercase tracking-wide text-gray-400">Hit ≤5 min</div>
+                <div className={`text-xl font-semibold tabular-nums ${slaTone(total.within5, total.clocked)}`}>
+                  {total.within5.toLocaleString()}
+                  {slaPct !== null && <span className="text-sm font-normal"> ({slaPct.toFixed(0)}%)</span>}
+                </div>
+                <div className="text-[10px] text-gray-400">of {total.clocked.toLocaleString()} clocked</div>
+              </div>
+              <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3">
+                <div className="text-[10px] uppercase tracking-wide text-gray-400">Median</div>
+                <div className="text-xl font-semibold tabular-nums text-gray-900 dark:text-white">
+                  {ttcText(medianOf(ttc))}
+                </div>
+                <div className="text-[10px] text-gray-400">typical first dial</div>
+              </div>
+              <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3">
+                <div className="text-[10px] uppercase tracking-wide text-gray-400">Worst</div>
+                <div className="text-xl font-semibold tabular-nums text-gray-900 dark:text-white">
+                  {ttcText(ttc.length > 0 ? Math.max(...ttc) : null)}
+                </div>
+                <div className="text-[10px] text-gray-400">the lead that waited longest</div>
+              </div>
+              <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3">
+                <div className="text-[10px] uppercase tracking-wide text-gray-400">Never called</div>
+                <div
+                  className={`text-xl font-semibold tabular-nums ${
+                    total.neverCalled > 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
+                  }`}
+                >
+                  {total.neverCalled.toLocaleString()}
+                </div>
+                <div className="text-[10px] text-gray-400">
+                  {total.ttcUnknown > 0 ? `${total.ttcUnknown} more unreadable` : "no dial since arrival"}
+                </div>
+              </div>
+            </div>
+
+            {/* The SHAPE, not just the middle. */}
+            {ttc.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                  Where the first dial landed
+                </div>
+                <div className="space-y-1">
+                  {TTC_BUCKETS.map((b) => {
+                    const n = ttc.filter((x) => b.hit(x)).length;
+                    const share = ttc.length > 0 ? (n / ttc.length) * 100 : 0;
+                    return (
+                      <div key={b.label} className="flex items-center gap-2">
+                        <span className="w-20 shrink-0 text-[11px] text-gray-500 dark:text-gray-400 text-right">
+                          {b.label}
+                        </span>
+                        <div className="flex-1 h-4 rounded bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                          <div
+                            className={`h-full ${b.ok ? "bg-emerald-500" : share > 0 ? "bg-amber-500" : ""}`}
+                            style={{ width: `${share}%` }}
+                          />
+                        </div>
+                        <span className="w-24 shrink-0 text-[11px] tabular-nums text-gray-600 dark:text-gray-300">
+                          {n} · {share.toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5">
+                  Only the <b>≤5 min</b> band is inside the SLA. Everything below it is a miss, whatever its size —
+                  the bar lengths say whether the floor is a little late or occasionally catastrophic, and those
+                  need different fixes.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ 3. WHAT THIS RANGE IS TELLING YOU ═══ */}
+        {/* Every line here has a CONDITION and recomputes from the range. A
+            callout that can only ever say one thing is decoration. */}
+        {total && (() => {
+          const notes: ReactNode[] = [];
+
+          if (clockApplies && total.clocked > 0 && total.neverCalled === 0 && total.ttcUnknown === 0) {
+            notes.push(
+              <>
+                <b className="text-gray-900 dark:text-white">Every {def.noun} got dialed</b> — never-called is{" "}
+                <b>0</b> across all {total.clocked.toLocaleString()}. <b>Coverage is not the problem.</b>
+              </>,
+            );
+          }
+          if (clockApplies && total.neverCalled > 0) {
+            notes.push(
+              <>
+                <b className="text-red-600 dark:text-red-400">
+                  {total.neverCalled.toLocaleString()} {def.noun}
+                  {total.neverCalled === 1 ? "" : "s"} were never dialed after they landed
+                </b>{" "}
+                — money already spent on a merchant nobody called.
+              </>,
+            );
+          }
+          if (leak && leak.rate !== null && leak.key !== "arrived") {
+            const prev = steps[steps.findIndex((s) => s.key === leak.key) - 1];
+            notes.push(
+              <>
+                <b className="text-gray-900 dark:text-white">The leak is {leak.label.toLowerCase()}</b> — only{" "}
+                <b>{leak.rate.toFixed(0)}%</b> of {prev ? prev.label.toLowerCase() : "the step above"} reach it (
+                {leak.n?.toLocaleString()} of {prev?.n?.toLocaleString() ?? "—"}). That is the weakest
+                step-to-step rate in this range, so a point of improvement is worth more there than anywhere else
+                in the funnel.
+              </>,
+            );
+          }
+          if (worstDay) {
+            const w = worstDay.m;
+            notes.push(
+              <>
+                <b className="text-gray-900 dark:text-white">
+                  Worst day: {etDayLabel(worstDay.day)} ({etWeekdayLabel(worstDay.day)})
+                </b>{" "}
+                — {w.arrived} {def.noun}
+                {w.arrived === 1 ? "" : "s"},{" "}
+                {clockApplies && w.clocked > 0 && (
+                  <>
+                    {w.within5 === 0
+                      ? <b>none called inside 5 minutes</b>
+                      : <>only {w.within5} of {w.clocked} inside 5 minutes</>}
+                    , median {ttcText(medianOf(w.ttcMinutes))},{" "}
+                  </>
+                )}
+                {w.appSent === 0 ? <b>zero applications</b> : `${w.appSent} application${w.appSent === 1 ? "" : "s"}`}.
+              </>,
+            );
+          }
+          if (droughtDays !== null && droughtDays >= 2 && lastArrivalDay) {
+            notes.push(
+              <>
+                <b className="text-amber-600 dark:text-amber-400">
+                  Last arrival {etDayLabel(lastArrivalDay)} — {droughtDays} business day
+                  {droughtDays === 1 ? "" : "s"} with no {def.noun}s.
+                </b>{" "}
+                Weekends are not counted, so this is a real gap in delivery, not a Monday-morning artefact.
+              </>,
+            );
+          }
+          if (total.arrived > 0 && total.funded === 0) {
+            notes.push(
+              <>
+                <b className="text-gray-900 dark:text-white">Nothing in this cohort has funded yet.</b> On a recent
+                range that is expected — funding lags the {def.noun} by days — so read a short range as early, not
+                as bad.
+              </>,
+            );
+          }
+
+          if (notes.length === 0) return null;
+          return (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-2">
+                What this range is telling you
+              </h3>
+              <ul className="space-y-2 text-sm text-gray-600 dark:text-gray-300 list-disc pl-5">
+                {notes.map((n, i) => <li key={i}>{n}</li>)}
+              </ul>
+            </div>
+          );
+        })()}
 
         <div className={TABLE_WRAP}>
           <table className={TABLE}>
