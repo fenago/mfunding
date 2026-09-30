@@ -78,6 +78,9 @@ interface DealGroup {
   /** Most recent funder touch on this deal — a send or a reply, whichever is
    *  later. The chase clock runs from here. */
   lastTouchAt: string | null;
+  /** Most recent SEND. Distinct from lastTouchAt (which a reply also moves):
+   *  "newest submitted" must mean when we last put the package out. */
+  newestSubmittedAt: string | null;
   breached: boolean;
   /** The WORST offender among the funders sitting silent, named. */
   breachedLabel: string | null;
@@ -128,9 +131,66 @@ function funderSummary(subs: SubSummary[]): string {
   return `${head} · ${parts.join(" · ")}`;
 }
 
+// ── Sorting ─────────────────────────────────────────────────────────────────
+// Newest-submitted first by default. Every column is sortable and the choice
+// persists, because this is his list and he decides its order.
+//
+// NOTE: a breached deal deliberately does NOT jump the order. The red border
+// and the "past its own promise" line still shout, but a row reordering itself
+// against an explicit sort is the tool overriding the person using it.
+type SortKey = "submitted" | "silence" | "merchant" | "amount" | "funders" | "status";
+type SortDir = "asc" | "desc";
+
+const SORTS: { key: SortKey; label: string; hint: string; initial: SortDir }[] = [
+  { key: "submitted", label: "Submitted", hint: "when the package last went out", initial: "desc" },
+  { key: "silence", label: "Silence", hint: "longest since any funder contact", initial: "desc" },
+  { key: "merchant", label: "Merchant", hint: "alphabetical", initial: "asc" },
+  { key: "amount", label: "Amount", hint: "largest first", initial: "desc" },
+  { key: "funders", label: "Funders out", hint: "how many funders hold the file", initial: "desc" },
+  { key: "status", label: "Status", hint: "awaiting → offers → passed", initial: "asc" },
+];
+
+const STATUS_RANK: Record<Filter, number> = { outstanding: 0, offers: 1, declined: 2, all: 3 };
+const SORT_STORAGE_KEY = "mf.funderChase.sort";
+
+/** Read the saved sort. Storage can be unavailable (private window, blocked
+ *  site data) or hold junk from an older build — either way we fall back to the
+ *  default rather than render a broken list. */
+function loadSort(): { key: SortKey; dir: SortDir } {
+  const fallback = { key: "submitted" as SortKey, dir: "desc" as SortDir };
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { key?: string; dir?: string };
+    const key = SORTS.find((o) => o.key === parsed.key)?.key;
+    const dir = parsed.dir === "asc" || parsed.dir === "desc" ? parsed.dir : null;
+    if (!key || !dir) return fallback;
+    return { key, dir };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSort(sort: { key: SortKey; dir: SortDir }) {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sort));
+  } catch {
+    /* a per-viewer convenience; never worth failing the page over */
+  }
+}
+
+/** Epoch ms, or null. Nulls always sort last whichever direction is active — an
+ *  unstamped row is not "the oldest", it is unknown. */
+const ms = (iso: string | null): number | null => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : null;
+};
+
 export default function FunderChaseTab() {
   const [state, setState] = useState<Load>({ kind: "loading" });
   const [filter, setFilter] = useState<Filter>("outstanding");
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>(() => loadSort());
   // ONE open at a time — this is a list you scan, not a set of panels you leave
   // lying open. Filter and sort are separate state, so opening never moves the list.
   const [openId, setOpenId] = useState<string | null>(null);
@@ -208,9 +268,13 @@ export default function FunderChaseTab() {
 
       // Last funder touch = the latest send or reply across this deal's funders.
       let lastTouchAt: string | null = null;
+      let newestSubmittedAt: string | null = null;
       for (const s of subs) {
         for (const t of [s.submittedAt, s.responseAt]) {
           if (t && (!lastTouchAt || new Date(t) > new Date(lastTouchAt))) lastTouchAt = t;
+        }
+        if (s.submittedAt && (!newestSubmittedAt || new Date(s.submittedAt) > new Date(newestSubmittedAt))) {
+          newestSubmittedAt = s.submittedAt;
         }
       }
 
@@ -249,6 +313,7 @@ export default function FunderChaseTab() {
         amountRequested: (d.amount_requested as number | null) ?? null,
         subs,
         lastTouchAt,
+        newestSubmittedAt,
         breached,
         breachedLabel,
         // No awaiting funder publishes a turnaround → we cannot say this row is
@@ -273,16 +338,55 @@ export default function FunderChaseTab() {
     return c;
   }, [groups]);
 
-  // Oldest-silent first; a breached deal outranks raw age.
   const visible = useMemo(() => {
     const rows = groups.filter((g) => filter === "all" || bucketOfDeal(g.subs) === filter);
+    const flip = sort.dir === "desc" ? -1 : 1;
+    // Nulls last in BOTH directions — an unstamped row is unknown, not extreme.
+    const nullsLast = (a: number | null, b: number | null): number | null => {
+      if (a == null && b == null) return 0;
+      if (a == null) return 1;
+      if (b == null) return -1;
+      return null;
+    };
     return [...rows].sort((a, b) => {
-      if (a.breached !== b.breached) return a.breached ? -1 : 1;
-      const ha = hoursSince(a.lastTouchAt) ?? -1;
-      const hb = hoursSince(b.lastTouchAt) ?? -1;
-      return hb - ha;
+      switch (sort.key) {
+        case "merchant":
+          return flip * a.businessName.localeCompare(b.businessName, undefined, { sensitivity: "base" });
+        case "funders":
+          return flip * (a.subs.length - b.subs.length);
+        case "status":
+          return flip * (STATUS_RANK[bucketOfDeal(a.subs)] - STATUS_RANK[bucketOfDeal(b.subs)]);
+        case "amount": {
+          const n = nullsLast(a.amountRequested, b.amountRequested);
+          return n ?? flip * ((a.amountRequested ?? 0) - (b.amountRequested ?? 0));
+        }
+        case "silence": {
+          // "desc" = longest silence first, i.e. the OLDEST last-touch.
+          const n = nullsLast(ms(a.lastTouchAt), ms(b.lastTouchAt));
+          return n ?? flip * (ms(b.lastTouchAt)! - ms(a.lastTouchAt)!);
+        }
+        case "submitted":
+        default: {
+          const n = nullsLast(ms(a.newestSubmittedAt), ms(b.newestSubmittedAt));
+          return n ?? flip * (ms(a.newestSubmittedAt)! - ms(b.newestSubmittedAt)!);
+        }
+      }
     });
-  }, [groups, filter]);
+  }, [groups, filter, sort]);
+
+  /** Click a column: same column toggles direction, a new one starts at its
+   *  natural direction (newest, largest, A→Z). Never touches the open row or
+   *  the filter. */
+  function applySort(key: SortKey) {
+    setSort((cur) => {
+      const next: { key: SortKey; dir: SortDir } =
+        cur.key === key
+          ? { key, dir: cur.dir === "asc" ? "desc" : "asc" }
+          : { key, dir: SORTS.find((o) => o.key === key)!.initial };
+      saveSort(next);
+      return next;
+    });
+  }
 
   function toggle(dealId: string) {
     setOpenId((cur) => (cur === dealId ? null : dealId));
@@ -323,7 +427,7 @@ export default function FunderChaseTab() {
           <PaperAirplaneIcon className="w-4 h-4 text-ocean-blue" />
           <h2 className="text-sm font-bold text-gray-900 dark:text-white">Funder chase</h2>
           <span className="text-[11px] text-gray-400">
-            one row per merchant · longest silence first · click a merchant to work its funders
+            one row per merchant · click a merchant to work its funders
           </span>
           <button
             type="button"
@@ -334,7 +438,33 @@ export default function FunderChaseTab() {
           </button>
         </div>
 
+        {/* Sort — his order, persisted. Arrow shows on the active column only. */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-[10px] uppercase tracking-wide text-gray-400 mr-0.5">Sort</span>
+          {SORTS.map((o) => {
+            const active = sort.key === o.key;
+            return (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => applySort(o.key)}
+                aria-pressed={active}
+                title={o.hint}
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
+                  active
+                    ? "border-ocean-blue bg-ocean-blue/10 text-ocean-blue"
+                    : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600"
+                }`}
+              >
+                {o.label}
+                {active && <span className="ml-1">{sort.dir === "desc" ? "↓" : "↑"}</span>}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-gray-400 mr-0.5">Show</span>
           {FILTERS.map((f) => (
             <button
               key={f.key}
