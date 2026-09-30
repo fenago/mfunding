@@ -1343,7 +1343,7 @@ export default function FunderCheatSheetPage() {
             </div>
           </div>
 
-          <div className="grid">
+          <div className="fcs-cardgrid">
             {shown.map(({ l, papers, tags }) => (
               <FunderCard
                 key={l.id}

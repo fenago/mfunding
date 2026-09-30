@@ -82,7 +82,16 @@ export const FUNDER_CSS = `
 .fcs .pill:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .fcs .count{font-size:12.5px;color:var(--ink-faint);margin-left:auto}
 /* funder grid */
-.fcs .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:16px}
+/* NAMESPACED ON PURPOSE. This was ".fcs .grid", and "grid" is also a Tailwind
+   utility. The shared disclosure components are Tailwind now and emit
+   class="grid grid-cols-[...]", so ".fcs .grid" matched them — and because this
+   stylesheet is UNLAYERED while Tailwind utilities live in @layer utilities, the
+   legacy rule won the cascade whatever the specificity. FunderProgramBox's stat
+   grid collapsed to one 320px track inside a 293px card and overflowed, on this
+   page only; the same component was correct on the processor chase tab, which
+   injects no stylesheet. A bare, generic class name in a page-scoped sheet is a
+   trap for any utility framework mounted inside it. */
+.fcs .fcs-cardgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:16px}
 .fcs .card{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);padding:15px 16px;display:flex;flex-direction:column;gap:9px}
 .fcs .card .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .fcs .card .nm{font-weight:750;font-size:15.5px;line-height:1.2}
