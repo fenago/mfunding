@@ -30,7 +30,8 @@
 // chance to drift. We call the real one.
 
 import type { GhlDoc } from "./ghlDocs";
-import { unifyDocs, type ApplicationStatus } from "../utils/signing";
+import { unifyDocs, isApplicationDoc, type ApplicationStatus } from "../utils/signing";
+import { APP_TZ } from "../utils/time";
 
 /** Where a merchant with no signing link can still reach their paperwork. */
 export const MERCHANT_PORTAL_URL = "https://my.mfunding.net";
@@ -79,6 +80,37 @@ export function applicationFromDocs(
     error: null,
     contactCount: 1,
   }).application;
+}
+
+/**
+ * How many application-family documents are STILL AWAITING SIGNATURE.
+ *
+ * Not a second copy of the one-application rule — that stays in unifyDocs, which
+ * decides WHICH one is the live application. This only counts, so the
+ * confirmation can say "3 were awaiting signature, copied the newest" instead of
+ * the bare "an application link was copied". The distinction matters because
+ * every re-send mints a NEW document and never voids the old one, so a merchant
+ * can hold several live application links at once and the stale ones can carry
+ * out-of-date merge data (the wrong company name, in one live case).
+ *
+ * `isApplicationDoc` excludes /disclosure/i before it tests anything else, so
+ * the Broker Compensation Disclosure can never be counted here.
+ */
+export function countPendingApplications(docs: GhlDoc[]): number {
+  return docs.filter((d) => isApplicationDoc(d.name) && !d.signed && !d.isExpired).length;
+}
+
+/** "30 Sep" in the company's timezone, or null when there's no date to show.
+ *  Short on purpose: it sits inside a one-line confirmation. */
+export function shortDateET(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TZ,
+    day: "numeric",
+    month: "short",
+  }).format(new Date(t));
 }
 
 /** Why a copy attempt failed, in words a non-engineer can act on. */

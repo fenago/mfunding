@@ -13,6 +13,7 @@ import { dateKeyET, timeET } from "../../utils/time";
 import { sourceMeta, SOURCE_TONE_CLASS, type SourceTone } from "../../lib/sourceLabel";
 import { handoffState, spokeAttribution } from "../../lib/realtimeLeads";
 import LeadGradeChip from "./LeadGradeChip";
+import MerchantLinks from "./MerchantLinksMenu";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -1149,6 +1150,16 @@ function QueueCard({
             );
           })()}
           <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
+          {/* The two links, without opening the card. My Day is where a closer
+              decides who to chase; the chase itself is usually "text them the
+              link", and that shouldn't cost a page load. The control stops its
+              own clicks, so it never triggers the card's Open. */}
+          <MerchantLinks
+            ghlContactId={deal.ghl_contact_id}
+            customerId={deal.customer_id}
+            merchantEmail={deal.customer?.email}
+            compact
+          />
         </span>
         <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
       </div>

@@ -117,6 +117,7 @@ import SetterOpsTab from "@/components/admin/setter/SetterOpsTab";
 import CallAuditTab from "@/components/admin/setter/CallAuditTab";
 import DayRangeCalendar from "@/components/admin/setter/DayRangeCalendar";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
+import MerchantLinks from "@/components/admin/MerchantLinksMenu";
 import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
   type BenchmarkValues,
@@ -400,7 +401,7 @@ const NO_PIPE_FACTS: PipeFacts = { signed: null, submitted: null };
 // customers is deliberately whole-book (qualification data a setter must see to
 // qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
 // deal row the caller could read.
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_at,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,first_name,last_name,monthly_revenue,phone)";
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_at,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,first_name,last_name,monthly_revenue,phone,email)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -443,6 +444,9 @@ interface ProductiveDeal {
     last_name: string | null;
     monthly_revenue: number | null;
     phone: string | null;
+    /** Carried so the copy-links control can prefill the upload form with the
+     *  merchant's own email — without it their files arrive attached to nobody. */
+    email: string | null;
   } | null;
 }
 
@@ -3321,6 +3325,10 @@ export default function SetterPerformancePage() {
         businessName: deal?.customer?.business_name?.trim() || null,
         amountRequested: deal?.amount_requested ?? null,
         monthlyRevenue: deal?.customer?.monthly_revenue ?? null,
+        // Carried for the copy-links control: the upload form is prefilled with
+        // this so the merchant's files attach to them automatically. Null is
+        // fine and the control says so — it just can't self-attribute.
+        email: deal?.customer?.email ?? null,
       };
     };
   }, [positiveDeals, productiveDeals]);
@@ -5748,6 +5756,19 @@ export default function SetterPerformancePage() {
                                           —
                                         </span>
                                       ) : null}
+                                      {/* A positive disposition is a merchant who
+                                          said yes to something — the next move is
+                                          almost always texting them the application
+                                          or the upload link. The call row carries
+                                          the GHL contact id, so no lookup is needed. */}
+                                      {r.contact_id && (
+                                        <MerchantLinks
+                                          ghlContactId={r.contact_id}
+                                          merchantEmail={money.email}
+                                          compact
+                                          align="right"
+                                        />
+                                      )}
                                     </div>
                                   </td>
                                 </tr>

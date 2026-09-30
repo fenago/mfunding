@@ -85,6 +85,7 @@ import { QUEUE_CLOSED_STATUSES } from "@/services/dealService";
 import ChaseTracker from "@/components/admin/shared/ChaseTracker";
 import LeadActionsDrawer from "@/components/admin/shared/LeadActionsDrawer";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import MerchantLinks from "@/components/admin/MerchantLinksMenu";
 import { signatureFromQueueRow, type SignatureState } from "@/lib/applicationSignature";
 import {
   chaseVerdict,
@@ -893,6 +894,16 @@ function ChaseRowCard({
         >
           <BoltIcon className="w-3 h-3" /> Quick App
         </button>
+        {/* The whole job of this tab is chasing an unsigned application, and
+            until now a row here couldn't hand anyone the link to chase WITH —
+            one merchant sat unsigned for six days on the tab built to catch
+            exactly that. The contact id isn't on the queue row (the RPC doesn't
+            emit one), so the control resolves it from the customer id. */}
+        <MerchantLinks
+          customerId={r.app_fields?.customer?.id ?? null}
+          merchantEmail={r.app_fields?.customer?.email ?? null}
+          compact
+        />
         <button
           type="button"
           onClick={onToggleActions}

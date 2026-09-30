@@ -1,108 +1,135 @@
-// MerchantLinksMenu — "🔗 Copy links": the two URLs somebody working a merchant
-// texts them, one tap each, wherever that merchant is on screen.
+// MerchantLinks — TWO BUTTONS. The merchant's application link, and the link
+// they send bank statements to. Nothing else, no menu, no submenu.
 //
-//   📄 their application link   → the per-recipient GHL signing link. Opens and
-//                                 signs with no login. See src/lib/merchantLinks.ts
-//                                 for why this exists when the proposals API
-//                                 appears to offer no such thing.
-//   📤 their upload link        → the secure upload form, email-prefilled so the
-//                                 statements/ID/voided check land on this contact.
+// ── WHY TWO BUTTONS AND NOT THE SEND-DOCS MENU ──────────────────────────────
+// AdHocSendMenu is the right control for the Revenue Playbook, where someone is
+// deciding WHAT to send. It is the wrong control everywhere else, because by the
+// time a merchant has been worked it offers twelve-plus choices, and the owner's
+// own words on seeing it were: "I know that information exists. It's just
+// confusing, and it's hard to find. I only care about the merchant funding
+// application and the bank statement for a specific merchant."
 //
-// The owner asked for this after having to request a link by hand: "I want that
-// link to be available to easily be copied to send the application (assuming
-// it's a completed application) and to submit bank statements."
+// The confusing part is not the menu's length, it is that THE APPLICATION
+// APPEARS UNDER THREE NAMES — '04B MCA PREFILL', '04C MCA PARTIAL' and
+// 'MCA_Merchant_Funding_Application' — sitting in a list next to three copies of
+// the Broker Compensation Disclosure. A human picking from that list is being
+// asked to know our template vocabulary. One merchant signed the disclosure
+// believing he had finished his application and then waited.
 //
-// ── THE GATE IS THE POINT ("assuming it's a completed application") ─────────
-// A copy button that copies nothing is worse than no button, so the application
-// entry resolves to FOUR states, never two, and says which one it is:
+// So this control does the picking. The reader asks for "the application link"
+// and gets the one live application, named, with the date on it.
 //
-//   signed   → copy the view link, and say it's already signed so nobody
-//              re-chases a signature they already have
-//   pending  → copy the signing link (the normal case)
-//   none     → "no application sent yet" — we looked, there genuinely isn't one
-//   unknown  → "couldn't check VibeReach" — WE COULDN'T LOOK. Never rendered as
-//              "nothing sent". An empty list from a failed read became a claim
-//              about a merchant once already (2026-09-18: a merchant who had
-//              signed was shown across the app as having signed nothing, with
-//              the owner on the phone to him). The four-state resolution is
-//              unifyDocs', not ours.
+// ── THE RESOLUTION RULES, AND WHY THEY ARE SAID OUT LOUD ────────────────────
+//   one awaiting signature   → copy it
+//   several awaiting         → copy the NEWEST and say which, because the older
+//                              copies are still signable and some carry stale
+//                              merge data (wrong company name)
+//   already signed           → do NOT hand out a signing link. Say when it was
+//                              signed and copy the VIEW link instead
+//   none sent                → "no application sent yet". Not a dead copy
+//   couldn't read            → say so. NEVER "nothing sent" — an empty list from
+//                              a read that failed is how a merchant who had
+//                              signed was shown everywhere as having signed
+//                              nothing, with the owner on the phone to him
 //
-// ── COST ────────────────────────────────────────────────────────────────────
-// The doc read fires only when the menu is OPENED, and takes the 60s
-// ghl-docs-status cache (no `refresh`). Per that function's own rule, refresh is
-// for surfaces where a stale read becomes an ACCUSATION; copying a link is not
-// one — the worst a slightly-old list does here is miss a link sent in the last
-// minute, and the menu says what it knows rather than asserting a negative.
+// Never the Broker Compensation Disclosure, under any of these branches.
 //
-// No browser popups anywhere (standing owner rule) — everything is inline.
+// ── WHY THE READ HAPPENS ON CLICK ───────────────────────────────────────────
+// These buttons are mounted on LIST ROWS, so resolving eagerly would cost one
+// ghl-docs-status call per row on every render of a 500-row queue, against a
+// 200k/day account cap (see the ghl-standing-consumers-ledger rule: cost must
+// track new information, not the size of the book). Resolving on click costs one
+// read per actual use and zero when nobody clicks. The button therefore states
+// its PURPOSE, not the document's status; the status arrives in the confirmation,
+// which is where it is needed anyway — nobody needs to know an application is
+// unsigned until they are about to send the link.
+//
+// The read takes the 60s ghl-docs-status cache (no `refresh`). That function's
+// own rule is that refresh is for surfaces where a stale read becomes an
+// ACCUSATION; copying a link is not one.
+//
+// No browser popups (standing owner rule) — the confirmation is inline.
 import { useEffect, useRef, useState } from "react";
-import { LinkIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
+import { DocumentTextIcon, InboxArrowDownIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { getSetting } from "../../services/platformService";
-import { readDocsStatus, duplicateContactNote, type GhlDocsStatus } from "../../lib/ghlDocs";
+import { readDocsStatus, type GhlDoc, type GhlDocsStatus } from "../../lib/ghlDocs";
 import {
   applicationFromDocs,
   copyText,
   copyFailureMessage,
   uploadLinkFor,
   uploadLinkIsAttributed,
-  MERCHANT_PORTAL_URL,
+  countPendingApplications,
+  shortDateET,
 } from "../../lib/merchantLinks";
-import type { ApplicationStatus } from "../../utils/signing";
 
 interface Props {
-  /** The merchant's GHL contact. No contact = no signing link can exist yet,
-   *  and the menu says exactly that rather than showing a dead button. */
+  /** The merchant's GHL contact, when the host already holds it. */
   ghlContactId?: string | null;
+  /**
+   * Fallback when the host does NOT hold a contact id — most list rows don't,
+   * because neither processor_pipeline_rows() nor processor_application_queue()
+   * emits one. Given a customer id the control resolves the contact id (and the
+   * email) itself, on click.
+   *
+   * Reading `customers` directly is sound for every role that sees these
+   * buttons: the `closer_select_all_customers` policy grants SELECT on all
+   * customers to any closer or closer-row holder, and `admin_all_customers`
+   * covers ops staff. So an empty result here means the row is genuinely
+   * missing, not that RLS filtered it — which is the only reason it's safe to
+   * say anything at all when nothing comes back.
+   */
+  customerId?: string | null;
   merchantEmail?: string | null;
-  /** Small pill (table rows, drawers) vs. the default inline button. */
+  /** Table rows / drawers: smaller pills. */
   compact?: boolean;
   /**
-   * Which edge the panel hangs from. The panel is ~320px wide, so this is not
-   * cosmetic: right-anchored next to a button on the LEFT of the screen pushes
-   * the panel off the left edge of the viewport and the application entry
-   * becomes unreadable. Left for a button on the left (the setter action rail),
-   * right for one on the right (the processor drawer).
+   * Which edge the confirmation hangs from. It is ~320px wide, so on a control
+   * near the left of the screen a right-anchored note runs off the viewport.
    */
   align?: "left" | "right";
   className?: string;
 }
 
-/** What the application row currently knows. Mirrors the read's own honesty. */
-type AppState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "no-contact" }
-  | { kind: "unreadable"; why: string }
-  | { kind: "ready"; application: ApplicationStatus; caveat: string | null; contactCount: number };
+/** Roughly how tall the confirmation gets (the fallback-URL variant is the tall
+ *  one). Below this much room, it flips above the buttons instead. */
+const NOTE_CLEARANCE_PX = 150;
 
-/** A copy that failed leaves the URL on screen to be selected by hand. */
+/** The confirmation under the buttons. `fallbackUrl` appears only when the
+ *  clipboard refused, so the link can still be copied by hand. */
 interface Note {
-  ok: boolean;
+  tone: "ok" | "warn" | "error";
   text: string;
-  /** Shown as selectable text when the clipboard refused us. */
   fallbackUrl?: string;
 }
 
-export default function MerchantLinksMenu({
+export default function MerchantLinks({
   ghlContactId,
+  customerId,
   merchantEmail,
   compact = false,
   align = "left",
   className = "",
 }: Props) {
-  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<"app" | "upload" | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [uploadFormUrl, setUploadFormUrl] = useState<string | null>(null);
   const [uploadSettingRead, setUploadSettingRead] = useState(false);
-  const [app, setApp] = useState<AppState>({ kind: "idle" });
+  const [placeAbove, setPlaceAbove] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alive = useRef(true);
 
-  useEffect(() => () => { if (noteTimer.current) clearTimeout(noteTimer.current); }, []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (noteTimer.current) clearTimeout(noteTimer.current);
+    };
+  }, []);
 
-  // The upload form URL is a platform setting, not a per-merchant read — load it
-  // once on mount so the upload entry is instant when the menu opens.
+  // The upload form URL is one platform setting, not a per-merchant read.
   useEffect(() => {
     let cancelled = false;
     getSetting<{ upload_form_url?: string }>("adhoc_docs", {})
@@ -111,177 +138,216 @@ export default function MerchantLinksMenu({
     return () => { cancelled = true; };
   }, []);
 
-  // The merchant's documents — ON OPEN ONLY, and cached (see the cost note up top).
-  useEffect(() => {
-    if (!open) return;
-    if (!ghlContactId) { setApp({ kind: "no-contact" }); return; }
-    let cancelled = false;
-    setApp({ kind: "loading" });
-    supabase.functions
-      .invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        const state = readDocsStatus(data as GhlDocsStatus, error);
-        if (state.kind === "unreadable") { setApp({ kind: "unreadable", why: state.why }); return; }
-        setApp({
-          kind: "ready",
-          // `readable` is true by construction here — readDocsStatus already
-          // routed every not-readable shape to the branch above. `partial` still
-          // has to travel, because a one-contact read of a three-contact
-          // merchant can miss the very document being asked about.
-          application: applicationFromDocs(state.docs, true, state.caveat !== null),
-          caveat: state.caveat,
-          contactCount: state.contactCount,
-        });
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setApp({ kind: "unreadable", why: e instanceof Error ? e.message : String(e) });
-      });
-    return () => { cancelled = true; };
-  }, [open, ghlContactId]);
-
-  // Close on outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
   const flash = (n: Note) => {
+    if (!alive.current) return;
+    // Flip the confirmation ABOVE the buttons when there isn't room below.
+    // These sit on the last row of long queues, where a note anchored downward
+    // is simply cut off by the viewport — and an unread confirmation naming the
+    // document that was copied is the entire safeguard against handing a
+    // merchant a stale application.
+    const box = rootRef.current?.getBoundingClientRect();
+    setPlaceAbove(!!box && window.innerHeight - box.bottom < NOTE_CLEARANCE_PX);
     setNote(n);
     if (noteTimer.current) clearTimeout(noteTimer.current);
-    // A failure leaves the URL on screen to be copied by hand — give that a lot
-    // longer than a success anyone can simply repeat.
-    noteTimer.current = setTimeout(() => setNote(null), n.fallbackUrl ? 45000 : 8000);
+    // A failure leaves the URL on screen to be copied by hand; a "nothing to
+    // copy" answer is something to read and act on. Both linger.
+    noteTimer.current = setTimeout(() => setNote(null), n.tone === "ok" ? 10000 : 45000);
   };
 
-  /** Copy, then say WHAT was copied — or hand back the URL when we couldn't.
-   *  Closing the menu is part of the feedback: the note is anchored to the same
-   *  corner, so leaving the menu open buries the confirmation under it. */
-  const copy = async (url: string, confirmation: string) => {
-    setOpen(false);
+  /** Copy, then say exactly what landed on the clipboard. */
+  const copyAndSay = async (url: string, confirmation: string) => {
     const r = await copyText(url);
-    if (r.ok) flash({ ok: true, text: confirmation });
-    else flash({ ok: false, text: copyFailureMessage(r.reason), fallbackUrl: url });
+    if (r.ok) flash({ tone: "ok", text: confirmation });
+    else flash({ tone: "error", text: copyFailureMessage(r.reason), fallbackUrl: url });
   };
 
-  const itemCls =
-    "w-full text-left px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed";
-  const mutedCls = "px-3 py-1.5 text-[11px] leading-snug text-gray-500 dark:text-gray-400";
-  const warnCls = "px-3 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400";
+  /**
+   * The merchant's contact id + email, from the host when it has them and from
+   * `customers` when it doesn't.
+   *
+   * Three outcomes, kept apart on purpose: we HAVE it, we LOOKED AND IT ISN'T
+   * THERE, and WE COULDN'T LOOK. Collapsing the last two is how "no application
+   * sent yet" gets said about a merchant nobody actually checked.
+   */
+  type Resolved =
+    | { kind: "ok"; contactId: string; email: string | null }
+    | { kind: "none" }
+    | { kind: "unreadable"; why: string };
+
+  const resolveMerchant = async (): Promise<Resolved> => {
+    if (ghlContactId) return { kind: "ok", contactId: ghlContactId, email: merchantEmail ?? null };
+    if (!customerId) return { kind: "none" };
+    const { data, error } = await supabase
+      .from("customers")
+      .select("ghl_contact_id, email")
+      .eq("id", customerId)
+      .maybeSingle();
+    if (error) return { kind: "unreadable", why: error.message };
+    const id = (data?.ghl_contact_id as string | null) ?? null;
+    if (!id) return { kind: "none" };
+    return { kind: "ok", contactId: id, email: (data?.email as string | null) ?? merchantEmail ?? null };
+  };
+
+  // ── 📄 THE APPLICATION ────────────────────────────────────────────────────
+  const copyApplication = async () => {
+    if (busy) return;
+    setNote(null);
+    setBusy("app");
+    try {
+      const who = await resolveMerchant();
+      if (who.kind === "unreadable") {
+        flash({ tone: "warn", text: `Couldn't look this merchant up — ${who.why}. Nothing was checked, so this says nothing about whether an application was sent.` });
+        return;
+      }
+      if (who.kind === "none") {
+        flash({
+          tone: "warn",
+          text: "This merchant isn't linked to a VibeReach contact, so no application could have been sent to them yet.",
+        });
+        return;
+      }
+      const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
+        body: { ghl_contact_id: who.contactId },
+      });
+      const state = readDocsStatus(data as GhlDocsStatus, error);
+      if (state.kind === "unreadable") {
+        // UNREADABLE IS NOT "NOTHING SENT".
+        flash({
+          tone: "warn",
+          text: `Couldn't check VibeReach — ${state.why}. This is not an empty merchant, it's an unreadable one: an application may well be sitting with them. Check VibeReach before sending another.`,
+        });
+        return;
+      }
+
+      const docs: GhlDoc[] = state.docs;
+      const app = applicationFromDocs(docs, true, state.caveat !== null);
+      const partial = state.caveat ? ` (only part of their contacts could be searched — ${state.caveat})` : "";
+
+      if (app.state === "unknown") {
+        flash({ tone: "warn", text: `Couldn't establish whether an application was sent${partial}. This does not mean none was.` });
+        return;
+      }
+      if (app.state === "none") {
+        flash({
+          tone: "warn",
+          text: `No application sent yet — there's nothing to copy until one goes out${partial}. Send it from "Send docs" in the playbook, then come back.`,
+        });
+        return;
+      }
+
+      const doc = app.signable;
+      const name = app.name ?? "their application";
+      const when = shortDateET(doc?.ghlDoc?.updatedAt ?? null);
+      const url = doc?.url ?? null;
+      if (!url) {
+        flash({
+          tone: "warn",
+          text: `Their application (${name}) exists in VibeReach but has no link for this recipient, so there's nothing to copy. Open the contact in VibeReach.`,
+        });
+        return;
+      }
+
+      if (app.state === "signed") {
+        // Don't hand out a signing link for something already signed — that
+        // invites a second signature on a document that is already done.
+        await copyAndSay(
+          url,
+          `✓ Already signed${when ? ` ${when}` : ""} — ${name}. Copied the VIEW link, not a new signature.`,
+        );
+        return;
+      }
+
+      // Pending. Several application-family documents can be live at once (every
+      // re-send mints a new one and never voids the old), and the older copies
+      // can carry stale merge data — so name the one that was copied.
+      const pending = countPendingApplications(docs);
+      const extra = pending > 1 ? ` — ${pending} were awaiting signature, copied the newest` : "";
+      await copyAndSay(
+        url,
+        `📄 Copied ${name}${when ? `, sent ${when}` : ""}${extra}. They open it and sign — no login.`,
+      );
+    } catch (e) {
+      flash({ tone: "warn", text: `Couldn't check VibeReach — ${e instanceof Error ? e.message : String(e)}. This does not mean nothing was sent.` });
+    } finally {
+      if (alive.current) setBusy(null);
+    }
+  };
+
+  // ── 📤 BANK STATEMENTS & DOCUMENTS ────────────────────────────────────────
+  const copyUpload = async () => {
+    if (busy) return;
+    setNote(null);
+    if (!uploadSettingRead) return;
+    if (!uploadFormUrl) {
+      flash({ tone: "warn", text: "No upload form is configured — set upload_form_url in the adhoc_docs platform setting." });
+      return;
+    }
+    setBusy("upload");
+    try {
+      // Prefer an email the host handed us; otherwise take the one on the
+      // customer row. The prefill is the whole value of this link — without it
+      // the files arrive attached to nobody.
+      let email = merchantEmail ?? null;
+      if (!uploadLinkIsAttributed(email) && customerId) {
+        const who = await resolveMerchant();
+        if (who.kind === "ok") email = who.email;
+      }
+      await copyAndSay(
+        uploadLinkFor(uploadFormUrl, email),
+        uploadLinkIsAttributed(email)
+          ? "📤 Copied their bank-statement upload link — text it; their files land on this contact automatically."
+          : "📤 Copied the upload link — but there's no email on file, so it can't be prefilled and their files will arrive unattached.",
+      );
+    } finally {
+      if (alive.current) setBusy(null);
+    }
+  };
+
+  const btn = compact
+    ? "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    : "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  const appCls = "border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 dark:hover:bg-ocean-blue/10";
+  const upCls =
+    "border-emerald-500/50 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20";
+
+  const toneCls =
+    note?.tone === "ok"
+      ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800"
+      : note?.tone === "warn"
+        ? "text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800"
+        : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800";
 
   return (
-    <div ref={rootRef} className={`relative inline-block ${className}`} onClick={(e) => e.stopPropagation()}>
+    <div ref={rootRef} className={`relative inline-flex items-center gap-1.5 ${className}`} onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        title="Copy this merchant's application link and their document-upload link — ready to paste into a text"
-        className={
-          compact
-            ? "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 dark:hover:bg-ocean-blue/10"
-            : "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 dark:hover:bg-ocean-blue/10"
-        }
+        disabled={busy !== null}
+        onClick={() => void copyApplication()}
+        title="Copies this merchant's own application link — the one that's actually live. They open it and sign with no login."
+        className={`${btn} ${appCls}`}
       >
-        <LinkIcon className="w-3.5 h-3.5" />
-        Copy links
-        <ChevronDownIcon className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
+        <DocumentTextIcon className="w-3.5 h-3.5" />
+        {busy === "app" ? "Finding it…" : "Copy application link"}
       </button>
 
-      {open && (
-        <div
-          className={`absolute z-40 mt-1 w-80 ${align === "right" ? "right-0" : "left-0"} rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg py-1`}
-        >
-          {/* ───────────────── 1. THE APPLICATION LINK ───────────────── */}
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
-            Application
-          </p>
-
-          {app.kind === "loading" && <p className={mutedCls}>Checking VibeReach…</p>}
-
-          {app.kind === "no-contact" && (
-            <p className={warnCls}>
-              This merchant isn't linked to a VibeReach contact yet, so no application could have been
-              sent to them — and there's no signing link to copy.
-            </p>
-          )}
-
-          {app.kind === "unreadable" && (
-            // UNREADABLE ≠ NOTHING SENT. Saying "no application sent" here about
-            // a merchant who already signed is the 2026-09-18 failure.
-            <p className={warnCls}>
-              Couldn't check VibeReach — {app.why}. This does <strong>not</strong> mean no application
-              was sent. Check in VibeReach before sending another one.
-            </p>
-          )}
-
-          {app.kind === "ready" && (
-            <>
-              {duplicateContactNote(app.contactCount) && (
-                <p className={warnCls}>{duplicateContactNote(app.contactCount)}</p>
-              )}
-              <ApplicationEntry
-                application={app.application}
-                caveat={app.caveat}
-                itemCls={itemCls}
-                mutedCls={mutedCls}
-                warnCls={warnCls}
-                onCopy={copy}
-              />
-            </>
-          )}
-
-          {/* ───────────────── 2. THE UPLOAD LINK ───────────────── */}
-          <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700">
-            Bank statements &amp; documents
-          </p>
-          {!uploadSettingRead ? (
-            <p className={mutedCls}>Loading the upload link…</p>
-          ) : !uploadFormUrl ? (
-            <p className={warnCls}>
-              No upload form is configured — set <code>upload_form_url</code> in the{" "}
-              <code>adhoc_docs</code> platform setting and it appears here.
-            </p>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() =>
-                  void copy(
-                    uploadLinkFor(uploadFormUrl, merchantEmail),
-                    uploadLinkIsAttributed(merchantEmail)
-                      ? "📤 Upload link copied — text it; their files land on this contact automatically."
-                      : "📤 Upload link copied — but with no email on file, you'll have to attach their files by hand.",
-                  )
-                }
-                className={itemCls}
-                title="Copies the secure upload-form link (bank statements, ID, voided check), prefilled with their email so uploads attach to this merchant"
-              >
-                📤 Copy their upload link (statements, ID, voided check)
-              </button>
-              {!uploadLinkIsAttributed(merchantEmail) && (
-                <p className={warnCls}>
-                  ⚠ No email on file, so the link can't be prefilled — whatever they upload arrives
-                  unattached and someone has to file it by hand.
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
+      <button
+        type="button"
+        disabled={busy !== null || !uploadSettingRead}
+        onClick={() => void copyUpload()}
+        title="Copies their secure upload link (bank statements, ID, voided check), prefilled with their email so the files attach to this merchant"
+        className={`${btn} ${upCls}`}
+      >
+        <InboxArrowDownIcon className="w-3.5 h-3.5" />
+        {busy === "upload" ? "Copying…" : "Copy bank statement link"}
+      </button>
 
       {note && (
         <div
-          className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full mt-1 w-80 text-[11px] z-40 rounded-md px-2 py-1 border ${
-            note.ok
-              ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800"
-              : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800"
-          }`}
+          className={`absolute ${align === "right" ? "right-0" : "left-0"} ${placeAbove ? "bottom-full mb-1" : "top-full mt-1"} w-80 text-[11px] z-40 rounded-md px-2 py-1.5 border shadow-lg ${toneCls}`}
         >
-          <p>{note.text}</p>
-          {/* The clipboard refused. Never a silent no-op: put the URL on screen,
+          <p className="leading-snug">{note.text}</p>
+          {/* The clipboard refused (insecure origin, unfocused document, denied
+              permission). Never a silent no-op: the URL goes on screen,
               selectable, so it can still be copied by hand. */}
           {note.fallbackUrl && (
             <textarea
@@ -293,118 +359,15 @@ export default function MerchantLinksMenu({
               className="mt-1 w-full select-all rounded border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 px-1.5 py-1 font-mono text-[10px] leading-snug text-gray-800 dark:text-gray-100"
             />
           )}
+          <button
+            type="button"
+            onClick={() => setNote(null)}
+            className="mt-1 text-[10px] font-semibold opacity-70 hover:opacity-100 hover:underline"
+          >
+            Dismiss
+          </button>
         </div>
       )}
     </div>
-  );
-}
-
-/** The application row, one branch per resolved state. Split out so each state
- *  reads as its own sentence instead of a nest of ternaries. */
-function ApplicationEntry({
-  application,
-  caveat,
-  itemCls,
-  mutedCls,
-  warnCls,
-  onCopy,
-}: {
-  application: ApplicationStatus;
-  caveat: string | null;
-  itemCls: string;
-  mutedCls: string;
-  warnCls: string;
-  onCopy: (url: string, confirmation: string) => void | Promise<void>;
-}) {
-  const { state, name, signable } = application;
-
-  // `unknown` from unifyDocs means the same thing as our own unreadable branch:
-  // we could not establish an answer. It must not read as "nothing sent".
-  if (state === "unknown") {
-    return (
-      <p className={warnCls}>
-        Couldn't establish whether an application was sent. This does <strong>not</strong> mean none
-        was — check VibeReach.
-      </p>
-    );
-  }
-
-  if (state === "none") {
-    return (
-      <>
-        <p className={mutedCls}>
-          <strong>No application sent yet</strong> — there's no link to copy until one goes out. Send
-          it from “Send docs”, then come back here.
-        </p>
-        {caveat && (
-          <p className={warnCls}>
-            ⚠ Only part of this merchant's contacts could be searched ({caveat}), so “none” here isn't
-            proof.
-          </p>
-        )}
-      </>
-    );
-  }
-
-  // signed / pending. Both are worth copying — one to chase the signature, one
-  // to show them what they already signed.
-  const signed = state === "signed";
-  const url = signable?.url ?? null;
-
-  if (!url) {
-    return (
-      <p className={warnCls}>
-        Their application (<strong>{name ?? "application"}</strong>) is{" "}
-        {signed ? "signed" : "out for signature"}, but VibeReach hasn't minted a link for this
-        recipient — so there's nothing to copy. Open the contact in VibeReach.
-      </p>
-    );
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() =>
-          void onCopy(
-            url,
-            signed
-              ? "📄 Copied the link to their SIGNED application — it opens as a view, not a new signature."
-              : "📄 Application link copied — text it; they open and sign it with no login.",
-          )
-        }
-        className={itemCls}
-        title={
-          signed
-            ? `Copies this merchant's own link to ${name ?? "their application"} — already signed, opens read-only`
-            : `Copies this merchant's own signing link for ${name ?? "their application"} — no login needed`
-        }
-      >
-        📄 Copy their application link{" "}
-        {signed ? (
-          <span className="text-emerald-600 dark:text-emerald-400">· ✓ already signed</span>
-        ) : (
-          <span className="text-amber-600 dark:text-amber-400">· awaiting signature</span>
-        )}
-      </button>
-      <p className={mutedCls}>
-        {signed
-          ? "They've already signed this one — copy it only if they want to see it again."
-          : "One tap for them: the link opens their application and they sign it. No portal account needed."}
-      </p>
-      {caveat && (
-        <p className={warnCls}>
-          ⚠ Only part of this merchant's contacts could be searched ({caveat}) — there may be a newer
-          application on another contact.
-        </p>
-      )}
-      {/* The portal stays available as a fallback, deliberately UNDER the real
-          link: "sign in at my.mfunding.net" is a far weaker text message, and it
-          only works at all once customers.user_id is set (the portal invite). */}
-      <p className="px-3 pb-1.5 text-[10px] leading-snug text-gray-400 dark:text-gray-500">
-        Fallback if the link fails: {MERCHANT_PORTAL_URL} — but only if they've accepted a portal
-        invite.
-      </p>
-    </>
   );
 }
