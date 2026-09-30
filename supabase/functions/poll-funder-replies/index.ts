@@ -18,7 +18,7 @@ import {
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
-import { attachReplyDeal, captureFunderReply, attachmentCountOf, noTypedTextNote } from "../_shared/funderDecline.ts";
+import { attachReplyDeal, captureFunderReply, attachmentCountOf, noTypedTextNote, NO_TYPED_TEXT_PLACEHOLDER, isNoTypedTextBody } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -273,7 +273,7 @@ async function findMerchantReply(
         // Self-loop guard: our own sender bounced back is not a merchant reply.
         if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
         let text = cleanEmailBody(String(e.body ?? ""));
-        if (!text) text = "(reply received — open the conversation to read it)";
+        if (!text) text = NO_TYPED_TEXT_PLACEHOLDER;
         const attachments = Array.isArray(e.attachments)
           ? (e.attachments as unknown[]).filter((u) => typeof u === "string") as string[] : [];
         best = { text, from: String(e.from ?? ""), at, attachments, eid: String(eid) };
@@ -433,7 +433,7 @@ async function runMerchantPhase(
     // State the fact instead. It is shorter, it is true, and it is the thing a
     // processor actually needs to know.
     let summary: string | null = null;
-    const hasProse = !!reply.text.trim() && !reply.text.startsWith("(reply received");
+    const hasProse = !isNoTypedTextBody(reply.text);
     if (!hasProse) {
       const n = reply.attachments.length;
       summary = n
@@ -669,7 +669,7 @@ async function applyFunderReply(
     //
     // Answer it deterministically instead, and mark it `no_typed_text` so the
     // boards can say "needs a look" rather than rendering a default as a verdict.
-    const noTypedText = !replyText.trim() || replyText.startsWith("(reply received");
+    const noTypedText = isNoTypedTextBody(replyText);
     if (noTypedText) {
       classification = {
         type: "other",
@@ -917,7 +917,7 @@ Deno.serve(async (req) => {
       // Through the shared helper, not a fourth hand-rolled copy: this site had
       // the same `> 0` guard and the same blind spot for a quote-only body.
       let text = cleanEmailBody(String(e.body ?? ""));
-      if (!text) text = "(reply received — open the conversation to read it)";
+      if (!text) text = NO_TYPED_TEXT_PLACEHOLDER;
       const at = String(e.dateAdded ?? e.date ?? ref.msgDate);
       const fromRaw = String(e.from ?? "");
       const reply = { text, from: fromRaw, at, eid: ref.eid, attachmentCount: attachmentCountOf(e) };

@@ -306,6 +306,28 @@ export function heuristicDecline(text: string): DeclineParse | null {
  * a human would act on. When N is known (callers that have it) we state it;
  * when it is not, we say what we do know and tell them to look.
  */
+/**
+ * The human-facing stand-in a reader writes when an email body has no typed
+ * words. It exists so a PERSON sees something sensible.
+ *
+ * ⚠️ IT IS NOT DATA, AND IT MUST NEVER REACH A CLASSIFIER. It is non-empty, so
+ * every `if (!text)` guard downstream passes it straight through — and an LLM
+ * will confidently describe whatever it is handed, including this. That is how
+ * fixing the quote-strip guard nearly traded a WRONG summary for a fluent
+ * description of our own placeholder (2026-09-30).
+ *
+ * Exported as a constant with a predicate so the three places that produce or
+ * consume it agree by construction, instead of three hand-written
+ * `startsWith("(reply received")` comparisons drifting apart.
+ */
+export const NO_TYPED_TEXT_PLACEHOLDER = "(reply received — open the conversation to read it)";
+
+/** True when a body carries no typed words — genuinely empty, or the stand-in. */
+export function isNoTypedTextBody(s: string | null | undefined): boolean {
+  const t = (s ?? "").trim();
+  return !t || t.startsWith("(reply received");
+}
+
 export function noTypedTextNote(attachmentCount?: number | null): string {
   const n = typeof attachmentCount === "number" && attachmentCount > 0 ? attachmentCount : null;
   return n
@@ -323,7 +345,10 @@ export async function parseFunderReply(
     attachmentCount?: number | null;
   },
 ): Promise<DeclineParse | null> {
-  const body = coreBody(o.body);
+  // ⚠️ THE PLACEHOLDER COUNTS AS EMPTY. A caller that already substituted the
+  // human-facing stand-in must not have it classified as if it were the
+  // funder's words — the check is on the ORIGINAL body, before coreBody.
+  const body = isNoTypedTextBody(o.body) ? "" : coreBody(o.body);
   // NO TYPED TEXT — a defined answer, not null and not "".
   // Returning null here left the row queued forever with parsed_at NULL and a
   // blank summary on every board. This stamps it, says why, and flags LOW
