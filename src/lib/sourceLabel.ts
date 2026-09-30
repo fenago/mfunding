@@ -37,6 +37,15 @@ interface SourceMeta {
 const SOURCE_MAP: Record<string, SourceMeta> = {
   live_transfer: { label: "Live Transfer", tone: "transfer", canonical: true },
   realtime_appt: { label: "Real-Time Appt", tone: "transfer", canonical: true },
+  // OUR OWN setter handing a merchant to a closer — a live conversation we
+  // generated, not one we bought. Owner's ruling, 2026-09-29: "I don't consider
+  // that a live transfer. I consider that an internal transfer." tone "transfer"
+  // is deliberate: the merchant is on the phone, so it belongs to the hot-lead
+  // class (REALTIME_LEAD_SOURCES is derived from this) and the DB agrees —
+  // is_realtime_lead_source() accepts it, so it routes to the processor pool and
+  // owes no 5-minute callback clock. What it must NEVER do is count as vendor
+  // delivery; that is lead_source's job, and the reason it is its own value.
+  internal_transfer: { label: "Internal Transfer", tone: "transfer", canonical: true },
   ucc_list: { label: "UCC", tone: "ucc", canonical: true },
   ucc_lead: { label: "UCC", tone: "ucc" }, // legacy alias — same thing as ucc_list
   trigger_list: { label: "Trigger", tone: "ucc", canonical: true },
