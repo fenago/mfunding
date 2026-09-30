@@ -1429,6 +1429,17 @@ function mergeProfiles(prev: ProfileState, next: ProfileState): ProfileState {
 //                              genuinely means "none for these funders"
 // Without this, a credit tab whose visible funders happen to have no recorded
 // box reports "can't read" when the truth is "we haven't recorded it".
+// `.in()` goes in the query STRING, so 121 UUIDs is a ~4.7KB URL — long enough
+// for a proxy or CDN to answer 414 instead of the funder list, and a read that
+// fails for a reason nobody can see is the thing this page keeps being wrong
+// about. Ask in chunks.
+const ID_CHUNK = 40;
+const chunk = <T,>(xs: T[], n: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+};
+
 async function canRead(table: "lender_documents" | "lender_programs" | "funder_submission_profiles"): Promise<boolean> {
   const { data, error } = await supabase.from(table).select("lender_id").limit(1);
   return !error && (data ?? []).length > 0;
@@ -1438,10 +1449,16 @@ async function canRead(table: "lender_documents" | "lender_programs" | "funder_s
 // no error, so an empty result is UNKNOWN, never "nothing on file".
 async function loadDocs(ids: string[]): Promise<DocState> {
   if (ids.length === 0) return { byLender: {}, readable: true };
-  const { data, error } = await supabase
-    .from("lender_documents")
-    .select("id, lender_id, document_type, filename, storage_path, description")
-    .in("lender_id", ids);
+  const parts = await Promise.all(
+    chunk(ids, ID_CHUNK).map((c) =>
+      supabase
+        .from("lender_documents")
+        .select("id, lender_id, document_type, filename, storage_path, description")
+        .in("lender_id", c),
+    ),
+  );
+  const error = parts.find((r) => r.error)?.error ?? null;
+  const data = parts.flatMap((r) => r.data ?? []);
   if (error) return { byLender: {}, readable: false };
   if ((data ?? []).length === 0) return { byLender: {}, readable: await canRead("lender_documents") };
   const byLender: Record<string, LenderDoc[]> = {};
@@ -1459,7 +1476,11 @@ function mergeDocs(prev: DocState, next: DocState): DocState {
 // 400 the whole page the day one lands.
 async function loadPrograms(ids: string[]): Promise<ProgramState> {
   if (ids.length === 0) return { byKey: {}, readable: true };
-  const { data, error } = await supabase.from("lender_programs").select("*").in("lender_id", ids);
+  const parts = await Promise.all(
+    chunk(ids, ID_CHUNK).map((c) => supabase.from("lender_programs").select("*").in("lender_id", c)),
+  );
+  const error = parts.find((r) => r.error)?.error ?? null;
+  const data = parts.flatMap((r) => r.data ?? []);
   if (error) return { byKey: {}, readable: false };
   if ((data ?? []).length === 0) return { byKey: {}, readable: await canRead("lender_programs") };
   const byKey: Record<string, ProgramRow> = {};
@@ -1475,7 +1496,11 @@ function mergePrograms(prev: ProgramState, next: ProgramState): ProgramState {
 
 async function loadProfiles(ids: string[]): Promise<ProfileState> {
   if (ids.length === 0) return { map: {}, readable: true, error: null, severity: "limited" };
-  const { data, error } = await supabase.from("funder_submission_profiles").select(PROFILE_COLS).in("lender_id", ids);
+  const parts = await Promise.all(
+    chunk(ids, ID_CHUNK).map((c) => supabase.from("funder_submission_profiles").select(PROFILE_COLS).in("lender_id", c)),
+  );
+  const error = parts.find((r) => r.error)?.error ?? null;
+  const data = parts.flatMap((r) => r.data ?? []);
   if (error) {
     return {
       map: {},
@@ -1993,6 +2018,17 @@ export default function FunderCheatSheetPage() {
     })();
     return () => {
       cancelled = true;
+      // A CANCELLED LOAD MUST NOT STRAND THE STATE.
+      // Leaving `loading` set here was a permanent hang: switch tabs mid-flight
+      // and the async body returns at `if (cancelled)` without ever calling
+      // setProd, so the state stays "loading" — and the guard at the top of this
+      // effect (`prod.state !== "idle"`) then refuses to fetch again on the way
+      // back. The tab read "Reading the funder catalog…" forever, and only a
+      // full page reload cleared it. Clicking across the five product tabs is
+      // the most ordinary thing to do here, so this fired constantly.
+      // The try/catch above guards a THROWN fetch; nothing guarded cancellation.
+      // Reset to idle so a return visit re-fetches.
+      setProd((prev) => (prev.state === "loading" ? { ...prev, state: "idle" } : prev));
     };
   }, [tab, prod.state]);
 
