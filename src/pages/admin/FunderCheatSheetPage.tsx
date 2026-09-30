@@ -155,6 +155,44 @@ const CSS = `
 .fcs a{color:var(--accent-ink)}
 /* loud, non-blocking error banner (no popups, ever) */
 .fcs .err{border:1.5px solid var(--d);background:var(--d-bg);color:var(--d);border-radius:var(--radius);padding:14px 16px;font-size:13.5px;font-weight:600;margin-bottom:16px}
+/* product tabs */
+.fcs .tabs{display:flex;flex-wrap:wrap;gap:4px;margin:18px 0 0;border-bottom:2px solid var(--line)}
+.fcs .tab{font:inherit;font-size:13.5px;font-weight:700;color:var(--ink-soft);background:none;border:0;border-bottom:3px solid transparent;padding:9px 14px;cursor:pointer;margin-bottom:-2px;border-radius:8px 8px 0 0}
+.fcs .tab:hover{color:var(--ink);background:var(--line-soft)}
+.fcs .tab[aria-selected="true"]{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.fcs .tab:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
+.fcs .vocab{font-size:12px;color:var(--ink-faint);margin:12px 0 0;max-width:86ch}
+/* per-product reference blocks */
+.fcs .guide{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--gold);border:1px solid var(--gold);border-radius:6px;padding:2px 7px;margin-bottom:9px}
+.fcs .reqnote{font-size:12.5px;color:var(--ink-soft);margin:0 0 12px;max-width:86ch;line-height:1.5}
+.fcs .checkbox{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
+.fcs .checkbox .chead{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--line-soft);flex-wrap:wrap}
+.fcs .checkbox .chead .t{font-size:13px;font-weight:800}
+.fcs .checkbox .chead .s{font-size:11.5px;color:var(--ink-faint)}
+.fcs .copy{margin-left:auto;font:inherit;font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#fff;background:var(--accent);border:0;border-radius:8px;padding:6px 12px;cursor:pointer}
+.dark .fcs .copy{color:#08131c}
+.fcs .copy:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.fcs .checkbox pre{margin:0;padding:14px;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12px;line-height:1.6;color:var(--ink);white-space:pre-wrap}
+/* apply-once marketplaces */
+.fcs .mkt{display:flex;flex-direction:column;gap:5px;padding:14px 18px;border-bottom:1px solid var(--line-soft)}
+.fcs .mkt:last-child{border-bottom:0}
+.fcs .mkt .mnm{font-weight:800;font-size:15px}
+.fcs .mkt .mln{font-size:12.5px;color:var(--ink-soft);line-height:1.45}
+.fcs .mkt .mln b{color:var(--ink)}
+.fcs .mkt a{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
+/* per-product funder rows */
+.fcs .grouphead{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:20px 0 9px}
+.fcs .frows{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.fcs .frow{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);padding:13px 15px;display:flex;flex-direction:column;gap:7px}
+.fcs .frow .fhead{display:flex;align-items:baseline;justify-content:space-between;gap:9px;flex-wrap:wrap}
+.fcs .frow .fnm{font-weight:750;font-size:15px}
+.fcs .path{font-size:12.5px;color:var(--ink-soft);line-height:1.45;word-break:break-word}
+.fcs .path b{color:var(--ink);font-weight:750}
+.fcs .nocrit{font-size:12.5px;color:var(--c);background:var(--c-bg);border-radius:8px;padding:7px 10px;line-height:1.45}
+.dark .fcs .nocrit{color:var(--c)}
+.fcs .bchip.warn{background:var(--c-bg);color:var(--c)}
+.fcs .bchip.off{background:var(--chip);color:var(--ink-faint);font-weight:600}
+.fcs .loadnote{padding:26px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius)}
 @media (max-width:560px){.fcs .wrap{padding:22px 15px 56px}.fcs .count{width:100%;margin:6px 0 0}}
 `;
 
@@ -407,6 +445,526 @@ const matchesPositions = (l: LenderRow, f: PosFilter): boolean => {
   return acceptsPositions(l, Number(f));
 };
 
+// ── Product tabs ─────────────────────────────────────────────────────────────
+// MCA is the working product and keeps the whole original page. The four credit
+// products get their own tab, sourced from lenders.lender_types.
+//
+// TWO THINGS ARE DELIBERATE HERE AND MUST STAY THAT WAY:
+//  1. `lender_programs` holds 112 rows and every one of them is product_type
+//     'mca'. There is NO recorded term-loan / LOC / SBA / equipment credit box
+//     for any funder, and `category.criteria` on a lender row was extracted from
+//     MCA packets and decline emails — quoting it on a loan tab would relabel an
+//     MCA box as a term-loan box. So these tabs say in words that we have not
+//     recorded the funder's criteria, and never render a blank cell that could
+//     be read as "no requirement".
+//  2. Vocabulary. An MCA is a purchase of future receivables and is never a
+//     loan. Term loans, lines of credit, SBA and equipment financing ARE credit,
+//     so they use ordinary lending language. Neither vocabulary leaks.
+type ProductId = "mca" | "term_loan" | "line_of_credit" | "sba" | "equipment";
+const PRODUCT_TABS: { v: ProductId; label: string }[] = [
+  { v: "mca", label: "MCA" },
+  { v: "term_loan", label: "Term Loan" },
+  { v: "line_of_credit", label: "Line of Credit" },
+  { v: "sba", label: "SBA" },
+  { v: "equipment", label: "Equipment" },
+];
+const CREDIT_PRODUCTS: Exclude<ProductId, "mca">[] = ["term_loan", "line_of_credit", "sba", "equipment"];
+
+type ReqRow = { k: string; v: string; strong?: boolean };
+type ProductSpec = {
+  label: string;
+  blurb: string;
+  // General industry guidance — orientation for a phone call. NOT any named
+  // funder's credit box; a processor must never quote it as one.
+  requirements: ReqRow[] | null;
+  checklist: string | null;
+};
+
+const PRODUCT_SPEC: Record<Exclude<ProductId, "mca">, ProductSpec> = {
+  term_loan: {
+    label: "Term loan",
+    blurb:
+      "A fixed amount of credit repaid on a set schedule. Slower than an advance and priced on credit quality, so it wants a cleaner file: real time in business, a real credit score, and financial statements.",
+    requirements: [
+      { k: "Time in business", v: "2+ years" },
+      { k: "Credit", v: "650+" },
+      { k: "Bank statements", v: "3–6 months" },
+      { k: "Business tax returns", v: "1–2 years" },
+      { k: "Personal tax returns", v: "Sometimes — lender by lender" },
+      { k: "P&L + balance sheet", v: "Year-to-date plus prior year" },
+      { k: "Business debt schedule", v: "Yes" },
+      { k: "Personal financial statement", v: "Sometimes — lender by lender" },
+      { k: "Collateral documentation", v: "Sometimes — if anything is pledged" },
+      { k: "Time to close", v: "1–2 weeks", strong: true },
+    ],
+    checklist: `To put together your term loan offers, please send over:
+
+• Last 3–6 months of business bank statements (every page, PDF)
+• Business tax returns — the last 1–2 years, complete
+• Year-to-date P&L and balance sheet, plus last year's
+• Business debt schedule — who you owe, the balance, and the monthly payment
+• Driver's license and a voided business check
+• Personal tax returns (last 2 years) if the lender asks for them
+
+Send whatever you have now — we can start the file and add the rest as it comes in.`,
+  },
+  line_of_credit: {
+    label: "Line of credit",
+    blurb:
+      "Revolving credit the merchant draws on and repays as needed — pay interest only on what's drawn. Easier to qualify for than a term loan, lighter on paperwork, and the right answer when the need is recurring rather than one big purchase.",
+    requirements: [
+      { k: "Time in business", v: "1–2 years" },
+      { k: "Credit", v: "600+" },
+      { k: "Bank statements", v: "3–6 months" },
+      { k: "Business tax returns", v: "Sometimes — lender by lender" },
+      { k: "Personal tax returns", v: "Not typically required" },
+      { k: "P&L + balance sheet", v: "Sometimes — lender by lender" },
+      { k: "Business debt schedule", v: "Yes" },
+      { k: "Personal financial statement", v: "Not typically required" },
+      { k: "Collateral documentation", v: "Not typically required" },
+      { k: "Time to close", v: "1–2 weeks", strong: true },
+    ],
+    checklist: `To get your line of credit approved, please send over:
+
+• Last 3–6 months of business bank statements (every page, PDF)
+• Business debt schedule — who you owe, the balance, and the monthly payment
+• Year-to-date P&L and balance sheet if you have them
+• Most recent business tax return, if the lender asks for it
+• Driver's license and a voided business check
+
+Send whatever you have now — we can start the file and add the rest as it comes in.`,
+  },
+  sba: {
+    label: "SBA loan",
+    blurb:
+      "The cheapest money on the shelf and the longest road to it — 30 to 90 days, with a document list that is an order of magnitude longer than anything else here. Worth starting only when the merchant can wait and the file is clean.",
+    requirements: [
+      { k: "Time in business", v: "2+ years" },
+      { k: "Credit", v: "680+" },
+      { k: "Bank statements", v: "3–6 months" },
+      { k: "Business tax returns", v: "3 years", strong: true },
+      { k: "Personal tax returns", v: "3 years — every 20%+ owner", strong: true },
+      { k: "P&L + balance sheet", v: "Yes — YTD plus prior year-ends" },
+      { k: "Business debt schedule", v: "Yes" },
+      { k: "Personal financial statement", v: "Yes — SBA Form 413", strong: true },
+      { k: "Use of proceeds", v: "Itemized, by dollar amount", strong: true },
+      { k: "Collateral documentation", v: "Usually" },
+      { k: "Time to close", v: "30–90 days", strong: true },
+    ],
+    checklist: `An SBA loan is the cheapest money available, and it takes 30–90 days. The sooner these come back, the sooner the clock starts:
+
+• Last 3–6 months of business bank statements (every page, PDF)
+• Business tax returns — last 3 years, complete with all schedules
+• Personal tax returns — last 3 years, for every owner with 20% or more
+• Year-to-date P&L and balance sheet, plus the last 2 year-ends
+• Business debt schedule — who you owe, the balance, and the monthly payment
+• Personal financial statement — SBA Form 413 (we'll send you the form)
+• Itemized use of proceeds — exactly what the money is for, by dollar amount
+• Business licenses, entity documents, and your lease if you rent
+• Collateral documentation if you're pledging property or equipment
+• Driver's license and a voided business check
+
+Send whatever you have now — we can start the file and add the rest as it comes in.`,
+  },
+  equipment: {
+    // Nothing recorded and nothing invented. The requirements table the owner
+    // signed off on covers term / LOC / SBA only; equipment gets an explicit
+    // "not recorded yet" instead of a plausible-looking guess.
+    label: "Equipment financing",
+    blurb:
+      "Credit secured by the equipment itself. We have funders who route equipment deals today, but no requirement set has been recorded for this product yet.",
+    requirements: null,
+    checklist: null,
+  },
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  live_vendor: "Live vendor",
+  application_submitted: "ISO app submitted",
+  potential: "Prospect",
+  inactive: "Inactive",
+};
+
+// Apply-once marketplaces — one application routed to many lenders. This is the
+// fastest path to a first submission on any of these products today, so it sits
+// at the top of the tab rather than inside a funder row.
+const MARKETPLACES: {
+  name: string;
+  url: string;
+  products: Exclude<ProductId, "mca">[];
+  lines: { k: string; v: string }[];
+}[] = [
+  {
+    name: "1 West",
+    url: "https://apply.1west.com/?iso=a10PZ00000socCfYAI",
+    products: ["term_loan", "line_of_credit", "sba", "equipment"],
+    lines: [
+      { k: "Relationship", v: "Signed referral agreement. We refer, 1 West runs it through its lender network." },
+      { k: "ISO code", v: "a10PZ00000socCfYAI — baked into the link, it identifies Momentum Funding." },
+      {
+        k: "The other route",
+        v: "Our closers' primary path is still email: packaged application + last 4 months of business bank statements to partnersubs@1west.com.",
+      },
+      { k: "Compensation", v: "50% of 1 West compensation, new and renewal. Never charge the merchant a fee." },
+    ],
+  },
+  {
+    name: "ROK Financial",
+    url: "https://www.rok.biz/partner-multistep-apply",
+    products: ["term_loan", "line_of_credit", "sba", "equipment"],
+    lines: [
+      {
+        k: "Relationship",
+        v: "Referral. ROK runs the full application and underwriting and funds through its own sources.",
+      },
+      { k: "Compensation", v: "20% of ROK upfront revenue. Never charge the merchant a fee." },
+      { k: "Careful", v: "Non-circumvention applies once ROK funds a client." },
+    ],
+  },
+];
+
+type ProductLenderRow = {
+  id: string;
+  company_name: string;
+  status: string | null;
+  website: string | null;
+  lender_types: string[] | null;
+  min_funding_amount: number | string | null;
+  max_funding_amount: number | string | null;
+};
+type ProfileRow = {
+  lender_id: string;
+  method: string | null;
+  to_email: string | null;
+  portal_url: string | null;
+  required_stips: string[] | null;
+  active: boolean | null;
+  special_instructions: string | null;
+};
+type ProductData = {
+  state: "idle" | "loading" | "ready" | "error";
+  rows: ProductLenderRow[];
+  profiles: Record<string, ProfileRow>;
+  // FALSE means the profile table could not be read — never "no profile exists".
+  profilesReadable: boolean;
+  error: string | null;
+};
+
+const PROD_SIZE = (l: ProductLenderRow) => {
+  const lo = fmtMoney(num(l.min_funding_amount));
+  const hi = fmtMoney(num(l.max_funding_amount));
+  if (lo && hi) return `${lo}–${hi}`;
+  if (hi) return `up to ${hi}`;
+  if (lo) return `${lo}+`;
+  return null;
+};
+
+function CopyBlock({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2200);
+    } catch {
+      // Clipboard blocked (insecure context / permission). Don't lie about it —
+      // and never pop a dialog. The text is already on screen to select by hand.
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="checkbox">
+      <div className="chead">
+        <span className="t">{label}</span>
+        <span className="s">paste straight into an email or text to the merchant</span>
+        <button type="button" className="copy" onClick={copy}>
+          {copied ? "Copied ✓" : "Copy"}
+        </button>
+      </div>
+      <pre>{text}</pre>
+    </div>
+  );
+}
+
+// One funder on a credit-product tab. The whole point of this card is the
+// submission path and an honest statement about what we do NOT know.
+function ProductFunderRow({
+  l,
+  product,
+  profile,
+  profilesReadable,
+}: {
+  l: ProductLenderRow;
+  product: Exclude<ProductId, "mca">;
+  profile: ProfileRow | undefined;
+  profilesReadable: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const spec = PRODUCT_SPEC[product];
+  const live = l.status === "live_vendor";
+  const active = profile?.active === true;
+  const path = profile?.method === "portal" ? profile.portal_url : (profile?.to_email ?? null);
+  const canSubmit = live && active && !!path;
+  const size = PROD_SIZE(l);
+  const stips = (profile?.required_stips ?? []).filter(Boolean);
+
+  return (
+    <article className="frow">
+      <div className="fhead">
+        <span className="fnm">{l.company_name}</span>
+        <span className="box">
+          {!profilesReadable ? (
+            <span className="bchip hard">submission path unreadable</span>
+          ) : canSubmit ? (
+            <span className="bchip open">submit today ✓</span>
+          ) : live && active ? (
+            <span className="bchip warn">live — no submission path on file</span>
+          ) : (
+            <span className="bchip off">not activated · {STATUS_LABEL[l.status ?? ""] ?? l.status ?? "unknown"}</span>
+          )}
+        </span>
+      </div>
+
+      {!profilesReadable ? (
+        <div className="path">
+          <b>How we submit:</b> could not be read — see the banner above. Do not read this as "no path on file."
+        </div>
+      ) : path ? (
+        <div className="path">
+          <b>How we submit:</b>{" "}
+          {profile?.method === "portal" ? (
+            <>
+              portal —{" "}
+              <a href={path} target="_blank" rel="noreferrer">
+                {path}
+              </a>
+            </>
+          ) : (
+            <>email — {path}</>
+          )}
+        </div>
+      ) : (
+        <div className="path">
+          <b>How we submit:</b> no submission address or portal recorded on this funder's profile yet.
+        </div>
+      )}
+
+      {size && <div className="size mono">Catalog funding range {size} — recorded for the funder overall, not for {spec.label.toLowerCase()}</div>}
+
+      <div className="nocrit">
+        We have not recorded {l.company_name}'s {spec.label.toLowerCase()} criteria yet — nothing here is a published
+        credit box. Confirm time in business, credit and documents with the rep before you quote anything to a merchant.
+      </div>
+
+      {(stips.length > 0 || profile?.special_instructions) && (
+        <>
+          <button type="button" className="more" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+            {open ? "Hide what's on file ↑" : "What's on file for this funder ↓"}
+          </button>
+          {open && (
+            <div className="detail">
+              {stips.length > 0 && (
+                <div className="drow">
+                  <b>Submission packet on file:</b> {stips.join(" · ").replace(/_/g, " ")}{" "}
+                  <span style={{ color: "var(--ink-faint)" }}>
+                    — recorded for this funder's submissions generally, not for {spec.label.toLowerCase()}
+                  </span>
+                </div>
+              )}
+              {profile?.special_instructions && <div className="drow">{profile.special_instructions}</div>}
+            </div>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+function ProductTabView({
+  product,
+  data,
+}: {
+  product: Exclude<ProductId, "mca">;
+  data: ProductData;
+}) {
+  const spec = PRODUCT_SPEC[product];
+  const markets = MARKETPLACES.filter((m) => m.products.includes(product));
+  const matching = useMemo(
+    () =>
+      data.rows
+        .filter((r) => (r.lender_types ?? []).includes(product))
+        .slice()
+        .sort((a, b) => {
+          const rank = (l: ProductLenderRow) => (l.status === "live_vendor" ? 0 : 1);
+          const d = rank(a) - rank(b);
+          return d !== 0 ? d : a.company_name.localeCompare(b.company_name);
+        }),
+    [data.rows, product],
+  );
+  const liveOnes = matching.filter((l) => l.status === "live_vendor");
+  const restOnes = matching.filter((l) => l.status !== "live_vendor");
+
+  return (
+    <>
+      <p className="vocab">
+        A <b>{spec.label.toLowerCase()}</b> is credit, so ordinary lending language is correct here. That vocabulary
+        stops at this tab: an MCA is a purchase of future receivables and is never called a loan.
+      </p>
+
+      {/* APPLY ONCE — fastest path to a first submission */}
+      {markets.length > 0 && (
+        <section aria-labelledby={`mkt-${product}`}>
+          <div className="callout">
+            <div className="band">
+              <h2 id={`mkt-${product}`}>⚡ Apply once — the fastest submission you can make today</h2>
+              <p>
+                These partners take <b>one application</b> and route it across their whole lender network for term
+                loans, lines of credit, SBA and equipment. If the merchant is on the phone now, this is the move — no
+                funder shortlist required.
+              </p>
+            </div>
+            {markets.map((m) => (
+              <div className="mkt" key={m.name}>
+                <div className="mnm">{m.name}</div>
+                <a href={m.url} target="_blank" rel="noreferrer">
+                  {m.url}
+                </a>
+                {m.lines.map((ln) => (
+                  <div className="mln" key={ln.k}>
+                    <b>{ln.k}:</b> {ln.v}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* WHAT THE PRODUCT NEEDS */}
+      <section aria-labelledby={`req-${product}`}>
+        <div className="sec-head">
+          <h2 id={`req-${product}`}>What a {spec.label.toLowerCase()} needs</h2>
+          <span className="note">before you name a funder</span>
+        </div>
+        <p className="reqnote">{spec.blurb}</p>
+        {spec.requirements ? (
+          <>
+            <span className="guide">General industry guidance — not any funder's credit box</span>
+            <div className="tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Requirement</th>
+                    <th>What it takes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {spec.requirements.map((r) => (
+                    <tr key={r.k}>
+                      <td>{r.k}</td>
+                      <td>{r.strong ? <b>{r.v}</b> : r.v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="rule">
+              <b>Use this to orient a phone call, never to quote a funder.</b> These are the typical industry numbers
+              for the product — no funder on this page has agreed to them. The moment you name a funder, the only
+              numbers that count are the ones that funder's rep gives you.
+            </div>
+          </>
+        ) : (
+          <div className="rule">
+            <b>We have not recorded a requirement set for {spec.label.toLowerCase()} yet.</b> That is a gap in our
+            notes, not a product without requirements — an equipment deal absolutely has a credit box. Route it through
+            an apply-once partner above, or ask the funder's rep and get it written down.
+          </div>
+        )}
+      </section>
+
+      {/* MERCHANT CHECKLIST */}
+      {spec.checklist && (
+        <section aria-labelledby={`chk-${product}`}>
+          <div className="sec-head">
+            <h2 id={`chk-${product}`}>Send the merchant this list</h2>
+            <span className="note">plain language, copy and paste</span>
+          </div>
+          <CopyBlock label={`${spec.label} — merchant document checklist`} text={spec.checklist} />
+        </section>
+      )}
+
+      {/* WHO DOES IT */}
+      <section aria-labelledby={`fnd-${product}`}>
+        <div className="sec-head">
+          <h2 id={`fnd-${product}`}>Who does {spec.label.toLowerCase()}s</h2>
+          <span className="note">
+            {data.state === "ready" ? `${matching.length} in the catalog · ${liveOnes.length} live` : "from the funder catalog"}
+          </span>
+        </div>
+
+        {data.error && <div className="err">{data.error}</div>}
+
+        {data.state === "loading" && <div className="loadnote">Reading the funder catalog…</div>}
+        {data.state === "error" && (
+          <div className="loadnote">
+            Nothing is listed below because the read failed — <b>not</b> because no funder does this product.
+          </div>
+        )}
+
+        {data.state === "ready" && matching.length === 0 && (
+          <div className="empty">
+            No funder in the catalog is tagged for {spec.label.toLowerCase()} yet. That is a tagging gap in the catalog
+            — the apply-once partners above still route this product today.
+          </div>
+        )}
+
+        {data.state === "ready" && liveOnes.length > 0 && (
+          <>
+            <div className="grouphead">Live vendors</div>
+            <div className="frows">
+              {liveOnes.map((l) => (
+                <ProductFunderRow
+                  key={l.id}
+                  l={l}
+                  product={product}
+                  profile={data.profiles[l.id]}
+                  profilesReadable={data.profilesReadable}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {data.state === "ready" && restOnes.length > 0 && (
+          <>
+            <div className="grouphead">In the network — not activated for submissions</div>
+            <div className="frows">
+              {restOnes.map((l) => (
+                <ProductFunderRow
+                  key={l.id}
+                  l={l}
+                  product={product}
+                  profile={data.profiles[l.id]}
+                  profilesReadable={data.profilesReadable}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      <footer>
+        Funders on this tab come from <b>lenders.lender_types</b> in the funder catalog, so the list updates as funders
+        are tagged · <b>no {spec.label.toLowerCase()} credit box has been recorded for any funder</b> — every criteria
+        line on this page is general industry guidance, and a funder's real box comes from their rep · the requirement
+        table is orientation for a phone call, never a quote to a merchant · internal working tool, not a
+        merchant-facing document.
+      </footer>
+    </>
+  );
+}
+
 export default function FunderCheatSheetPage() {
   const [lenders, setLenders] = useState<LenderRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -414,6 +972,14 @@ export default function FunderCheatSheetPage() {
   const [paper, setPaper] = useState<(typeof PAPER_FILTERS)[number]>("all");
   const [bucket, setBucket] = useState<"all" | BucketId>("all");
   const [positions, setPositions] = useState<PosFilter>("all");
+  const [tab, setTab] = useState<ProductId>("mca");
+  const [prod, setProd] = useState<ProductData>({
+    state: "idle",
+    rows: [],
+    profiles: {},
+    profilesReadable: true,
+    error: null,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -441,6 +1007,64 @@ export default function FunderCheatSheetPage() {
       cancelled = true;
     };
   }, []);
+
+  // Credit-product tabs load on first use, so the MCA tab's first paint is
+  // exactly what it was. A failed read is reported loudly and NEVER collapses
+  // into an empty list.
+  useEffect(() => {
+    if (tab === "mca" || prod.state !== "idle") return;
+    let cancelled = false;
+    setProd((p) => ({ ...p, state: "loading" }));
+    (async () => {
+      const { data, error: err } = await supabase
+        .from("lenders")
+        .select("id, company_name, status, website, lender_types, min_funding_amount, max_funding_amount")
+        .neq("status", "rejected")
+        .overlaps("lender_types", CREDIT_PRODUCTS);
+      if (cancelled) return;
+      if (err) {
+        setProd({
+          state: "error",
+          rows: [],
+          profiles: {},
+          profilesReadable: false,
+          error: `Could not read the funder catalog for the product tabs — ${err.message}. This is a READ FAILURE, not an empty network.`,
+        });
+        return;
+      }
+      const rows = (data ?? []) as ProductLenderRow[];
+      const ids = rows.map((r) => r.id);
+      const profiles: Record<string, ProfileRow> = {};
+      let profilesReadable = true;
+      let profErr: string | null = null;
+      if (ids.length > 0) {
+        const { data: pd, error: pe } = await supabase
+          .from("funder_submission_profiles")
+          .select("lender_id, method, to_email, portal_url, required_stips, active, special_instructions")
+          .in("lender_id", ids);
+        if (cancelled) return;
+        if (pe) {
+          profilesReadable = false;
+          profErr = `Submission paths could not be read — ${pe.message}. Every funder below shows an unknown path: that is a READ FAILURE, not "no path on file."`;
+        } else if ((pd ?? []).length === 0) {
+          // Zero rows for a non-empty funder set is AMBIGUOUS, and the ambiguity
+          // is real: RLS on funder_submission_profiles admits admins, employees
+          // and processors, so a plain closer gets an empty result set with NO
+          // error. "None recorded" and "you may not read these" look identical
+          // from here, so neither is asserted.
+          profilesReadable = false;
+          profErr =
+            "No submission profile came back for any funder. Either none is recorded or your role can't read them — Ops can see these, a setter account cannot. Treat every submission path below as UNKNOWN, not as absent, and confirm with Ops before telling a merchant anything.";
+        } else {
+          for (const p of (pd ?? []) as ProfileRow[]) profiles[p.lender_id] = p;
+        }
+      }
+      setProd({ state: "ready", rows, profiles, profilesReadable, error: profErr });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, prod.state]);
 
   const decorated = useMemo(
     () =>
@@ -480,14 +1104,41 @@ export default function FunderCheatSheetPage() {
             Internal · Deal-Matching Reference
           </p>
           <h1>Funder Cheat Sheet</h1>
-          <p>
-            Match the deal to the funder. Read the merchant's <b>paper grade</b>, check whether they're{" "}
-            <b>stacked</b> (needs consolidation), then filter to the right shortlist. Covers the funders you work
-            today — your <b>{loading ? "…" : `${lenders.length}`} live vendors</b> plus{" "}
-            <b>active referral partners</b>.
-          </p>
+          {tab === "mca" ? (
+            <p>
+              Match the deal to the funder. Read the merchant's <b>paper grade</b>, check whether they're{" "}
+              <b>stacked</b> (needs consolidation), then filter to the right shortlist. Covers the funders you work
+              today — your <b>{loading ? "…" : `${lenders.length}`} live vendors</b> plus{" "}
+              <b>active referral partners</b>.
+            </p>
+          ) : (
+            <p>
+              The merchant doesn't want an advance. Here's who does{" "}
+              <b>{PRODUCT_SPEC[tab as Exclude<ProductId, "mca">].label.toLowerCase()}s</b>, what the product needs, and
+              the fastest way to get a submission out today.
+            </p>
+          )}
         </header>
 
+        <div className="tabs" role="tablist" aria-label="Funding product">
+          {PRODUCT_TABS.map((t) => (
+            <button
+              key={t.v}
+              type="button"
+              role="tab"
+              className="tab"
+              aria-selected={tab === t.v}
+              onClick={() => setTab(t.v)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab !== "mca" && <ProductTabView product={tab as Exclude<ProductId, "mca">} data={prod} />}
+
+        {tab === "mca" && (
+          <>
         {error && <div className="err">{error}</div>}
 
         {/* PAPER EDUCATION */}
@@ -766,6 +1417,8 @@ export default function FunderCheatSheetPage() {
           box and any consolidation product with the funder's rep · this is an internal working tool, not a
           merchant-facing document.
         </footer>
+          </>
+        )}
       </div>
     </div>
   );
