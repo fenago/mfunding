@@ -770,13 +770,26 @@ export default function MerchantApplicationModal({
 
     const dealPatch: Record<string, unknown> = {};
     const ask = num(form.amount_requested);
-    // 🚨 NEVER WRITE THE ASK BACK WHEN IT WAS WITHHELD FROM US. `same(ask,
-    // null)` is false for any typed number, so the old line would push this
-    // reader's figure over the deal's REAL ask — one they were never shown
-    // and so could not have meant to change. A processor can UPDATE any deal
-    // (processor_update_all_deals) while reading it masked, so this is a live
-    // overwrite path, not a theoretical one. No comparison is possible, so no
-    // write: the application row still records what they typed.
+    // NEVER WRITE THE ASK BACK WHEN IT WAS WITHHELD FROM US. `same(ask, null)`
+    // is false for any typed number, so the old line would push this reader's
+    // figure over the deal's REAL ask — one they were never shown.
+    //
+    // ⚠️ CORRECTION (same day, and the commit message for this change still
+    // carries the wrong version): this is NOT a reachable overwrite, and an
+    // earlier comment here claimed it was. RLS makes it impossible —
+    // `getDealById` only falls back to the masked RPC when the DIRECT select
+    // returns no row, and `closer_select_own_deals`' qual is the same three
+    // conditions as `closer_owns_deal` plus `assigned_closer_id IS NULL`. In the
+    // exact state where a read is masked, every UPDATE policy fails too, and
+    // mustWrite throws on the blocked write. READ-MASKED IMPLIES WRITE-DENIED.
+    // Processors are never masked at all (processor_select_all_deals grants
+    // unqualified SELECT), so the box is never blank for them either.
+    //
+    // The guard stays because it is correct and costs nothing, and because the
+    // impossibility lives in two RLS policies that nobody edits together — the
+    // same two-lists-must-agree shape as isAdmin/is_ops_staff. But do not read
+    // this as evidence of a live hole: there isn't one, and treating it as one
+    // is what got the severity escalated to the owner and retracted.
     const dealAskNow = dealFieldOf<number>(deal, "amount_requested");
     if (ask !== null && dealAskNow.kind === "value" && !same(ask, dealAskNow.value)) {
       dealPatch.amount_requested = ask;
