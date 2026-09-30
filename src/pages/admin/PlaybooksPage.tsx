@@ -37,7 +37,7 @@ import {
   BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, FALLBACK_PLAYBOOK_ID, coldDialOpener, COLD_DIAL_VARIANT_LABEL, type ColdDialVariant, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
-import { sourceMeta, SOURCE_TONE_CLASS } from "../../lib/sourceLabel";
+import { sourceMeta, SOURCE_TONE_CLASS, leadSourceOptionsFor } from "../../lib/sourceLabel";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import BusinessPicker, { type PlaybookBusiness } from "../../components/admin/BusinessPicker";
@@ -4500,17 +4500,23 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Lead source</span>
+                {/* Options come from SOURCE_MAP (src/lib/sourceLabel.ts), never a list
+                    typed here. The hand-written list this replaced omitted realtime_appt,
+                    ghl_other, ucc_list, ph_setter and aged_list — 76% of the book — so
+                    those deals rendered BLANK and invited a "repair" to the nearest
+                    option, Live Transfer. leadSourceOptionsFor() always carries the row's
+                    current value, so a real value can never present as unset again. */}
                 <select className="input-field w-full mt-1" value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
                   <option value="">Select source</option>
-                  <option value="live_transfer">Live Transfer</option>
-                  <option value="google_ads">Google Ads</option>
-                  <option value="website">Website</option>
-                  <option value="aged_lead">Aged Lead</option>
-                  <option value="ucc_lead">UCC Filing</option>
-                  <option value="referral">Referral</option>
-                  <option value="cold_call">Cold Call</option>
-                  <option value="repeat_customer">Repeat Customer</option>
-                  <option value="other">Other</option>
+                  {leadSourceOptionsFor(leadSource).map((o) => (
+                    <option
+                      key={o.value}
+                      value={o.value}
+                      title={o.isCurrent ? "This deal's current value — not a standard choice" : undefined}
+                    >
+                      {o.label}{o.isCurrent ? " (current)" : ""}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>

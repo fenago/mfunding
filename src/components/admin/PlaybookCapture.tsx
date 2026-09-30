@@ -13,6 +13,7 @@ import {
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import { normBusinessName } from "@/lib/businessName";
+import { leadSourceOptionsFor } from "@/lib/sourceLabel";
 import { createDeal } from "../../services/dealService";
 import { listCampaigns, defaultCampaignIdForSource, isOpenCampaign, type Campaign } from "../../services/campaignService";
 import { MARKET_CONFIG } from "../../types/deals";
@@ -807,17 +808,24 @@ export default function PlaybookCapture({
                   </select>
                 </Field>
                 <Field label="Lead source">
+                  {/* Derived from SOURCE_MAP (src/lib/sourceLabel.ts), never typed here.
+                      The hand-written list this replaced offered the LEGACY spellings
+                      ucc_lead / aged_lead, so every deal captured through this form
+                      started on an alias of the canonical ucc_list / aged_list. It also
+                      omitted realtime_appt, ucc_list, web_purchased, aged_transfer and
+                      cold_email — all of which CAPTURE_DEFAULTS seeds — so a seeded
+                      form rendered its lead source BLANK and invited a wrong repair. */}
                   <select className="input-field w-full" value={form.lead_source} onChange={(e) => set("lead_source", e.target.value)}>
                     <option value="">Select source</option>
-                    <option value="live_transfer">Live Transfer</option>
-                    <option value="google_ads">Google Ads</option>
-                    <option value="website">Website</option>
-                    <option value="aged_lead">Aged Lead</option>
-                    <option value="ucc_lead">UCC Filing</option>
-                    <option value="referral">Referral</option>
-                    <option value="cold_call">Cold Call</option>
-                    <option value="repeat_customer">Repeat Customer</option>
-                    <option value="other">Other</option>
+                    {leadSourceOptionsFor(form.lead_source).map((o) => (
+                      <option
+                        key={o.value}
+                        value={o.value}
+                        title={o.isCurrent ? "This lead's current value — not a standard choice" : undefined}
+                      >
+                        {o.label}{o.isCurrent ? " (current)" : ""}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Assigned closer">

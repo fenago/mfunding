@@ -20,28 +20,41 @@ export type SourceTone =
 interface SourceMeta {
   label: string;
   tone: SourceTone;
+  /**
+   * CANONICAL = a value a human may deliberately CHOOSE for a deal, and therefore
+   * an option in every lead-source picker (see LEAD_SOURCE_OPTIONS).
+   *
+   * Entries WITHOUT this flag still render — they are legacy spellings
+   * (`ucc_lead` for `ucc_list`), or machine-written values nobody should pick by
+   * hand (`ghl_other` means "the CRM does not know where this came from"; picking
+   * it as an attribution would be a lie). Offering an alias alongside its
+   * canonical twin is how a picker starts writing two spellings of one thing.
+   */
+  canonical?: true;
 }
 
 // Keys are the exact deals.lead_source / customers.source strings seen in the DB.
 const SOURCE_MAP: Record<string, SourceMeta> = {
-  live_transfer: { label: "Live Transfer", tone: "transfer" },
-  realtime_appt: { label: "Real-Time Appt", tone: "transfer" },
-  ucc_list: { label: "UCC", tone: "ucc" },
+  live_transfer: { label: "Live Transfer", tone: "transfer", canonical: true },
+  realtime_appt: { label: "Real-Time Appt", tone: "transfer", canonical: true },
+  ucc_list: { label: "UCC", tone: "ucc", canonical: true },
   ucc_lead: { label: "UCC", tone: "ucc" }, // legacy alias — same thing as ucc_list
-  trigger_list: { label: "Trigger", tone: "ucc" },
-  aged_list: { label: "Aged", tone: "aged" },
-  aged_lead: { label: "Aged", tone: "aged" },
-  aged_transfer: { label: "Aged Transfer", tone: "aged" },
-  web_purchased: { label: "Web (Purchased)", tone: "aged" },
-  website: { label: "Website", tone: "web" },
-  website_apply: { label: "Website", tone: "web" },
-  cold_email: { label: "Cold Email", tone: "email" },
-  cold_email_landing: { label: "Cold Email", tone: "email" },
-  cold_call: { label: "Cold Call", tone: "email" },
-  ph_setter: { label: "PH Setter", tone: "setter" },
-  ghl_other: { label: "GHL", tone: "ghl" },
-  renewal: { label: "Renewal", tone: "renewal" },
-  referral: { label: "Referral", tone: "referral" },
+  trigger_list: { label: "Trigger", tone: "ucc", canonical: true },
+  aged_list: { label: "Aged", tone: "aged", canonical: true },
+  aged_lead: { label: "Aged", tone: "aged" }, // legacy alias — same thing as aged_list
+  aged_transfer: { label: "Aged Transfer", tone: "aged", canonical: true },
+  web_purchased: { label: "Web (Purchased)", tone: "aged", canonical: true },
+  website: { label: "Website", tone: "web", canonical: true },
+  website_apply: { label: "Website", tone: "web" }, // legacy alias — same thing as website
+  google_ads: { label: "Google Ads", tone: "web", canonical: true },
+  cold_email: { label: "Cold Email", tone: "email", canonical: true },
+  cold_email_landing: { label: "Cold Email", tone: "email" }, // legacy alias
+  cold_call: { label: "Cold Call", tone: "email", canonical: true },
+  ph_setter: { label: "PH Setter", tone: "setter", canonical: true },
+  ghl_other: { label: "GHL", tone: "ghl" }, // machine-written — renders, never offered
+  renewal: { label: "Renewal", tone: "renewal", canonical: true },
+  repeat_customer: { label: "Repeat Customer", tone: "renewal" }, // legacy — use `renewal`
+  referral: { label: "Referral", tone: "referral", canonical: true },
 };
 
 /**
@@ -79,6 +92,48 @@ export function sourceMeta(leadSource?: string | null): SourceMeta {
 /** Just the label, for plain text (e.g. a table cell). */
 export function sourceLabel(leadSource?: string | null): string {
   return sourceMeta(leadSource).label;
+}
+
+export interface LeadSourceOption {
+  value: string;
+  label: string;
+  /** True when this option exists ONLY because it is the row's current value. */
+  isCurrent?: true;
+}
+
+/**
+ * The lead sources a human may CHOOSE, derived from SOURCE_MAP so a picker can
+ * never again drift from what the database actually holds.
+ *
+ * WHY THIS EXISTS. The deal edit modal carried its own hand-written list of nine
+ * values. It omitted `realtime_appt` (207 deals), `ghl_other` (60), `ucc_list`
+ * (35), `ph_setter` (18) and `aged_list` (1) — 322 of 424 deals, 76% of the book.
+ * A <select> whose value matches no <option> renders BLANK, so three quarters of
+ * deals presented their lead source as unset and invited a "repair"; the nearest
+ * plausible option on the list was Live Transfer. That is how at least one
+ * real-time lead (MF-2026-0100) silently became a live transfer, which in turn
+ * moved it out of the only panel that grades its 5-minute clock. Nobody
+ * mis-clicked — the form asked for it.
+ */
+export const LEAD_SOURCE_OPTIONS: ReadonlyArray<LeadSourceOption> = Object.entries(SOURCE_MAP)
+  .filter(([, meta]) => meta.canonical)
+  .map(([value, meta]) => ({ value, label: meta.label }));
+
+/**
+ * The options for a picker editing `current`, which ALWAYS includes `current`
+ * itself — labelled honestly — even when it is a legacy alias, a machine-written
+ * value, or something this build has never heard of.
+ *
+ * A real value must never be presented as empty. Falling out of the canonical
+ * list is a reason to show a value plainly, not a reason to hide it: a hidden
+ * value reads as "unset", and "unset" is what gets overwritten.
+ */
+export function leadSourceOptionsFor(current?: string | null): ReadonlyArray<LeadSourceOption> {
+  const cur = (current ?? "").trim();
+  if (!cur || LEAD_SOURCE_OPTIONS.some((o) => o.value === cur)) return LEAD_SOURCE_OPTIONS;
+  // sourceLabel() title-cases anything unknown, so this is readable even for a
+  // value added to the DB after this build shipped.
+  return [{ value: cur, label: sourceLabel(cur), isCurrent: true }, ...LEAD_SOURCE_OPTIONS];
 }
 
 /** Tailwind chip classes per tone (light + dark). Consuming components render a chip with these. */

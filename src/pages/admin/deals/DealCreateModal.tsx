@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { mustWrite } from "@/supabase/writes";
+import { leadSourceOptionsFor } from "@/lib/sourceLabel";
 import { createDeal } from "../../../services/dealService";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import type { DealType, Market, CreateDealData } from "../../../types/deals";
@@ -393,16 +394,20 @@ export default function DealCreateModal({
                 onChange={(e) => setFormData((f) => ({ ...f, lead_source: e.target.value }))}
                 className="input-field w-full"
               >
+                {/* Derived from SOURCE_MAP (src/lib/sourceLabel.ts), never typed here —
+                    the hand-written list this replaced minted the legacy aliases
+                    ucc_lead / aged_lead instead of the canonical ucc_list / aged_list,
+                    and omitted realtime_appt, ph_setter and web_purchased entirely. */}
                 <option value="">Select source</option>
-                <option value="live_transfer">Live Transfer</option>
-                <option value="google_ads">Google Ads</option>
-                <option value="website">Website</option>
-                <option value="aged_lead">Aged Lead</option>
-                <option value="ucc_lead">UCC Filing</option>
-                <option value="referral">Referral</option>
-                <option value="cold_call">Cold Call</option>
-                <option value="repeat_customer">Repeat Customer</option>
-                <option value="other">Other</option>
+                {leadSourceOptionsFor(formData.lead_source).map((o) => (
+                  <option
+                    key={o.value}
+                    value={o.value}
+                    title={o.isCurrent ? "This deal's current value — not a standard choice" : undefined}
+                  >
+                    {o.label}{o.isCurrent ? " (current)" : ""}
+                  </option>
+                ))}
               </select>
             </div>
 
