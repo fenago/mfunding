@@ -675,7 +675,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           ...(Object.keys(buildStipOverrides(ids)).length ? { stipOverrides: buildStipOverrides(ids) } : {}),
         },
       });
-      if (fnErr) throw fnErr;
+      // Not `throw fnErr` — invoke() collapses every non-2xx into "Edge Function
+      // returned a non-2xx status code" and hides the server's actual sentence in
+      // error.context. That is what a processor saw instead of being told the deal
+      // wasn't assigned to her.
+      if (fnErr) await invokeThrow(fnErr);
       const rows = (data?.results ?? []) as FunderResult[];
       setResults((prev) => {
         const next = { ...prev };
@@ -724,7 +728,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
         body: { dealId: deal.id, lenderIds: ids, action: "preview", documentIds: [...selectedDocIds], ...(Object.keys(buildStipOverrides(ids)).length ? { stipOverrides: buildStipOverrides(ids) } : {}) },
       });
-      if (fnErr) throw fnErr;
+      // Not `throw fnErr` — invoke() collapses every non-2xx into "Edge Function
+      // returned a non-2xx status code" and hides the server's actual sentence in
+      // error.context. That is what a processor saw instead of being told the deal
+      // wasn't assigned to her.
+      if (fnErr) await invokeThrow(fnErr);
       const rows = (data?.previews ?? []) as PreviewFunder[];
       const seedEdits: Record<string, { subject: string; body: string }> = {};
       const seedOrig: Record<string, { subject: string; body: string }> = {};
@@ -798,7 +806,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       const { data, error: fnErr } = await supabase.functions.invoke("recommend-lenders", {
         body: { deal_id: deal.id },
       });
-      if (fnErr) throw fnErr;
+      // Not `throw fnErr` — invoke() collapses every non-2xx into "Edge Function
+      // returned a non-2xx status code" and hides the server's actual sentence in
+      // error.context. That is what a processor saw instead of being told the deal
+      // wasn't assigned to her.
+      if (fnErr) await invokeThrow(fnErr);
       if (data?.error) throw new Error(data.error);
       const recs = (data?.recommendations ?? []) as AiRec[];
       setAiSummary(typeof data?.summary === "string" ? data.summary : "");

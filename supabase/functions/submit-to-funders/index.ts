@@ -637,9 +637,19 @@ Deno.serve(async (req) => {
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
+  // A PROCESSOR WORKS THE WHOLE BOARD, so ownership never gates them (owner
+  // ruling 2026-09-16). The three other action paths in this file already carry
+  // this exemption; THIS one — the actual send — did not, so a processor could
+  // open any deal, pick funders, build the package, and get
+  // "Forbidden — this deal isn't assigned to you" on the click that mattered.
+  // Reported live 2026-09-30: Kristine (processor) submitting EZ Lawn
+  // MF-2026-0418, which is assigned to Catherine.
   if (callerRole === "closer") {
-    const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-    if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+    if (!proc) {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
   }
 
   const { data: customer } = await db.from("customers").select("*").eq("id", deal.customer_id).maybeSingle();
