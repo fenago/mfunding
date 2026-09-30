@@ -277,7 +277,7 @@ type LenderCategory = {
 // Reach-someone fields. Every one of them is sparsely populated across the 125
 // funders (95 have a phone, 58 an email, 42 a name, 42 a `contacts` array), so
 // the contact block is built for the SPARSE row and states the gaps in words.
-export type ContactFields = {
+type ContactFields = {
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
@@ -586,10 +586,6 @@ function MailLine({ label, email }: { label: string; email: string }) {
   );
 }
 
-const clean = (s: string | null | undefined) => {
-  const t = (s ?? "").trim();
-  return t === "" ? null : t;
-};
 // Prose in `lenders.notes` / the submission profile's `internal_notes` carries
 // real contact detail ("Francine Grimaldi (Account Manager) - Direct
 // 929-531-9989, Cell 646-491-1130"). It is QUOTED, never parsed into fields: a
@@ -597,6 +593,119 @@ const clean = (s: string | null | undefined) => {
 const mentionsContact = (s: string | null) => !!s && (s.includes("@") || /\d{3}[).\-\s]?\d{3}[.\-\s]?\d{4}/.test(s));
 
 
+
+
+const clean = (s: string | null | undefined) => {
+  const t = (s ?? "").trim();
+  return t === "" ? null : t;
+};
+
+// ── Never print a credential ─────────────────────────────────────────────────
+// The free-text columns this page quotes are NOT a safe place to read from
+// blind. `lenders.submission_notes` carries the live password for our own
+// mailbox on three funders (IOU Financial, Lendini, Uplyft: the literal string
+// "sales@send.mfunding.net / Descartes2!"), and this page is open to every
+// setter. A note that looks like it contains a credential is withheld WHOLE —
+// not partially redacted, because a partial redaction that misses is worse than
+// no redaction at all, and a withheld note is recoverable by asking Ops.
+//
+// Two shapes catch it:
+//   1. the word — password / pwd / un/pw / credentials / login:
+//   2. an email followed by a separator and a token that is NOT a phone number,
+//      an email or a URL — which is what "x@y.com / Descartes2!" is, and what
+//      "team@mcashadvance.com / 855-433-8641" is not.
+const SECRET_WORD_RX = /\b(pass(word|wd)?|pwd|un\s*\/\s*pw|u\s*\/\s*p|credentials?)\b|\blogin\s*[:=]/i;
+const EMAIL_PAIR_RX = /[\w.+-]+@[\w.-]+\.[a-z]{2,}\s*[/:]\s*(\S+)/gi;
+const TOKEN_IS_HARMLESS = (t: string) =>
+  /^[\d()+.\-\s]{7,}$/.test(t) || t.includes("@") || /^https?:/i.test(t) || /^www\./i.test(t);
+
+function looksLikeSecret(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  if (t === "") return false;
+  if (SECRET_WORD_RX.test(t)) return true;
+  EMAIL_PAIR_RX.lastIndex = 0;
+  for (let m = EMAIL_PAIR_RX.exec(t); m !== null; m = EMAIL_PAIR_RX.exec(t)) {
+    if (!TOKEN_IS_HARMLESS(m[1])) return true;
+  }
+  return false;
+}
+
+// Every free-text quote on this page goes through here. Returns the text, or
+// null plus the reason it is being withheld.
+function safeQuote(text: string | null | undefined): { text: string | null; withheld: boolean } {
+  const t = clean(text);
+  if (!t) return { text: null, withheld: false };
+  return looksLikeSecret(t) ? { text: null, withheld: true } : { text: t, withheld: false };
+}
+
+function Quoted({ label, text }: { label: string; text: string | null | undefined }) {
+  const q = safeQuote(text);
+  if (q.withheld) {
+    return (
+      <div className="credhold">
+        {label} — <b>not shown.</b> This note contains what looks like a credential, and this page is open to every
+        setter. Ops has it.
+      </div>
+    );
+  }
+  if (!q.text) return null;
+  return (
+    <div className="cnote">
+      <span className="k">{label}</span>
+      {q.text}
+    </div>
+  );
+}
+
+// ── What a link actually is ──────────────────────────────────────────────────
+// A URL on a page headed "the fastest submission you can make today" reads as
+// safe to send a merchant. For most of these URLs that is FALSE, and the risk
+// is invisible — no identifier in the link means the merchant is a walk-in and
+// the commission is gone. So every rendered URL is classified and labelled.
+type LinkClass = "attributed" | "internal" | "unattributed";
+const ATTRIBUTION_PARAM_RX = /[?&](iso|plid|ref|referral|partner|partnerid|aff|affiliate|agent|promo|pid|lid)=[^&]+/i;
+const INTERNAL_HOST_RX = /\b(portal|app|broker|brokers|iso|dashboard|login|my|go)\.|mypartner\.io|\/dashboard|\/login|\/partner\/center/i;
+
+function classifyLink(url: string): LinkClass {
+  if (ATTRIBUTION_PARAM_RX.test(url)) return "attributed";
+  if (INTERNAL_HOST_RX.test(url)) return "internal";
+  return "unattributed";
+}
+
+const LINK_CHIP: Record<LinkClass, { cls: string; label: string; title: string }> = {
+  attributed: {
+    cls: "bchip open",
+    label: "carries our ID ✓",
+    title: "This link identifies Momentum Funding. Safe to send a merchant.",
+  },
+  internal: {
+    cls: "bchip",
+    label: "we log in — never send",
+    title: "Our own portal. Sending it to a merchant does nothing useful.",
+  },
+  unattributed: {
+    cls: "bchip warn",
+    label: "⚠ no ID — commission not tracked",
+    title:
+      "This URL carries no identifier. A merchant who applies through it is a walk-in and the commission is gone.",
+  },
+};
+
+function LinkLine({ label, url }: { label: string; url: string }) {
+  const k = classifyLink(url);
+  const chip = LINK_CHIP[k];
+  return (
+    <div className="lrow">
+      <span className="lk">{label}</span>
+      <a className="cmail" href={url} target="_blank" rel="noreferrer">
+        {url}
+      </a>
+      <span className={chip.cls} title={chip.title}>
+        {chip.label}
+      </span>
+    </div>
+  );
+}
 
 // ── A recorded credit box, when one exists ───────────────────────────────────
 // `lender_programs` rows are loaded from a funder's own signed packet. Most
@@ -818,17 +927,13 @@ function LinksBlock({
             {brokerPortal && (
               <>
                 <div className="pt">Broker / ISO portal</div>
-                <a className="cmail" href={brokerPortal} target="_blank" rel="noreferrer">
-                  {brokerPortal}
-                </a>
+                <LinkLine label="" url={brokerPortal} />
               </>
             )}
             {profilePortal && !sameUrl && (
               <>
                 <div className="pt">{brokerPortal ? "Portal on the submission profile" : "Submission portal"}</div>
-                <a className="cmail" href={profilePortal} target="_blank" rel="noreferrer">
-                  {profilePortal}
-                </a>
+                <LinkLine label="" url={profilePortal} />
                 {brokerPortal && (
                   <div className="cred">
                     Two different portal links are recorded for this funder. Neither has been confirmed as the current
@@ -864,8 +969,7 @@ function LinksBlock({
 
       {subNotes && (
         <div className="cgroup">
-          <div className="ck">Submission notes — quoted, not parsed</div>
-          <div className="cnote">{subNotes}</div>
+          <Quoted label="Submission notes — quoted, not parsed" text={subNotes} />
         </div>
       )}
 
@@ -880,15 +984,26 @@ function LinksBlock({
           <div className="cnone">Nothing captured from this funder's packet yet.</div>
         ) : (
           <div className="doclist">
-            {mine.map((d) => (
-              <div className="docrow" key={d.id}>
-                <span className="dt">{DOC_TYPE_LABEL[d.document_type ?? ""] ?? d.document_type ?? "file"}</span>
-                <span>{d.filename ?? "unnamed file"}</span>
-                <button type="button" className="docopen" onClick={() => open(d)}>
-                  open
-                </button>
-              </div>
-            ))}
+            {mine.map((d) => {
+              // UCS stores two copies each of its ISO Agreement and Partner Info
+              // Sheet — same filename, different bytes, both approved. Say that
+              // out loud rather than silently showing one of them.
+              const twins = mine.filter((x) => (x.filename ?? "") === (d.filename ?? "")).length;
+              return (
+                <div className="docrow" key={d.id}>
+                  <span className="dt">{DOC_TYPE_LABEL[d.document_type ?? ""] ?? d.document_type ?? "file"}</span>
+                  <span>{d.filename ?? "unnamed file"}</span>
+                  {twins > 1 && (
+                    <span className="dt" title="Same filename stored more than once, with different contents. Nobody has said which is current.">
+                      {twins} copies
+                    </span>
+                  )}
+                  <button type="button" className="docopen" onClick={() => open(d)}>
+                    open
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
         {docErr && <div className="docerr">{docErr}</div>}
@@ -1016,10 +1131,7 @@ function ContactBlock({
       {notes.length > 0 && (
         <div className="cgroup">
           {notes.map((n) => (
-            <div className="cnote" key={n.k}>
-              <span className="k">{n.k} — quoted, not parsed into fields</span>
-              {n.v}
-            </div>
+            <Quoted key={n.k} label={`${n.k} — quoted, not parsed into fields`} text={n.v} />
           ))}
         </div>
       )}
@@ -1028,12 +1140,7 @@ function ContactBlock({
 
       <div className="cgroup">
         {site ? (
-          <div className="cline">
-            <span className="lbl">Website</span>
-            <a className="cmail" href={site} target="_blank" rel="noreferrer">
-              {site}
-            </a>
-          </div>
+          <LinkLine label="Website" url={site} />
         ) : (
           <div className="cnone">Website not recorded.</div>
         )}
@@ -1199,34 +1306,59 @@ const STATUS_LABEL: Record<string, string> = {
 // at the top of the tab rather than inside a funder row.
 const MARKETPLACES: {
   name: string;
-  url: string;
+  // The link a MERCHANT may be sent. Present ONLY when the URL carries an
+  // identifier that ties the application back to us. A partner with no such
+  // link gets `null` and says so — a plausible-looking marketing URL in this
+  // slot is a commission leak, because everything on this callout reads as
+  // "safe to send".
+  merchantLink: string | null;
+  // Where WE work the relationship. Never sent to a merchant.
+  ourPortal?: string;
   products: Exclude<ProductId, "mca">[];
   lines: { k: string; v: string }[];
 }[] = [
   {
     name: "1 West",
-    url: "https://apply.1west.com/?iso=a10PZ00000socCfYAI",
+    merchantLink: "https://apply.1west.com/?iso=a10PZ00000socCfYAI",
     products: ["term_loan", "line_of_credit", "sba", "equipment"],
     lines: [
       { k: "Relationship", v: "Signed referral agreement. We refer, 1 West runs it through its lender network." },
-      { k: "ISO code", v: "a10PZ00000socCfYAI — baked into the link, it identifies Momentum Funding." },
+      {
+        k: "How we get paid",
+        v: "The ISO code a10PZ00000socCfYAI is baked into the link and identifies Momentum Funding. Send the merchant THAT link, never 1west.com.",
+      },
       {
         k: "The other route",
-        v: "Our closers' primary path is still email: packaged application + last 4 months of business bank statements to partnersubs@1west.com.",
+        v: "Or package it yourself: application + last 4 months of business bank statements to partnersubs@1west.com.",
       },
       { k: "Compensation", v: "50% of 1 West compensation, new and renewal. Never charge the merchant a fee." },
     ],
   },
   {
     name: "ROK Financial",
-    url: "https://www.rok.biz/partner-multistep-apply",
+    // ROK has NO attributed merchant link. rok.biz/partner-multistep-apply is
+    // the page where a BROKER signs up, carries no identifier, and was being
+    // shown here as a merchant apply link — a merchant who used it was a
+    // walk-in and the 20% was gone. Per the signed referral agreement
+    // (DocuSign 7/6/2026) attribution comes from submitting through our
+    // affiliate account, and the referral locks for 21 calendar days.
+    merchantLink: null,
+    ourPortal: "https://rok.mypartner.io",
     products: ["term_loan", "line_of_credit", "sba", "equipment"],
     lines: [
       {
-        k: "Relationship",
-        v: "Referral. ROK runs the full application and underwriting and funds through its own sources.",
+        k: "⚠ No merchant link",
+        v: "ROK has no referral URL that identifies us. A merchant who applies on rok.biz by themselves is a walk-in and we are paid nothing. Do not send a merchant to ROK's website.",
       },
-      { k: "Compensation", v: "20% of ROK upfront revenue. Never charge the merchant a fee." },
+      {
+        k: "How to submit",
+        v: "Executed ROK application + 3 months of business bank statements, submitted through OUR affiliate account at rok.mypartner.io (username sales@send.mfunding.net). The referral then locks for 21 calendar days.",
+      },
+      { k: "Contact", v: "Tony Cimino — tonyc@rok.biz, (833) 376-5249." },
+      {
+        k: "Relationship",
+        v: "Referral. ROK runs the full application and underwriting and funds through its own sources. 20% of ROK upfront revenue; never charge the merchant a fee.",
+      },
       { k: "Careful", v: "Non-circumvention applies once ROK funds a client." },
     ],
   },
@@ -1284,6 +1416,20 @@ function mergeProfiles(prev: ProfileState, next: ProfileState): ProfileState {
   };
 }
 
+// "I got zero rows" and "I am not allowed to see this table" are the same
+// response under RLS. They are NOT the same sentence to a processor, and this
+// page has spent four commits keeping such pairs apart, so it is worth one
+// extra query to tell them apart: ask the table for ANY single row, unfiltered.
+//   error or zero rows back  → this account cannot see the table → UNKNOWN
+//   a row back               → the table is readable → an empty filtered read
+//                              genuinely means "none for these funders"
+// Without this, a credit tab whose visible funders happen to have no recorded
+// box reports "can't read" when the truth is "we haven't recorded it".
+async function canRead(table: "lender_documents" | "lender_programs" | "funder_submission_profiles"): Promise<boolean> {
+  const { data, error } = await supabase.from(table).select("lender_id").limit(1);
+  return !error && (data ?? []).length > 0;
+}
+
 // `lender_documents` is admin/super-admin only. A setter reads zero rows with
 // no error, so an empty result is UNKNOWN, never "nothing on file".
 async function loadDocs(ids: string[]): Promise<DocState> {
@@ -1292,7 +1438,8 @@ async function loadDocs(ids: string[]): Promise<DocState> {
     .from("lender_documents")
     .select("id, lender_id, document_type, filename, storage_path, description")
     .in("lender_id", ids);
-  if (error || (data ?? []).length === 0) return { byLender: {}, readable: false };
+  if (error) return { byLender: {}, readable: false };
+  if ((data ?? []).length === 0) return { byLender: {}, readable: await canRead("lender_documents") };
   const byLender: Record<string, LenderDoc[]> = {};
   for (const d of (data ?? []) as LenderDoc[]) (byLender[d.lender_id] ??= []).push(d);
   return { byLender, readable: true };
@@ -1309,7 +1456,8 @@ function mergeDocs(prev: DocState, next: DocState): DocState {
 async function loadPrograms(ids: string[]): Promise<ProgramState> {
   if (ids.length === 0) return { byKey: {}, readable: true };
   const { data, error } = await supabase.from("lender_programs").select("*").in("lender_id", ids);
-  if (error || (data ?? []).length === 0) return { byKey: {}, readable: false };
+  if (error) return { byKey: {}, readable: false };
+  if ((data ?? []).length === 0) return { byKey: {}, readable: await canRead("lender_programs") };
   const byKey: Record<string, ProgramRow> = {};
   for (const r of (data ?? []) as ProgramRow[]) {
     if (r.product_type) byKey[progKey(r.lender_id, r.product_type)] = r;
@@ -1333,12 +1481,12 @@ async function loadProfiles(ids: string[]): Promise<ProfileState> {
     };
   }
   const rows = (data ?? []) as ProfileRow[];
-  if (rows.length === 0) {
+  if (rows.length === 0 && !(await canRead("funder_submission_profiles"))) {
     return {
       map: {},
       readable: false,
       error:
-        "Submission addresses are UNKNOWN on this page — no profile came back for any funder. Either none is recorded or your account can't read them (Ops can, a setter account cannot). Treat them as unknown, not as absent: there is someone to send a deal to, ask Ops who.",
+        "Submission addresses are UNKNOWN on this page — your account cannot read the submission profiles (Ops can; a setter account cannot). Treat every submission address as unknown, not as absent: there IS somewhere to send a deal, ask Ops where.",
       severity: "limited",
     };
   }
@@ -1495,7 +1643,7 @@ function ProductFunderRow({
                   </span>
                 </div>
               )}
-              {profile?.special_instructions && <div className="drow">{profile.special_instructions}</div>}
+              <Quoted label="Funder submission notes" text={profile?.special_instructions} />
             </div>
           )}
         </>
@@ -1556,9 +1704,16 @@ function ProductTabView({
             {markets.map((m) => (
               <div className="mkt" key={m.name}>
                 <div className="mnm">{m.name}</div>
-                <a href={m.url} target="_blank" rel="noreferrer">
-                  {m.url}
-                </a>
+                {m.merchantLink ? (
+                  <LinkLine label="Send the merchant" url={m.merchantLink} />
+                ) : (
+                  <div className="credhold">
+                    <b>No merchant-facing link for {m.name}.</b> Nothing on their site identifies us, so a merchant who
+                    applies there is a walk-in and we are paid nothing. Submit through our own account instead — see
+                    below.
+                  </div>
+                )}
+                {m.ourPortal && <LinkLine label="We log in at" url={m.ourPortal} />}
                 {m.lines.map((ln) => (
                   <div className="mln" key={ln.k}>
                     <b>{ln.k}:</b> {ln.v}
@@ -1694,10 +1849,13 @@ function ProductTabView({
       </section>
 
       <footer>
-        Funders on this tab come from <b>lenders.lender_types</b> in the funder catalog, so the list updates as funders
-        are tagged · <b>no {spec.label.toLowerCase()} credit box has been recorded for any funder</b> — every criteria
-        line on this page is general industry guidance, and a funder's real box comes from their rep · the requirement
-        table is orientation for a phone call, never a quote to a merchant · internal working tool, not a
+        Funders on this tab are the <b>union</b> of <b>lenders.lender_types</b> and{" "}
+        <b>category.products</b> in the funder catalog — two columns that disagree in both directions, so reading
+        either alone hides funders · a funder showing a <b>recorded {spec.label.toLowerCase()} box</b> has one loaded
+        from their own packet; <b>most funders have none</b>, and those rows say so rather than leaving a blank that
+        reads as "no requirement" · every criteria line that is NOT in a recorded box is general industry guidance,
+        and the requirement table above is orientation for a phone call, <b>never a quote to a merchant</b> · a link
+        with no identifier does not pay us — check the chip before sending one · internal working tool, not a
         merchant-facing document.
       </footer>
     </>
@@ -1726,9 +1884,14 @@ export default function FunderCheatSheetPage() {
   // Recorded credit boxes, used by the credit tabs.
   const [programs, setPrograms] = useState<ProgramState>({ byKey: {}, readable: true });
 
+  // Same three-outcome rule as the credit tabs: this must end in loaded, empty
+  // or failed. `setLoading(false)` lives in the finally so no branch — including
+  // a thrown rejection, which is NOT the `{ error }` shape — can leave the MCA
+  // tab spinning forever.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      try {
       const { data, error: err } = await supabase
         .from("lenders")
         .select(
@@ -1738,7 +1901,6 @@ export default function FunderCheatSheetPage() {
       if (cancelled) return;
       if (err) {
         setError(`Could not load the live funder list — ${err.message}`);
-        setLoading(false);
         return;
       }
       const rows = ((data ?? []) as LenderRow[]).slice().sort((a, b) => {
@@ -1755,6 +1917,14 @@ export default function FunderCheatSheetPage() {
       setProfiles((prev) => mergeProfiles(prev, res));
       setDocs((prev) => mergeDocs(prev, dres));
       setPrograms((prev) => mergePrograms(prev, pres));
+      } catch (e) {
+        if (cancelled) return;
+        setError(
+          `Could not load the live funder list — ${e instanceof Error ? e.message : String(e)}. This is a READ FAILURE, not an empty network.`,
+        );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -1764,11 +1934,20 @@ export default function FunderCheatSheetPage() {
   // Credit-product tabs load on first use, so the MCA tab's first paint is
   // exactly what it was. A failed read is reported loudly and NEVER collapses
   // into an empty list.
+  //
+  // THREE OUTCOMES, ALWAYS. Loaded, empty, or failed — "Reading the funder
+  // catalog…" must be able to end. Every await here is inside the try: a
+  // rejected promise (a dropped connection, a CORS failure, an aborted fetch)
+  // does not come back as `{ error }`, it THROWS, and without the catch the
+  // async body dies silently and the spinner runs until the tab is closed. A
+  // UI state with no exit is the same defect as a check that can only return
+  // clean.
   useEffect(() => {
     if (tab === "mca" || prod.state !== "idle") return;
     let cancelled = false;
     setProd((p) => ({ ...p, state: "loading" }));
     (async () => {
+      try {
       const { data, error: err } = await supabase
         .from("lenders")
         .select(
@@ -1792,6 +1971,21 @@ export default function FunderCheatSheetPage() {
       setProfiles((prev) => mergeProfiles(prev, res));
       setDocs((prev) => mergeDocs(prev, dres));
       setPrograms((prev) => mergePrograms(prev, pres));
+      } catch (e) {
+        if (cancelled) return;
+        // Never leave the tab in "Reading…" — say what happened instead.
+        setProd((prev) =>
+          prev.state === "ready"
+            ? prev
+            : {
+                state: "error",
+                rows: [],
+                error: `Could not read the funder catalog for the product tabs — ${
+                  e instanceof Error ? e.message : String(e)
+                }. This is a READ FAILURE, not an empty network.`,
+              },
+        );
+      }
     })();
     return () => {
       cancelled = true;
