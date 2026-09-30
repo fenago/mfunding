@@ -44,7 +44,6 @@ import DeclineCloseOut from "@/components/admin/DeclineCloseOut";
 // link-classification chips and the unreadable-vs-absent split all come with
 // them — hand-rolling any of the three here would re-ship a leak or a lie.
 import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
-import { FunderLinksBlock } from "@/components/admin/funder/FunderLinksBlock";
 import { FunderProgramBox } from "@/components/admin/funder/FunderProgramBox";
 import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
 import {
@@ -57,7 +56,12 @@ import {
   type ProfileState,
   type ProgramState,
 } from "@/lib/funderDisclosure";
-import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
+import {
+  DEAL_STATUS_CONFIG,
+  PARKED_STATUSES,
+  type DealStatus,
+  type DealWithCustomer,
+} from "@/types/deals";
 import {
   CHASE_TONE_CLS,
   chaseTone,
@@ -105,6 +109,9 @@ interface DealGroup {
   newestSubmittedAt: string | null;
   doNotContact: boolean;
   firstName: string | null;
+  /** Already parked (nurture / declined / dead). Off the default list, and the
+   *  close-out is hidden on these — its whole job is to park a deal. */
+  parked: boolean;
   /** Any funder past its own quoted turnaround. Drives the row's red border
    *  and its clock tone only — WHICH funder, and by how long, is said on that
    *  funder's own line (FunderLine), not summarised up here. */
@@ -133,6 +140,11 @@ function bucketOfDeal(subs: SubSummary[]): Filter {
   if (keys.some((k: StateKey) => k === "offer" || k === "accepted")) return "offers";
   return "declined";
 }
+
+/** PARKED_STATUSES is the one source of truth for "off the board" (nurture /
+ *  declined / dead) — the same set updateDealStatus demands a reason for. */
+const isParked = (status: string | null | undefined): boolean =>
+  !!status && (PARKED_STATUSES as readonly string[]).includes(status);
 
 /** The batched disclosure bundle, loaded once per page and passed down. */
 type DiscState =
@@ -239,13 +251,9 @@ function FunderDisclosures({ s, disc }: { s: SubSummary; disc: DiscState }) {
             Who to call · submission links ↓
           </summary>
           <div className="mt-1">
+            {/* FunderContactBlock renders FunderLinksBlock inside itself —
+                mounting both would print the portal and materials twice. */}
             <FunderContactBlock
-              l={l}
-              profile={profile}
-              profilesReadable={disc.profiles.readable}
-              docs={disc.docs}
-            />
-            <FunderLinksBlock
               l={l}
               profile={profile}
               profilesReadable={disc.profiles.readable}
@@ -345,6 +353,11 @@ export default function FunderChaseTab() {
   // ONE open at a time — this is a list you scan, not a set of panels you leave
   // lying open. Filter and sort are separate state, so opening never moves the list.
   const [openId, setOpenId] = useState<string | null>(null);
+  // Parked deals are OFF by default: this is a queue for what's live, and a
+  // nurture row is not something anyone is chasing. Hidden, never erased — a
+  // funder still holding a package on a parked deal that silently vanishes is
+  // a package nobody chases and nobody knows exists.
+  const [showParked, setShowParked] = useState(false);
   // ── Funder disclosures ──
   // ONE batched load for every funder on screen, not one per row: up to six
   // funders per merchant across nine merchants is 50+ round trips if each block
@@ -464,6 +477,7 @@ export default function FunderChaseTab() {
         dealNumber: d.deal_number ?? null,
         status: (d.status as string | null) ?? null,
         amountRequested: (d.amount_requested as number | null) ?? null,
+        parked: isParked(d.status as string | null),
         doNotContact: !!cust?.do_not_contact,
         firstName: cust?.first_name ?? null,
         subs,
@@ -530,14 +544,22 @@ export default function FunderChaseTab() {
   }, [loadDisclosures]);
 
 
+  // The chase list is ACTIVE deals. Parked ones are a separate, subordinate set.
+  const activeGroups = useMemo(() => groups.filter((g) => !g.parked), [groups]);
+  const parkedGroups = useMemo(() => groups.filter((g) => g.parked), [groups]);
+
+  // Counts describe what the chips will actually show, so they follow the same
+  // parked rule — a chip promising 4 that reveals 2 is its own small lie.
   const counts = useMemo(() => {
-    const c: Record<Filter, number> = { outstanding: 0, offers: 0, declined: 0, all: groups.length };
-    for (const g of groups) c[bucketOfDeal(g.subs)] += 1;
+    const pool = showParked ? groups : activeGroups;
+    const c: Record<Filter, number> = { outstanding: 0, offers: 0, declined: 0, all: pool.length };
+    for (const g of pool) c[bucketOfDeal(g.subs)] += 1;
     return c;
-  }, [groups]);
+  }, [groups, activeGroups, showParked]);
 
   const visible = useMemo(() => {
-    const rows = groups.filter((g) => filter === "all" || bucketOfDeal(g.subs) === filter);
+    const pool = showParked ? groups : activeGroups;
+    const rows = pool.filter((g) => filter === "all" || bucketOfDeal(g.subs) === filter);
     const flip = sort.dir === "desc" ? -1 : 1;
     // Nulls last in BOTH directions — an unstamped row is unknown, not extreme.
     const nullsLast = (a: number | null, b: number | null): number | null => {
@@ -570,7 +592,7 @@ export default function FunderChaseTab() {
         }
       }
     });
-  }, [groups, filter, sort]);
+  }, [groups, activeGroups, showParked, filter, sort]);
 
   /** Click a column: same column toggles direction, a new one starts at its
    *  natural direction (newest, largest, A→Z). Never touches the open row or
@@ -738,6 +760,11 @@ export default function FunderChaseTab() {
                     {stageCfg.label}
                   </span>
                 )}
+                {g.parked && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                    parked — not being chased
+                  </span>
+                )}
 
                 {g.amountRequested != null && (
                   <span className="text-[11px] font-semibold tabular-nums text-gray-600 dark:text-gray-300">
@@ -777,6 +804,9 @@ export default function FunderChaseTab() {
                   Same component the Playbook's FunderWorkspace mounts. The
                   guard rows are handed down so it doesn't re-query what this
                   tab already loaded. */}
+              {/* No close-out on a parked deal: the action's whole job is to
+                  email the decline and park it, and it is already parked. */}
+              {!g.parked && (
               <div className="px-3 pb-2">
                 <DeclineCloseOut
                   deal={g.deal}
@@ -798,6 +828,7 @@ export default function FunderChaseTab() {
                   }}
                 />
               </div>
+              )}
 
               {/* ── The full panel, identical to the Playbook's Step 7 ──
                   Mounted only when open: FunderWorkspace mounts FunderPicker,
@@ -810,6 +841,26 @@ export default function FunderChaseTab() {
             </div>
           );
         })
+      )}
+
+      {/* Parked deals with a funder still holding a package. Quiet and below
+          the list on purpose — present so nobody loses them, subordinate so
+          they don't compete with the work. Nothing renders when there are
+          none, and nothing renders while the list is still loading, because
+          "0 parked" and "not counted yet" are not the same claim. */}
+      {state.kind === "ready" && parkedGroups.length > 0 && (
+        <p className="px-1 text-[11px] text-gray-500 dark:text-gray-400">
+          {parkedGroups.length} parked deal{parkedGroups.length === 1 ? "" : "s"} still{" "}
+          {parkedGroups.length === 1 ? "has" : "have"} a funder holding a package
+          {" — "}
+          <button
+            type="button"
+            onClick={() => setShowParked((v) => !v)}
+            className="font-semibold text-ocean-blue hover:underline"
+          >
+            {showParked ? "hide" : "show"}
+          </button>
+        </p>
       )}
     </div>
   );
