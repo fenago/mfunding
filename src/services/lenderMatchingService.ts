@@ -134,6 +134,20 @@ export async function getMatchingLendersRead(dealProfile: DealProfile): Promise<
     }
 
     // 4. Check funding amount range (15 pts)
+    //
+    // ⚠ A MISSING ASK MUST SAY SO, NOT QUIETLY PASS THE CHECK.
+    //
+    // `amount_requested` is one of the 18 keys the money wall NULLS OUT for a
+    // closer reading a deal they aren't assigned (deal_row_for_caller writes
+    // JSON null over them, so the key is present and null and every `??` guard
+    // sails through). Skipping the block silently meant the -10 AND the
+    // "Amount outside typical range" chip both vanished — so a funder whose box
+    // the merchant's real ask would fail came back looking clean, on a list of
+    // checkboxes someone submits from. That is an actively false verdict, not a
+    // blank, which makes it worse than an empty panel.
+    //
+    // Same treatment when the ask genuinely isn't set yet: in both cases the
+    // truthful sentence is that the range was NOT CHECKED, and the row says it.
     if (dealProfile.amount_requested) {
       const amt = dealProfile.amount_requested;
       const minOk = !lender.min_funding_amount || amt >= lender.min_funding_amount;
@@ -145,6 +159,9 @@ export async function getMatchingLendersRead(dealProfile: DealProfile): Promise<
         score -= 10;
         reasons.push("Amount outside typical range");
       }
+    } else if (lender.min_funding_amount || lender.max_funding_amount) {
+      // No points either way — we have not earned a verdict on this criterion.
+      reasons.push("⚠ Funding range NOT checked — no requested amount available");
     }
 
     // 5. Check minimum monthly revenue (10 pts)
