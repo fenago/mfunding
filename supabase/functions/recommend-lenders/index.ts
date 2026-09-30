@@ -64,6 +64,65 @@ const LENDER_FIELDS = [
   "submission_email", "submission_portal_url", "submission_notes", "notes",
 ] as const;
 
+/**
+ * STRIP CREDENTIALS BEFORE THE FUNDER ROW LEAVES OUR INFRASTRUCTURE.
+ *
+ * `submission_notes` and `notes` are free text the team keeps portal logins in,
+ * and this function posts them to a third-party model API on every run. Ranking
+ * a funder never requires a password, so the value is removed here rather than
+ * relied on being absent — it is NOT absent: a shared-mailbox password is
+ * currently sitting in those columns on several funders, pending rotation.
+ *
+ * Redacts the LINE, and says a line was redacted. Dropping it silently would
+ * teach the model that a funder with withheld instructions simply has none,
+ * which is the same substitution of absence-for-unreadable this codebase keeps
+ * paying for. The rest of the note — stacking rules, contested terms, "do not
+ * submit" warnings — is exactly what the model should see, so it survives.
+ *
+ * This reduces exposure. It does NOT undo it: a credential that has been
+ * transmitted must be rotated, and hiding it afterwards proves nothing.
+ */
+const SECRET_LINE_RE =
+  /(pass\s?word|passwd|\bpwd\b|\bpw\s*[:=]|login\s*[:=]|credential|user\s*(name)?\s*[:=].*\bpass)/i;
+
+// Measured against the live rows before shipping: the keyword pattern alone
+// caught only 2 of the 5 funders whose notes carry our shared mailbox. The
+// address is stored NEXT TO the password as a login pair more often than the
+// word "password" appears, so the address itself is the better tell.
+const SHARED_MAILBOX_RE = /send\.mfunding\.net/i;
+
+// One funder stores portal credentials IN THE URL (user=/pwd= query params),
+// which the keyword scan above never sees because it only reads note text.
+const URL_CREDENTIAL_RE = /[?&#](pass|passwd|pwd|pw|user|username|login|token|key)=/i;
+
+function scrubText(v: unknown): unknown {
+  if (typeof v !== "string" || !v) return v;
+  const hit = (line: string) => SECRET_LINE_RE.test(line) || SHARED_MAILBOX_RE.test(line);
+  if (!hit(v)) return v;
+  return v
+    .split(/\r?\n/)
+    .map((line) => (hit(line) ? "[credential line withheld — not sent to the model]" : line))
+    .join("\n");
+}
+
+// Keep the origin and path so the model still knows a portal EXISTS and where it
+// lives; drop only the query/fragment carrying the credentials. Stripping the
+// whole URL would tell it this funder has no portal, which is false.
+function scrubUrl(v: unknown): unknown {
+  if (typeof v !== "string" || !v || !URL_CREDENTIAL_RE.test(v)) return v;
+  const cut = v.search(/[?#]/);
+  return (cut > 0 ? v.slice(0, cut) : v) + " [credentials stripped from URL]";
+}
+
+function scrubLenderSecrets<T extends Record<string, unknown>>(l: T): T {
+  return {
+    ...l,
+    submission_notes: scrubText(l.submission_notes),
+    notes: scrubText(l.notes),
+    submission_portal_url: scrubUrl(l.submission_portal_url),
+  };
+}
+
 // Human labels for the docs-on-file vocabulary (customer_documents.document_type
 // slugs). Mirrors FunderPicker / funderAvailability DOC_LABELS so the AI, the
 // server, and the client all speak the same doc names.
@@ -249,7 +308,7 @@ Deno.serve(async (req) => {
       // funder the closer can't submit to.
       .in("status", ["live_vendor", "approved"]);
     if (lErr) return json({ error: `could not load lenders: ${lErr.message}` }, 502);
-    const allLenders = (lendersRaw ?? []) as Lender[];
+    const allLenders = ((lendersRaw ?? []) as unknown as Record<string, unknown>[]).map(scrubLenderSecrets) as unknown as Lender[];
 
     // 2b) Funder Approval Matrix (lender_programs, MCA) — the authoritative
     //     approval criteria the owner maintains per funder. Merged into each
