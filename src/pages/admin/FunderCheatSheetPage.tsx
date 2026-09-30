@@ -664,7 +664,11 @@ function Quoted({ label, text }: { label: string; text: string | null | undefine
 // the commission is gone. So every rendered URL is classified and labelled.
 type LinkClass = "attributed" | "internal" | "unattributed";
 const ATTRIBUTION_PARAM_RX = /[?&](iso|plid|ref|referral|partner|partnerid|aff|affiliate|agent|promo|pid|lid)=[^&]+/i;
-const INTERNAL_HOST_RX = /\b(portal|app|broker|brokers|iso|dashboard|login|my|go)\.|mypartner\.io|\/dashboard|\/login|\/partner\/center/i;
+// Our own account, not a merchant route: a portal/app/broker host, a broker
+// path carrying our account id (Uplyft's daydreamos.com/broker/<uuid>), or an
+// e-signature link, which is a document WE sign and never a merchant apply page.
+const INTERNAL_HOST_RX =
+  /\b(portal|app|broker|brokers|iso|dashboard|login|my|go)\.|mypartner\.io|\/dashboard|\/login|\/partner\/center|\/brokers?\/[0-9a-f-]{8,}|signnow\.com|docusign\.|boldsign\.|hellosign\.|adobesign\./i;
 
 function classifyLink(url: string): LinkClass {
   if (ATTRIBUTION_PARAM_RX.test(url)) return "attributed";
@@ -685,9 +689,9 @@ const LINK_CHIP: Record<LinkClass, { cls: string; label: string; title: string }
   },
   unattributed: {
     cls: "bchip warn",
-    label: "⚠ no ID — commission not tracked",
+    label: "⚠ no ID — we are not credited",
     title:
-      "This URL carries no identifier. A merchant who applies through it is a walk-in and the commission is gone.",
+      "This URL carries nothing that identifies Momentum Funding. If a merchant applies through it they are a walk-in and the commission is gone. Check how attribution actually works for this funder before sending it to anyone.",
   },
 };
 
