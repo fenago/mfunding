@@ -101,6 +101,46 @@
 -- The count RPC raises on a failed authorisation rather than returning 0, and
 -- the client renders a failed read as an amber "?". A badge quietly dropping to
 -- zero is how the next change goes unseen a second time.
+--
+-- ════════════════════════════════════════════════════════════════════════════
+-- ⚠️ A TRIGGER ADDED FOR OBSERVABILITY CAN BREAK THE WRITE IT OBSERVES.
+-- ════════════════════════════════════════════════════════════════════════════
+-- Read this before adding another trigger to this file, because the first
+-- version of THIS one shipped the bug and it was not caught by review.
+--
+-- `tg_processor_notify_document` labelled the document type with:
+--
+--     coalesce(nullif(new.document_type, ''), 'document')
+--
+-- `customer_documents.document_type` is an ENUM. Postgres resolves that
+-- `nullif` by casting '' to `customer_document_type`, which has no '' member,
+-- so it raises 22P02 — and because this is an AFTER INSERT trigger in the
+-- caller's transaction, the raise ABORTS THE INSERT. Every `other`-typed
+-- document would have been REJECTED: 13 in the preceding 45 days, arriving from
+-- the email sweep, the merchant portal and a processor's own drag-drop alike.
+--
+-- The consequence is not "the notification looks wrong". It is DOCUMENT UPLOADS
+-- STOP WORKING — and it would have surfaced to the floor as "the upload button
+-- is broken", with nobody connecting a failing upload to a notifications
+-- feature shipped the same afternoon. A merchant chasing a funding decision
+-- would have been told to send statements that our own database refused.
+--
+-- THE GENERAL RULE, which outlives this one enum: a trigger you add merely to
+-- WATCH a table is not passive. It runs inside that table's transaction and
+-- anything it raises becomes that table's failure. So:
+--
+--   · Treat every new trigger on a busy write path as a change to that path's
+--     failure modes, not as an addition to a log.
+--   · Exercise it against the FULL domain of the column, not the values you
+--     happened to read while writing it. This bug is invisible for
+--     'bank_statement' and fatal for 'other'; both were already in the table.
+--   · Cast enums to text before any text function touches them.
+--   · If an observer's own failure should never block the thing observed,
+--     that must be a deliberate decision (an exception block, or moving the
+--     work out of the transaction) — not an accident of the happy path.
+--
+-- Caught here on the seed run in 20260930h, which exercised a document row the
+-- trigger had never seen. It is worth more than the fix.
 -- ════════════════════════════════════════════════════════════════════════════
 
 -- ── 1. The stage scope, stated once ─────────────────────────────────────────
