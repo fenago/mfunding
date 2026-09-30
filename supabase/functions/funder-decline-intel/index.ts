@@ -28,7 +28,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch } from "../_shared/ghl.ts";
-import { captureFunderReply, parseFunderReply, type DeclineCategory } from "../_shared/funderDecline.ts";
+import { captureFunderReply, parseFunderReply, attachmentCountOf, type DeclineCategory } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 function json(body: unknown, status = 200) {
@@ -215,6 +215,8 @@ async function recover(db: SupabaseClient): Promise<{
           subject: typeof em.subject === "string" ? em.subject : null,
           fromEmail: typeof em.from === "string" ? em.from : null,
           receivedAt: (r.message_at as string | null) ?? null,
+          // We hold the email record here, so the count is knowable (0 included).
+          attachmentCount: attachmentCountOf(em),
         });
         if (cap.captured) {
           recovered++;
@@ -238,7 +240,7 @@ async function parsePending(db: SupabaseClient): Promise<{
   parsed: number; declines: number; deferred: number; errors: string[];
 }> {
   const { data: rows, error } = await db.from("funder_replies")
-    .select("id, lender_id, subject, full_body")
+    .select("id, lender_id, subject, full_body, attachment_count")
     .is("parsed_at", null)
     .order("created_at", { ascending: true })
     .limit(PARSE_BATCH);
@@ -257,6 +259,9 @@ async function parsePending(db: SupabaseClient): Promise<{
       subject: r.subject as string | null,
       body: r.full_body as string,
       lenderName: nameOf.get(r.lender_id as string) ?? null,
+      // NULL stays NULL: the no-typed-text note then says "open the email"
+      // rather than claiming a count we never recorded.
+      attachmentCount: (r.attachment_count as number | null) ?? null,
     });
     if (!res) { deferred++; continue; } // no answer — leave queued for the next run
     const { error: upErr } = await db.from("funder_replies").update({

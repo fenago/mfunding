@@ -67,6 +67,29 @@ export interface CaptureOpts {
   fromEmail?: string | null;
   receivedAt?: string | null;
   direction?: "inbound" | "outbound";
+  /**
+   * How many files the email carried, read from the email RECORD at capture.
+   *
+   * ⚠️ OMIT IT WHEN YOU DO NOT KNOW — that writes NULL, which means "not
+   * recorded". Passing 0 asserts the email demonstrably carried none, which is
+   * a different and much stronger claim. The webhook and vendor-sweep paths see
+   * a payload with no attachments field at all, so they must leave this unset
+   * rather than defaulting to 0.
+   */
+  attachmentCount?: number | null;
+}
+
+/**
+ * Count attachments on a GHL email record, or return null when the record
+ * carries no attachments field at all.
+ *
+ * null (unknown) and 0 (none) are different facts and this is where they are
+ * kept apart — see the column comment on funder_replies.attachment_count.
+ */
+export function attachmentCountOf(e: Record<string, unknown> | null | undefined): number | null {
+  if (!e || !("attachments" in e)) return null;
+  const a = (e as { attachments?: unknown }).attachments;
+  return Array.isArray(a) ? a.length : null;
 }
 
 async function sha256Hex(s: string): Promise<string> {
@@ -109,6 +132,8 @@ export async function captureFunderReply(
       from_email: o.fromEmail ?? null,
       received_at: o.receivedAt ?? null,
       full_body: body,
+      // undefined → NULL → "not recorded". Never coerced to 0.
+      attachment_count: typeof o.attachmentCount === "number" ? o.attachmentCount : null,
     }, { onConflict: "dedupe_key", ignoreDuplicates: true })
     .select("id");
   if (error) return { id: null, captured: false, error: error.message };

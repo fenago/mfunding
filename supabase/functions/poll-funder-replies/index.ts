@@ -18,7 +18,7 @@ import {
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
-import { attachReplyDeal, captureFunderReply } from "../_shared/funderDecline.ts";
+import { attachReplyDeal, captureFunderReply, attachmentCountOf } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -896,6 +896,9 @@ Deno.serve(async (req) => {
           dealId: res.kind === "match" ? res.sub.dealId : null,
           dealSubmissionId: res.kind === "match" ? res.sub.submissionId : null,
           emailRecordId: ref.eid, subject, fromEmail: fromRaw, receivedAt: at || null,
+          // This path HOLDS the email record, so it can state the count —
+          // including a real 0. Paths that only see a webhook payload must not.
+          attachmentCount: attachmentCountOf(e),
         });
         if (cap.error) details.push(`${lender.company_name}: capture failed — ${cap.error}`);
       }
