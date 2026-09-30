@@ -30,6 +30,10 @@ export type StateKey =
  *  richer row types satisfy it structurally. */
 export interface SubmissionLike {
   status: string;
+  /** How the reply was classified — `response_data.parsed.method`, one of
+   *  "llm" | "heuristic" | "no_typed_text". Optional so older rows and callers
+   *  that don't select it still satisfy the shape. */
+  parseMethod?: string | null;
   submittedAt: string | null;
   responseAt: string | null;
   offerAmount: number | null;
@@ -99,6 +103,24 @@ export function isLive(s: SubmissionLike): boolean {
       s.status,
     )
   );
+}
+
+/**
+ * The funder replied, but typed NOTHING — the body was only the quoted thread,
+ * usually a bare reply carrying attachments.
+ *
+ * Deliberately NOT a separate StateKey. It is a real reply that needs real
+ * work, so every "replied" affordance (message the funder, log the offer) must
+ * stay switched on; a new key would fall through the `st.key === "replied"`
+ * branches and strip exactly those buttons. What is wrong without this flag is
+ * only the CHIP, which otherwise implies someone wrote something we have read.
+ *
+ * Branch on the METHOD, never on the classifier's `type` or on `is_decline`:
+ * here `type` is "other" and `is_decline` is false by DEFAULT, not by verdict —
+ * an attached PDF could itself be the decline letter and nothing has read it.
+ */
+export function isNoTypedText(s: SubmissionLike): boolean {
+  return s.parseMethod === "no_typed_text";
 }
 
 /** Still owed us an answer — the chase set. */

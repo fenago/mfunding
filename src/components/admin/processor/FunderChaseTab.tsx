@@ -67,6 +67,7 @@ import {
   chaseTone,
   hoursSince,
   isLive,
+  isNoTypedText,
   money,
   quotedDecisionHours,
   relTime,
@@ -86,6 +87,8 @@ interface SubSummary {
   responseAt: string | null;
   openedAt: string | null;
   openCount: number;
+  /** response_data.parsed.method — "llm" | "heuristic" | "no_typed_text". */
+  parseMethod: string | null;
   offerAmount: number | null;
   factorRate: number | null;
   dailyPayment: number | null;
@@ -193,6 +196,17 @@ function FunderLine({
       <span className={CHASE_TONE_CLS[tone]}>
         {s.submittedAt ? `sent ${relTime(s.submittedAt)}` : "never stamped"}
       </span>
+      {/* They replied and typed nothing — the body was only the quoted thread.
+          Said out loud, because a bare "✉ Replied" chip implies someone wrote
+          something a human has read, and here nobody has: whatever they sent is
+          in the attachments. NOT a decline, and not "not a decline" either —
+          the classifier's verdict is a default on this path, so the honest
+          render is "needs a look". */}
+      {isNoTypedText(s) && (
+        <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-px text-[10px] font-bold">
+          ⚠ no typed text — open it
+        </span>
+      )}
       {s.openedAt ? (
         <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[10px] font-semibold">
           👀 opened{s.openCount > 1 ? ` ${s.openCount}×` : ""}
@@ -376,7 +390,7 @@ export default function FunderChaseTab() {
       .from("deal_submissions")
       .select(
         "id, deal_id, lender_id, status, submitted_at, response_at, opened_at, open_count, offer_amount, factor_rate, " +
-          "daily_payment, weekly_payment, total_payback, " +
+          "daily_payment, weekly_payment, total_payback, response_data, " +
           "lender:lenders!lender_id ( company_name, funding_speed )",
       );
     if (subErr) {
@@ -402,6 +416,8 @@ export default function FunderChaseTab() {
         responseAt: (r.response_at as string | null) ?? null,
         openedAt: (r.opened_at as string | null) ?? null,
         openCount: (r.open_count as number | null) ?? 0,
+        parseMethod:
+          (r.response_data as { parsed?: { method?: string | null } } | null)?.parsed?.method ?? null,
         offerAmount: (r.offer_amount as number | null) ?? null,
         factorRate: (r.factor_rate as number | null) ?? null,
         dailyPayment: (r.daily_payment as number | null) ?? null,
