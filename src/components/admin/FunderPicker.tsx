@@ -232,6 +232,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // often just a read that failed once, and making her reload the whole playbook
   // to find out is how a transient turns into a day of not submitting.
   const [reloadKey, setReloadKey] = useState(0);
+  // The availability fallback can fail on its own. Held separately so the empty
+  // state can say "and we couldn't check the other list either" rather than
+  // reporting a check that never completed as a check that found nothing.
+  const [fallbackErr, setFallbackErr] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Record<string, ProfileMeta>>({});
   const [lenderDest, setLenderDest] = useState<Record<string, { email: string | null; portal: string | null }>>({});
   // App-side (Supabase customer_documents) and GHL-side doc types are tracked
@@ -324,6 +328,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         });
         let m: Match[] = read.kind === "ok" ? read.value.map((x) => ({ id: x.id, company_name: x.company_name, score: x.score, reasons: x.reasons })) : [];
         let viaAvailability = false;
+        let availErr: string | null = null;
         // FALLBACK, and it has to happen HERE — before `ids` — not in a derived
         // list further down. Everything the rows need (submission profiles,
         // destination email/portal, what's already been sent) is loaded by id in
@@ -346,7 +351,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 fromAvailability: true,
               }));
             }
-          } catch { /* leave the list empty; the copy below says which case this is */ }
+          } catch (e) {
+            // The fallback failing is its own fact. Swallow it and the empty
+            // copy below claims we checked the availability list and it had
+            // nothing — when we never got an answer from it at all.
+            availErr = e instanceof Error ? e.message : "the funder-availability check didn't answer";
+          }
         }
         const ids = m.map((x) => x.id);
         const [profRes, lendRes, docRes, subRes] = await Promise.all([
@@ -358,6 +368,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         if (cancelled) return;
         setMatches(m);
         setUsedAvailability(viaAvailability);
+        setFallbackErr(availErr);
         setMatchesErr(read.kind === "unreadable" ? read.why : null);
         const pmap: Record<string, ProfileMeta> = {};
         for (const p of (profRes.data ?? []) as { lender_id: string; method: ProfileMeta["method"]; required_stips: string[] | null; to_email: string | null }[]) {
@@ -438,7 +449,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         }
         setExisting(emap);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load funders");
+        if (!cancelled) {
+          const why = e instanceof Error ? e.message : "Failed to load funders";
+          setError(why);
+          // AND matchesErr. `error` is rendered only inside the branch that
+          // requires matches to exist, so on a throw it is unreachable — the
+          // panel would fall through to the empty copy and assert "we read the
+          // funder network and none of it fits", which is a STRONGER false
+          // claim than the sentence this whole change replaced. Caught by
+          // docs-absence-fix on review; it was live in the first version.
+          setMatchesErr(why);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1175,10 +1196,26 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           </button>
         </div>
       ) : matches.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          We read the funder network and none of it fits this deal. Check the availability panel above for which
-          funders are live and what they&apos;re waiting on.
-        </p>
+        fallbackErr ? (
+          <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            <span className="font-bold">Funder scoring matched nothing, and the availability check didn&apos;t
+            answer</span> — so this is <span className="font-bold">not</span> a finding that no funder suits this
+            deal. Try again, or work from the availability panel above.
+            <div className="mt-0.5 font-mono text-[11px] opacity-80">{fallbackErr}</div>
+            <button
+              type="button"
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="mt-1.5 rounded border border-amber-400 dark:border-amber-700 px-2 py-0.5 text-[11px] font-medium hover:bg-amber-100 dark:hover:bg-amber-900/40"
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
+            We read the funder network and none of it fits this deal. Check the availability panel above for which
+            funders are live and what they&apos;re waiting on.
+          </p>
+        )
       ) : (
         <>
           {/* These rows did not come from the scorer. Say it plainly — a closer
