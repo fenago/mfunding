@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import supabase from "@/supabase";
 import {
+  type ProductId as CanonicalProduct,
+  PRODUCT_SOURCE_COLUMNS,
+  hasProduct,
+} from "@/lib/lenderProducts";
+import {
   type FunderCriteria,
   acceptsPositions,
   collectionsLabel,
@@ -195,6 +200,19 @@ const CSS = `
 .fcs .bchip.off{background:var(--chip);color:var(--ink-faint);font-weight:600}
 .fcs .loadnote{padding:26px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius)}
 .fcs .warn{border:1.5px solid var(--c);background:var(--c-bg);color:var(--c);border-radius:var(--radius);padding:12px 15px;font-size:13px;font-weight:600;margin-bottom:16px}
+/* submission links + portals */
+.fcs .lrow{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12.5px;line-height:1.5}
+.fcs .lrow .lk{font-size:11.5px;color:var(--ink-faint);min-width:74px}
+.fcs .portal{background:var(--b-bg);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:5px}
+.fcs .portal .pt{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--b)}
+.fcs .cred{font-size:11.5px;color:var(--ink-soft);line-height:1.45}
+.fcs .cred b{color:var(--ink)}
+.fcs .credhold{font-size:11.5px;color:var(--c);background:var(--c-bg);border-radius:7px;padding:6px 9px;line-height:1.45}
+.fcs .doclist{display:flex;flex-direction:column;gap:4px}
+.fcs .docrow{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12px}
+.fcs .docrow .dt{font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);background:var(--chip);border-radius:5px;padding:2px 6px}
+.fcs .docopen{font:inherit;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--accent-ink);background:none;border:0;padding:0;cursor:pointer;text-decoration:underline}
+.fcs .docerr{font-size:11.5px;color:var(--d);font-weight:600}
 /* who to call */
 .fcs .contact{border-top:1px dashed var(--line);padding-top:9px;display:flex;flex-direction:column;gap:9px}
 .fcs .cgroup .ck{font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px}
@@ -238,6 +256,9 @@ type LenderCategory = {
     equipment?: boolean;
     factoring?: boolean;
   } | null;
+  // Product list maintained by a different process than `lender_types` — read
+  // BOTH, always through productsOf() in @/lib/lenderProducts.
+  products?: string[] | null;
   known_for?: string | null;
   deal_fit?: string | null;
   // Underwriting box extracted from the funder's own packets / decline emails.
@@ -254,6 +275,10 @@ export type ContactFields = {
   primary_contact_phone: string | null;
   contacts: ContactPerson[] | null;
   submission_email: string | null;
+  // The broker/ISO portal — where you LOG IN (rate sheets, marketing material,
+  // sometimes submission). Not the same thing as a submission address.
+  submission_portal_url: string | null;
+  submission_notes: string | null;
   website: string | null;
   notes: string | null;
 };
@@ -563,14 +588,175 @@ const clean = (s: string | null | undefined) => {
 // wrong phone number is worse than a sentence someone has to read.
 const mentionsContact = (s: string | null) => !!s && (s.includes("@") || /\d{3}[).\-\s]?\d{3}[.\-\s]?\d{4}/.test(s));
 
+
+// ── Submission links, partner portals, marketing material ────────────────────
+// Three different things that a single "link" column would flatten into one:
+//   • the submission ROUTE  — where a deal goes (profile to_email / portal_url)
+//   • the partner PORTAL    — where you log in for rate sheets and material
+//   • the material ITSELF   — what we already hold in lender-documents
+// A processor needs to tell them apart without guessing.
+
+type LenderDoc = {
+  id: string;
+  lender_id: string;
+  document_type: string | null;
+  filename: string | null;
+  storage_path: string | null;
+  description: string | null;
+};
+type DocState = {
+  byLender: Record<string, LenderDoc[]>;
+  // FALSE means UNREADABLE — `lender_documents` is admin/super-admin only, so a
+  // setter reads zero rows with NO error. Same trap as the submission profiles.
+  readable: boolean;
+};
+
+const DOC_TYPE_LABEL: Record<string, string> = {
+  rate_sheet: "rate sheet",
+  agreement: "agreement",
+  terms: "guidelines",
+  other: "material",
+};
+
+// A credential hint is meant to say WHERE the credentials live, not to be one.
+// Anything that doesn't look like a labelled hint is withheld rather than
+// printed on a page setters can open — a bare two-word string is as likely to
+// be a passphrase as a note, and there is no upside to guessing right.
+const CREDENTIAL_LOOKS_LABELLED = /@|https?:|\b(login|user|username|reset|sso|portal|ask|set via|not stored|invite)\b/i;
+
+function LinksBlock({
+  l,
+  profile,
+  profilesReadable,
+  docs,
+}: {
+  l: ContactFields & { id: string; company_name: string };
+  profile: ProfileRow | undefined;
+  profilesReadable: boolean;
+  docs: DocState;
+}) {
+  const [docErr, setDocErr] = useState<string | null>(null);
+  const brokerPortal = clean(l.submission_portal_url);
+  const profilePortal = clean(profile?.portal_url);
+  const subNotes = clean(l.submission_notes);
+  const hint = clean(profile?.portal_credentials_hint);
+  const hintSafe = !!hint && CREDENTIAL_LOOKS_LABELLED.test(hint);
+  const mine = docs.byLender[l.id] ?? [];
+  // Same URL recorded in both columns is one portal, not two.
+  const sameUrl = brokerPortal && profilePortal && brokerPortal.trim() === profilePortal.trim();
+
+  const open = async (d: LenderDoc) => {
+    setDocErr(null);
+    if (!d.storage_path) {
+      setDocErr(`${d.filename ?? "That file"} has no storage path recorded — it can't be opened from here.`);
+      return;
+    }
+    const { data, error } = await supabase.storage.from("lender-documents").createSignedUrl(d.storage_path, 60);
+    if (error || !data?.signedUrl) {
+      setDocErr(`Could not open ${d.filename ?? "that file"} — ${error?.message ?? "no link came back"}.`);
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  };
+
+  return (
+    <>
+      <div className="cgroup">
+        <div className="ck">Partner portal — where you log in</div>
+        {brokerPortal || profilePortal ? (
+          <div className="portal">
+            {brokerPortal && (
+              <>
+                <div className="pt">Broker / ISO portal</div>
+                <a className="cmail" href={brokerPortal} target="_blank" rel="noreferrer">
+                  {brokerPortal}
+                </a>
+              </>
+            )}
+            {profilePortal && !sameUrl && (
+              <>
+                <div className="pt">{brokerPortal ? "Portal on the submission profile" : "Submission portal"}</div>
+                <a className="cmail" href={profilePortal} target="_blank" rel="noreferrer">
+                  {profilePortal}
+                </a>
+                {brokerPortal && (
+                  <div className="cred">
+                    Two different portal links are recorded for this funder. Neither has been confirmed as the current
+                    one — try the broker portal first and tell Ops which works.
+                  </div>
+                )}
+              </>
+            )}
+            {hint ? (
+              hintSafe ? (
+                <div className="cred">
+                  <b>Credentials:</b> {hint}
+                </div>
+              ) : (
+                <div className="credhold">
+                  A credential hint is on file but it isn't labelled — it may be the credential itself, so it is not
+                  shown here. Ask Ops.
+                </div>
+              )
+            ) : profilesReadable ? (
+              <div className="credhold">
+                <b>Portal on file, no credentials recorded.</b> Someone has to request access — that's an action item,
+                not a dead end.
+              </div>
+            ) : (
+              <div className="credhold">Credentials unknown — the submission profile could not be read.</div>
+            )}
+          </div>
+        ) : (
+          <div className="cnone">No partner portal recorded for this funder.</div>
+        )}
+      </div>
+
+      {subNotes && (
+        <div className="cgroup">
+          <div className="ck">Submission notes — quoted, not parsed</div>
+          <div className="cnote">{subNotes}</div>
+        </div>
+      )}
+
+      <div className="cgroup">
+        <div className="ck">Material we already hold</div>
+        {!docs.readable ? (
+          <div className="cunk">
+            Stored material is UNKNOWN — `lender_documents` is admin-only and returned nothing for your account. Not
+            "no material": ask Ops.
+          </div>
+        ) : mine.length === 0 ? (
+          <div className="cnone">Nothing captured from this funder's packet yet.</div>
+        ) : (
+          <div className="doclist">
+            {mine.map((d) => (
+              <div className="docrow" key={d.id}>
+                <span className="dt">{DOC_TYPE_LABEL[d.document_type ?? ""] ?? d.document_type ?? "file"}</span>
+                <span>{d.filename ?? "unnamed file"}</span>
+                <button type="button" className="docopen" onClick={() => open(d)}>
+                  open
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {docErr && <div className="docerr">{docErr}</div>}
+      </div>
+    </>
+  );
+}
+
 function ContactBlock({
   l,
   profile,
   profilesReadable,
+  docs,
 }: {
-  l: ContactFields & { company_name: string };
+  l: ContactFields & { id: string; company_name: string };
   profile: ProfileRow | undefined;
   profilesReadable: boolean;
+  docs: DocState;
 }) {
   const name = clean(l.primary_contact_name);
   const email = clean(l.primary_contact_email);
@@ -688,6 +874,8 @@ function ContactBlock({
         </div>
       )}
 
+      <LinksBlock l={l} profile={profile} profilesReadable={profilesReadable} docs={docs} />
+
       <div className="cgroup">
         {site ? (
           <div className="cline">
@@ -727,7 +915,16 @@ const PRODUCT_TABS: { v: ProductId; label: string }[] = [
   { v: "sba", label: "SBA" },
   { v: "equipment", label: "Equipment" },
 ];
-const CREDIT_PRODUCTS: Exclude<ProductId, "mca">[] = ["term_loan", "line_of_credit", "sba", "equipment"];
+// Tab id → the canonical product spelling used by `category->'products'`,
+// `deals.products_interested` and `lender_programs.product_type`. The tab ids
+// are this page's own shorthand; every lookup crosses through here.
+const TAB_PRODUCT: Record<ProductId, CanonicalProduct> = {
+  mca: "mca",
+  term_loan: "term_loan",
+  line_of_credit: "line_of_credit",
+  sba: "sba_loan",
+  equipment: "equipment_financing",
+};
 
 type ReqRow = { k: string; v: string; strong?: boolean };
 type ProductSpec = {
@@ -887,6 +1084,7 @@ type ProductLenderRow = ContactFields & {
   company_name: string;
   status: string | null;
   lender_types: string[] | null;
+  category: LenderCategory | null;
   min_funding_amount: number | string | null;
   max_funding_amount: number | string | null;
 };
@@ -896,6 +1094,7 @@ type ProfileRow = {
   to_email: string | null;
   cc_emails: string[] | null;
   portal_url: string | null;
+  portal_credentials_hint: string | null;
   required_stips: string[] | null;
   active: boolean | null;
   special_instructions: string | null;
@@ -914,7 +1113,7 @@ type ProfileState = {
 };
 
 const PROFILE_COLS =
-  "lender_id, method, to_email, cc_emails, portal_url, required_stips, active, special_instructions, internal_notes";
+  "lender_id, method, to_email, cc_emails, portal_url, portal_credentials_hint, required_stips, active, special_instructions, internal_notes";
 
 // One read of the submission recipes, shared by every tab. Both failure modes
 // collapse to `readable: false`, because a setter (role `closer`) is not on the
@@ -930,6 +1129,24 @@ function mergeProfiles(prev: ProfileState, next: ProfileState): ProfileState {
     error,
     severity: prev.severity === "error" || next.severity === "error" ? "error" : "limited",
   };
+}
+
+// `lender_documents` is admin/super-admin only. A setter reads zero rows with
+// no error, so an empty result is UNKNOWN, never "nothing on file".
+async function loadDocs(ids: string[]): Promise<DocState> {
+  if (ids.length === 0) return { byLender: {}, readable: true };
+  const { data, error } = await supabase
+    .from("lender_documents")
+    .select("id, lender_id, document_type, filename, storage_path, description")
+    .in("lender_id", ids);
+  if (error || (data ?? []).length === 0) return { byLender: {}, readable: false };
+  const byLender: Record<string, LenderDoc[]> = {};
+  for (const d of (data ?? []) as LenderDoc[]) (byLender[d.lender_id] ??= []).push(d);
+  return { byLender, readable: true };
+}
+
+function mergeDocs(prev: DocState, next: DocState): DocState {
+  return { byLender: { ...prev.byLender, ...next.byLender }, readable: prev.readable && next.readable };
 }
 
 async function loadProfiles(ids: string[]): Promise<ProfileState> {
@@ -1006,11 +1223,13 @@ function ProductFunderRow({
   product,
   profile,
   profilesReadable,
+  docs,
 }: {
   l: ProductLenderRow;
   product: Exclude<ProductId, "mca">;
   profile: ProfileRow | undefined;
   profilesReadable: boolean;
+  docs: DocState;
 }) {
   const [who, setWho] = useState(false);
   const [open, setOpen] = useState(false);
@@ -1071,9 +1290,9 @@ function ProductFunderRow({
       </div>
 
       <button type="button" className="more" onClick={() => setWho((w) => !w)} aria-expanded={who}>
-        {who ? "Hide who to call ↑" : "Who to call ↓"}
+        {who ? "Hide contacts & links ↑" : "Who to call · submission links ↓"}
       </button>
-      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} />}
+      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} docs={docs} />}
 
       {(stips.length > 0 || profile?.special_instructions) && (
         <>
@@ -1103,17 +1322,19 @@ function ProductTabView({
   product,
   data,
   profiles,
+  docs,
 }: {
   product: Exclude<ProductId, "mca">;
   data: ProductData;
   profiles: ProfileState;
+  docs: DocState;
 }) {
   const spec = PRODUCT_SPEC[product];
   const markets = MARKETPLACES.filter((m) => m.products.includes(product));
   const matching = useMemo(
     () =>
       data.rows
-        .filter((r) => (r.lender_types ?? []).includes(product))
+        .filter((r) => hasProduct(r, TAB_PRODUCT[product]))
         .slice()
         .sort((a, b) => {
           const rank = (l: ProductLenderRow) => (l.status === "live_vendor" ? 0 : 1);
@@ -1254,6 +1475,7 @@ function ProductTabView({
                   product={product}
                   profile={profiles.map[l.id]}
                   profilesReadable={profiles.readable}
+                  docs={docs}
                 />
               ))}
             </div>
@@ -1271,6 +1493,7 @@ function ProductTabView({
                   product={product}
                   profile={profiles.map[l.id]}
                   profilesReadable={profiles.readable}
+                  docs={docs}
                 />
               ))}
             </div>
@@ -1306,6 +1529,8 @@ export default function FunderCheatSheetPage() {
     error: null,
     severity: "limited",
   });
+  // Rate sheets / packets already captured per funder.
+  const [docs, setDocs] = useState<DocState>({ byLender: {}, readable: true });
 
   useEffect(() => {
     let cancelled = false;
@@ -1313,7 +1538,7 @@ export default function FunderCheatSheetPage() {
       const { data, error: err } = await supabase
         .from("lenders")
         .select(
-          "id, company_name, min_funding_amount, max_funding_amount, category, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, website, notes",
+          "id, company_name, min_funding_amount, max_funding_amount, category, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, submission_portal_url, submission_notes, website, notes",
         )
         .eq("status", "live_vendor");
       if (cancelled) return;
@@ -1330,9 +1555,11 @@ export default function FunderCheatSheetPage() {
       });
       setLenders(rows);
       setLoading(false);
-      const res = await loadProfiles(rows.map((r) => r.id));
+      const ids = rows.map((r) => r.id);
+      const [res, dres] = await Promise.all([loadProfiles(ids), loadDocs(ids)]);
       if (cancelled) return;
       setProfiles((prev) => mergeProfiles(prev, res));
+      setDocs((prev) => mergeDocs(prev, dres));
     })();
     return () => {
       cancelled = true;
@@ -1350,10 +1577,9 @@ export default function FunderCheatSheetPage() {
       const { data, error: err } = await supabase
         .from("lenders")
         .select(
-          "id, company_name, status, lender_types, min_funding_amount, max_funding_amount, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, website, notes",
+          `id, company_name, status, min_funding_amount, max_funding_amount, ${PRODUCT_SOURCE_COLUMNS}, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, submission_portal_url, submission_notes, website, notes`,
         )
-        .neq("status", "rejected")
-        .overlaps("lender_types", CREDIT_PRODUCTS);
+        .neq("status", "rejected");
       if (cancelled) return;
       if (err) {
         setProd({
@@ -1365,9 +1591,11 @@ export default function FunderCheatSheetPage() {
       }
       const rows = (data ?? []) as ProductLenderRow[];
       setProd({ state: "ready", rows, error: null });
-      const res = await loadProfiles(rows.map((r) => r.id));
+      const ids = rows.map((r) => r.id);
+      const [res, dres] = await Promise.all([loadProfiles(ids), loadDocs(ids)]);
       if (cancelled) return;
       setProfiles((prev) => mergeProfiles(prev, res));
+      setDocs((prev) => mergeDocs(prev, dres));
     })();
     return () => {
       cancelled = true;
@@ -1444,7 +1672,12 @@ export default function FunderCheatSheetPage() {
         </div>
 
         {tab !== "mca" && (
-          <ProductTabView product={tab as Exclude<ProductId, "mca">} data={prod} profiles={profiles} />
+          <ProductTabView
+            product={tab as Exclude<ProductId, "mca">}
+            data={prod}
+            profiles={profiles}
+            docs={docs}
+          />
         )}
 
         {tab === "mca" && (
@@ -1661,6 +1894,7 @@ export default function FunderCheatSheetPage() {
                 tags={tags}
                 profile={profiles.map[l.id]}
                 profilesReadable={profiles.readable}
+                docs={docs}
               />
             ))}
           </div>
@@ -1755,12 +1989,14 @@ function FunderCard({
   tags,
   profile,
   profilesReadable,
+  docs,
 }: {
   l: LenderRow;
   papers: string[];
   tags: string[];
   profile: ProfileRow | undefined;
   profilesReadable: boolean;
+  docs: DocState;
 }) {
   const [open, setOpen] = useState(false);
   const [who, setWho] = useState(false);
@@ -1897,9 +2133,9 @@ function FunderCard({
       )}
 
       <button type="button" className="more" onClick={() => setWho((w) => !w)} aria-expanded={who}>
-        {who ? "Hide who to call ↑" : "Who to call ↓"}
+        {who ? "Hide contacts & links ↑" : "Who to call · submission links ↓"}
       </button>
-      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} />}
+      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} docs={docs} />}
 
       <div className="tags">
         {tags.map((t) => (
