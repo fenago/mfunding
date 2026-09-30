@@ -33,6 +33,7 @@ import { getFunderAvailability } from "../../services/funderAvailability";
 import { updateSubmission } from "../../services/dealService";
 import { uploadSignedApplication } from "../../services/signedApplication";
 import { readDocsStatus, type GhlDocsStatus } from "@/lib/ghlDocs";
+import { dealFieldOf } from "@/lib/maskedDeal";
 import { invokeThrow } from "@/utils/invokeError";
 import type { DealWithCustomer } from "../../types/deals";
 
@@ -292,6 +293,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiRan, setAiRan] = useState(false);
+  // TRUE when the money wall withheld any saved AI analysis from THIS reader.
+  // Distinct from "no analysis exists" — the bare null looked identical, and the
+  // button then offered to spend a fresh paid LLM call on work already done.
+  const [aiWithheld, setAiWithheld] = useState(false);
+  // TRUE when the ask was withheld from this reader, which means the scorer
+  // below ranked WITHOUT checking any funder's min/max funding box.
+  const [askWithheld, setAskWithheld] = useState(false);
   // Box-fit reasons per lender (from funderAvailability) — surfaced as a
   // non-blocking 🟡 "out of box" tag so the owner can submit knowingly anyway.
   const [boxReasons, setBoxReasons] = useState<Record<string, string[]>>({});
@@ -305,8 +313,20 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
 
   // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
   // so a page reload never throws away paid tokens.
+  //
+  // ⚠ `ai_lender_recommendations` is one of the eighteen the money wall nulls
+  // for a reader who isn't assigned the deal. Read bare, a withheld analysis is
+  // indistinguishable from one that was never run — so the panel vanished and
+  // the button read "AI: recommend lenders", inviting a closer to spend a fresh
+  // paid LLM call reproducing a shortlist the deal already holds. Withheld is
+  // its own state: don't rehydrate (we have nothing), don't claim it never ran.
   useEffect(() => {
-    const saved = deal.ai_lender_recommendations as { summary?: string; recommendations?: AiRec[]; underwriting?: UwSnapshot | null } | null;
+    const rec = dealFieldOf<{ summary?: string; recommendations?: AiRec[]; underwriting?: UwSnapshot | null }>(
+      deal, "ai_lender_recommendations",
+    );
+    if (rec.kind === "withheld") { setAiWithheld(true); return; }
+    setAiWithheld(false);
+    const saved = rec.value;
     if (saved && (saved.recommendations?.length || saved.summary)) {
       setAiRecs((saved.recommendations ?? []) as AiRec[]);
       setAiSummary(saved.summary ?? "");
@@ -320,9 +340,19 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     (async () => {
       setLoading(true);
       try {
+        // ⚠ THE SCORER SILENTLY SKIPS THE AMOUNT-FIT CHECK ON A NULL ASK.
+        // `if (dealProfile.amount_requested)` in lenderMatchingService guards the
+        // whole min/max block, so a WITHHELD ask means no `-10` and no "Amount
+        // outside typical range" chip — funders whose box the real ask would FAIL
+        // come back looking clean, and a human submits from that list. The scorer
+        // is right to skip a value it doesn't have; what was wrong was presenting
+        // the result as a complete ranking. So we pass the same null and SAY SO.
+        const askField = dealFieldOf<number>(deal, "amount_requested");
+        const askHidden = askField.kind === "withheld";
+        setAskWithheld(askHidden);
         const read = await getMatchingLendersRead({
           deal_type: deal.deal_type,
-          amount_requested: deal.amount_requested,
+          amount_requested: askHidden ? null : askField.value,
           monthly_revenue: deal.customer?.monthly_revenue ?? null,
           time_in_business: deal.customer?.time_in_business ?? null,
           industry: deal.customer?.industry ?? null,
@@ -1248,6 +1278,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               check the availability panel above for what each one is waiting on.
             </div>
           )}
+          {/* The ranking below was computed WITHOUT the ask, so nothing here has
+              been checked against any funder's min/max funding box. Saying it is
+              the difference between an incomplete ranking and a wrong one. */}
+          {askWithheld && !usedAvailability && (
+            <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              <span className="font-bold">Ranked without the requested amount</span> — it&apos;s hidden because this
+              deal isn&apos;t assigned to you, so <span className="font-bold">no funder here was checked against its
+              minimum or maximum funding size</span>. A funder can look like a clean fit and still be outside its box.
+              Confirm the amount with the assigned closer before you submit.
+            </div>
+          )}
           {/* Package check */}
           <div className="rounded-md bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 px-3 py-2 text-[11px]">
             <span className="font-medium text-gray-600 dark:text-gray-300">Package on file: </span>
@@ -1268,10 +1309,26 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 className="text-sm font-semibold px-3 py-1.5 rounded-lg border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
               >
                 {aiLoading ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <SparklesIcon className="w-4 h-4" />}
-                {aiLoading ? "Analyzing funders…" : aiRan ? "AI: re-run recommendations" : "AI: recommend lenders"}
+                {aiLoading
+                  ? "Analyzing funders…"
+                  : aiRan
+                    ? "AI: re-run recommendations"
+                    : aiWithheld
+                      ? "AI: run your own analysis"
+                      : "AI: recommend lenders"}
               </button>
               {aiError && <span className="text-[11px] text-red-600 dark:text-red-400 text-right flex-1">{aiError}</span>}
             </div>
+
+            {/* The analysis is HIDDEN, not absent. Without this the button reads
+                as "none has ever been run" and a closer pays for a second one. */}
+            {aiWithheld && !aiRan && (
+              <p className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+                <span className="font-bold">Any saved AI analysis is hidden</span> — this deal isn&apos;t assigned to
+                you. <span className="font-bold">This does not mean none has been run.</span> Ask the assigned closer
+                before paying for another; running one here costs a fresh analysis either way.
+              </p>
+            )}
 
             {(aiSummary || aiRecs.length > 0) && (
               <details className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5">

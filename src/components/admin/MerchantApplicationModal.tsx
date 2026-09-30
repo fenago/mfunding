@@ -28,6 +28,7 @@ import { mustWrite, tryWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS } from "@/lib/applicationCompleteness";
 import { applyAppAutofill } from "@/lib/appAutofill";
+import { dealFieldOf } from "@/lib/maskedDeal";
 import { updateDealStatus, updateCustomerAdditionalEmails } from "../../services/dealService";
 import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
 import type { DealWithCustomer } from "../../types/deals";
@@ -294,6 +295,9 @@ export default function MerchantApplicationModal({
   const [sentAt, setSentAt] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "send" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // TRUE when the money wall withheld the vendor intake from THIS reader, so
+  // the blank prefill is "hidden from you", not "he never answered".
+  const [leadQualWithheld, setLeadQualWithheld] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   // The application saved, but mirroring the ask back onto the deal did not (RLS,
   // or the row moved). Shown separately from `error` because the application IS
@@ -400,12 +404,24 @@ export default function MerchantApplicationModal({
   useEffect(() => {
     let alive = true;
     (async () => {
-      const { data } = await supabase
+      // ⚠ THIS READ DECIDES INSERT-vs-UPDATE. `existingId` comes from it, and
+      // null means save() INSERTs — so a FAILED read looks exactly like "no
+      // application yet" and mints a SECOND mca_applications row for a deal
+      // that already has one. Same shape fixed in QuickAppModal (ec2552c); an
+      // unreadable application is not an absent one, so surface it rather than
+      // seeding a fresh form over the top of a draft we simply could not read.
+      const { data, error: appErr } = await supabase
         .from("mca_applications")
         .select("*")
         .eq("deal_id", deal.id)
         .maybeSingle();
       if (!alive) return;
+      if (appErr) {
+        setError(
+          `Couldn't read this deal's saved application — ${appErr.message}. Close and reopen before editing: saving now could create a second application.`,
+        );
+        return;
+      }
       if (data) {
         setExistingId(data.id as string);
         setSentAt((data.sent_to_merchant_at as string | null) ?? null);
@@ -426,7 +442,11 @@ export default function MerchantApplicationModal({
            screen and, on the next save, write it straight back over the correction.
            So the deal wins, and we SAY that it did rather than swapping a number
            under the closer silently. */
-        const dealAsk = deal.amount_requested != null ? String(Number(deal.amount_requested)) : "";
+        // `!= null` cannot tell a WITHHELD ask from an unset one. Withheld ->
+        // treat as "no deal value to impose", which leaves the closer's draft
+        // alone — the safe direction, since we cannot see what to reconcile to.
+        const dealAskF = dealFieldOf<number>(deal, "amount_requested");
+        const dealAsk = dealAskF.kind === "value" && dealAskF.value != null ? String(Number(dealAskF.value)) : "";
         const draftAsk = next.amount_requested === "" ? "" : String(Number(next.amount_requested));
         if (dealAsk !== "" && dealAsk !== draftAsk) {
           next.amount_requested = dealAsk;
@@ -458,7 +478,22 @@ export default function MerchantApplicationModal({
         // it has a value (it's our own record, and a closer may have corrected it);
         // the lead fills the gaps. A saved draft never reaches here, so this can never
         // clobber something a human typed.
-        const q = (deal.lead_qual ?? {}) as Record<string, unknown>;
+        // ⚠ `lead_qual` is one of the eighteen the money wall nulls for a reader
+        // who isn't assigned the deal, and `?? {}` FIRES on that null — so the
+        // whole vendor-supplied intake collapses to `{}` and every field this
+        // modal exists to prefill comes up blank. Blank is not "the merchant
+        // never told us"; it can mean "you aren't allowed to see what he told
+        // us". The closer has to know which, or they re-ask a merchant who has
+        // already answered.
+        const leadQual = dealFieldOf<Record<string, unknown>>(deal, "lead_qual");
+        if (leadQual.kind === "withheld") setLeadQualWithheld(true);
+        const q = (leadQual.kind === "value" ? (leadQual.value ?? {}) : {}) as Record<string, unknown>;
+        // The deal's own ask, unless it was withheld — in which case there is
+        // nothing to seed from and the vendor answer (also withheld) won't help
+        // either. The banner tells the closer why the box is empty.
+        const dealAskField = dealFieldOf<number>(deal, "amount_requested");
+        const dealAskSeed =
+          dealAskField.kind === "value" && dealAskField.value != null ? String(dealAskField.value) : "";
         const name = splitName(q.contact_name);
         const tenure = txt(q.time_as_owner);
         const startEst = startDateFromTenure(tenure);
@@ -496,7 +531,7 @@ export default function MerchantApplicationModal({
           owner_title: "Owner",
           owner_ownership_pct: "100",
           amount_requested: pick(
-            deal.amount_requested != null ? String(deal.amount_requested) : "",
+            dealAskSeed,
             money(q.requested_amount),
           ),
           use_of_funds: pick(deal.use_of_funds, txt(q.use_of_funds)),
@@ -735,7 +770,17 @@ export default function MerchantApplicationModal({
 
     const dealPatch: Record<string, unknown> = {};
     const ask = num(form.amount_requested);
-    if (ask !== null && !same(ask, deal.amount_requested)) dealPatch.amount_requested = ask;
+    // 🚨 NEVER WRITE THE ASK BACK WHEN IT WAS WITHHELD FROM US. `same(ask,
+    // null)` is false for any typed number, so the old line would push this
+    // reader's figure over the deal's REAL ask — one they were never shown
+    // and so could not have meant to change. A processor can UPDATE any deal
+    // (processor_update_all_deals) while reading it masked, so this is a live
+    // overwrite path, not a theoretical one. No comparison is possible, so no
+    // write: the application row still records what they typed.
+    const dealAskNow = dealFieldOf<number>(deal, "amount_requested");
+    if (ask !== null && dealAskNow.kind === "value" && !same(ask, dealAskNow.value)) {
+      dealPatch.amount_requested = ask;
+    }
     const use = form.use_of_funds.trim();
     if (use !== "" && use !== (deal.use_of_funds ?? "").trim()) dealPatch.use_of_funds = use;
 
@@ -1651,6 +1696,17 @@ export default function MerchantApplicationModal({
             )
           )}
 
+          {/* The prefill source is HIDDEN, not empty. Without this the closer
+              reads a blank form as "the vendor sent us nothing" and re-asks a
+              merchant who already answered every one of these. */}
+          {leadQualWithheld && (
+            <p className="mb-3 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs font-semibold text-amber-800 dark:text-amber-200">
+              <span className="font-bold">The lead answers the vendor sent are hidden</span> — this deal isn&apos;t
+              assigned to you, so the form couldn&apos;t be pre-filled from them.{" "}
+              <span className="font-bold">Blank here does not mean the merchant never told us.</span> Check with the
+              assigned closer before re-asking him everything.
+            </p>
+          )}
           {error && <p className="text-sm text-red-600 mb-3 whitespace-pre-line">{error}</p>}
           {syncWarning && (
             <p className="text-sm mb-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-amber-800 dark:text-amber-300">
