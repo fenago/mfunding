@@ -194,6 +194,7 @@ const CSS = `
 .fcs .bchip.warn{background:var(--c-bg);color:var(--c)}
 .fcs .bchip.off{background:var(--chip);color:var(--ink-faint);font-weight:600}
 .fcs .loadnote{padding:26px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius)}
+.fcs .warn{border:1.5px solid var(--c);background:var(--c-bg);color:var(--c);border-radius:var(--radius);padding:12px 15px;font-size:13px;font-weight:600;margin-bottom:16px}
 /* who to call */
 .fcs .contact{border-top:1px dashed var(--line);padding-top:9px;display:flex;flex-direction:column;gap:9px}
 .fcs .cgroup .ck{font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px}
@@ -905,6 +906,11 @@ type ProfileState = {
   // FALSE means UNREADABLE — never "no profile exists".
   readable: boolean;
   error: string | null;
+  // A query that failed is a fault and shouts in red. A setter who is simply
+  // not on the RLS policy is NOT a fault — it's a standing limit of their
+  // account, and painting it red on every page load just teaches everyone to
+  // ignore red. Both still mean UNKNOWN in every row that depends on them.
+  severity: "error" | "limited";
 };
 
 const PROFILE_COLS =
@@ -917,21 +923,24 @@ const PROFILE_COLS =
 // Merging keeps the pessimistic side: once any read came back unreadable, the
 // page keeps saying so rather than letting a later partial read imply coverage.
 function mergeProfiles(prev: ProfileState, next: ProfileState): ProfileState {
+  const error = prev.error ?? next.error;
   return {
     map: { ...prev.map, ...next.map },
     readable: prev.readable && next.readable,
-    error: prev.error ?? next.error,
+    error,
+    severity: prev.severity === "error" || next.severity === "error" ? "error" : "limited",
   };
 }
 
 async function loadProfiles(ids: string[]): Promise<ProfileState> {
-  if (ids.length === 0) return { map: {}, readable: true, error: null };
+  if (ids.length === 0) return { map: {}, readable: true, error: null, severity: "limited" };
   const { data, error } = await supabase.from("funder_submission_profiles").select(PROFILE_COLS).in("lender_id", ids);
   if (error) {
     return {
       map: {},
       readable: false,
       error: `Submission addresses and recipes could not be read — ${error.message}. This is a READ FAILURE: every submission contact below is UNKNOWN, not absent.`,
+      severity: "error",
     };
   }
   const rows = (data ?? []) as ProfileRow[];
@@ -940,12 +949,13 @@ async function loadProfiles(ids: string[]): Promise<ProfileState> {
       map: {},
       readable: false,
       error:
-        "No submission profile came back for any funder. Either none is recorded or your role can't read them — Ops can see these, a setter account cannot. Treat every submission address below as UNKNOWN, not as absent, and confirm with Ops before sending a deal anywhere.",
+        "Submission addresses are UNKNOWN on this page — no profile came back for any funder. Either none is recorded or your account can't read them (Ops can, a setter account cannot). Treat them as unknown, not as absent: there is someone to send a deal to, ask Ops who.",
+      severity: "limited",
     };
   }
   const map: Record<string, ProfileRow> = {};
   for (const r of rows) map[r.lender_id] = r;
-  return { map, readable: true, error: null };
+  return { map, readable: true, error: null, severity: "limited" };
 }
 type ProductData = {
   state: "idle" | "loading" | "ready" | "error";
@@ -1215,7 +1225,9 @@ function ProductTabView({
         </div>
 
         {data.error && <div className="err">{data.error}</div>}
-        {profiles.error && <div className="err">{profiles.error}</div>}
+        {profiles.error && (
+          <div className={profiles.severity === "error" ? "err" : "warn"}>{profiles.error}</div>
+        )}
 
         {data.state === "loading" && <div className="loadnote">Reading the funder catalog…</div>}
         {data.state === "error" && (
@@ -1288,7 +1300,12 @@ export default function FunderCheatSheetPage() {
   const [prod, setProd] = useState<ProductData>({ state: "idle", rows: [], error: null });
   // Submission recipes — the "where the deal goes" half of every contact block.
   // Shared by the MCA cards and the credit tabs; merged as each tab loads.
-  const [profiles, setProfiles] = useState<ProfileState>({ map: {}, readable: true, error: null });
+  const [profiles, setProfiles] = useState<ProfileState>({
+    map: {},
+    readable: true,
+    error: null,
+    severity: "limited",
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1433,7 +1450,9 @@ export default function FunderCheatSheetPage() {
         {tab === "mca" && (
           <>
         {error && <div className="err">{error}</div>}
-        {profiles.error && <div className="err">{profiles.error}</div>}
+        {profiles.error && (
+          <div className={profiles.severity === "error" ? "err" : "warn"}>{profiles.error}</div>
+        )}
 
         {/* PAPER EDUCATION */}
         <section aria-labelledby="paper-h">
