@@ -60,6 +60,7 @@ interface ProfileMeta {
   method: Exclude<Method, "none">;
   required_stips: string[];
   to_email: string | null;
+  portal_url: string | null;
 }
 
 type Fit = "strong" | "possible" | "poor";
@@ -360,7 +361,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         }
         const ids = m.map((x) => x.id);
         const [profRes, lendRes, docRes, subRes] = await Promise.all([
-          ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email").in("lender_id", ids) : Promise.resolve({ data: [] }),
+          // `active` and `portal_url` are read because the badge below depends on
+          // BOTH: an inactive recipe is not a destination, and a recipe whose
+          // method is "portal" with no portal_url has nowhere to send either.
+          ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email, portal_url, active").eq("active", true).in("lender_id", ids) : Promise.resolve({ data: [] }),
           ids.length ? supabase.from("lenders").select("id, submission_email, submission_portal_url").in("id", ids) : Promise.resolve({ data: [] }),
           deal.customer_id ? supabase.from("customer_documents").select("id, document_type, filename").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
           supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason").eq("deal_id", deal.id),
@@ -371,8 +375,8 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         setFallbackErr(availErr);
         setMatchesErr(read.kind === "unreadable" ? read.why : null);
         const pmap: Record<string, ProfileMeta> = {};
-        for (const p of (profRes.data ?? []) as { lender_id: string; method: ProfileMeta["method"]; required_stips: string[] | null; to_email: string | null }[]) {
-          pmap[p.lender_id] = { method: p.method, required_stips: p.required_stips ?? [], to_email: p.to_email };
+        for (const p of (profRes.data ?? []) as { lender_id: string; method: ProfileMeta["method"]; required_stips: string[] | null; to_email: string | null; portal_url: string | null }[]) {
+          pmap[p.lender_id] = { method: p.method, required_stips: p.required_stips ?? [], to_email: p.to_email, portal_url: p.portal_url };
         }
         setProfiles(pmap);
         const dmap: Record<string, { email: string | null; portal: string | null }> = {};
@@ -527,12 +531,28 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     }
   }
 
+  // A RECIPE THAT EXISTS IS NOT A RECIPE THAT HAS SOMEWHERE TO SEND.
+  //
+  // This used to be `if (p) return p.method` — the profile row's mere existence
+  // decided the badge, so a recipe with an empty to_email rendered "email" and
+  // the funder was selectable. Lendini did exactly that for weeks: an active
+  // profile with no destination of its own, which only ever sent because
+  // submit-to-funders falls back to `lenders.submission_email`
+  // (submit-to-funders/index.ts, `recipe?.to_email || lender.submission_email`).
+  // It worked by luck. A funder with a profile and no lender fallback would have
+  // been offered, selected, and failed at send with the package already built.
+  //
+  // So the client now resolves a destination the SAME WAY the server does:
+  // recipe first, lender row as the fallback, and "none" only when neither has
+  // one. Found by funder-destinations, 2026-09-30.
   const methodOf = (lenderId: string): Method => {
     const p = profiles[lenderId];
-    if (p) return p.method;
     const d = lenderDest[lenderId];
-    if (d?.email) return "email";
-    if (d?.portal) return "portal";
+    const email = p?.to_email || d?.email || null;
+    const portal = p?.portal_url || d?.portal || null;
+    if (email && portal) return p?.method === "email" ? "email" : "email_and_portal";
+    if (email) return "email";
+    if (portal) return "portal";
     return "none";
   };
   const missingStipsOf = (lenderId: string): string[] =>
