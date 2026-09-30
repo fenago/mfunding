@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import supabase from "@/supabase";
 import {
   type FunderCriteria,
@@ -193,6 +194,21 @@ const CSS = `
 .fcs .bchip.warn{background:var(--c-bg);color:var(--c)}
 .fcs .bchip.off{background:var(--chip);color:var(--ink-faint);font-weight:600}
 .fcs .loadnote{padding:26px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius)}
+/* who to call */
+.fcs .contact{border-top:1px dashed var(--line);padding-top:9px;display:flex;flex-direction:column;gap:9px}
+.fcs .cgroup .ck{font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px}
+.fcs .cline{font-size:12.5px;color:var(--ink);line-height:1.5;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px}
+.fcs .cline .who{font-weight:750}
+.fcs .cline .lbl{color:var(--ink-faint);font-size:11.5px;min-width:52px}
+.fcs .cnone{font-size:12px;color:var(--ink-faint);font-style:italic}
+.fcs .cunk{font-size:12px;font-weight:700;color:var(--c)}
+.fcs a.cmail,.fcs a.cphone{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
+.fcs .cmini{font:inherit;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--chip-ink);background:var(--chip);border:0;border-radius:5px;padding:2px 6px;cursor:pointer;flex-shrink:0}
+.fcs .cmini:hover{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent-ink)}
+.fcs .cmini:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.fcs .cperson{border-left:2px solid var(--line);padding-left:9px;margin-top:6px}
+.fcs .cnote{border-left:3px solid var(--b);background:var(--b-bg);border-radius:0 8px 8px 0;padding:8px 11px;font-size:11.5px;color:var(--ink);line-height:1.5;white-space:pre-wrap;max-height:190px;overflow:auto}
+.fcs .cnote .k{display:block;font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--b);margin-bottom:3px}
 @media (max-width:560px){.fcs .wrap{padding:22px 15px 56px}.fcs .count{width:100%;margin:6px 0 0}}
 `;
 
@@ -228,7 +244,26 @@ type LenderCategory = {
   criteria?: FunderCriteria | null;
 };
 
-type LenderRow = {
+// Reach-someone fields. Every one of them is sparsely populated across the 125
+// funders (95 have a phone, 58 an email, 42 a name, 42 a `contacts` array), so
+// the contact block is built for the SPARSE row and states the gaps in words.
+export type ContactFields = {
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  primary_contact_phone: string | null;
+  contacts: ContactPerson[] | null;
+  submission_email: string | null;
+  website: string | null;
+  notes: string | null;
+};
+type ContactPerson = {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  title?: string | null;
+};
+
+type LenderRow = ContactFields & {
   id: string;
   company_name: string;
   min_funding_amount: number | string | null;
@@ -445,6 +480,226 @@ const matchesPositions = (l: LenderRow, f: PosFilter): boolean => {
   return acceptsPositions(l, Number(f));
 };
 
+// ── Who to call ──────────────────────────────────────────────────────────────
+// Two different jobs, kept apart on purpose: the AE is who you CHASE, the
+// submission address is where the DEAL GOES. A processor needs both and must
+// never have to guess which is which.
+//
+// Everything here is sparse. A missing field always renders the words "not
+// recorded" — a blank contact block reads as "this funder has no rep", and a
+// processor who believes that stops calling.
+
+// A US phone number inside free text. Used ONLY to make the digits tappable:
+// the original string is rendered verbatim around the links, labels and all
+// ("929-531-9989 (direct) · 646-491-1130 (cell)"), so a bad match can mislink
+// but can never rewrite or hide what was recorded.
+const PHONE_RE = /(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g;
+const telHref = (s: string) => {
+  const d = s.replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? `tel:+${d}` : d.length === 10 ? `tel:+1${d}` : `tel:${d}`;
+};
+
+function PhoneText({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  PHONE_RE.lastIndex = 0;
+  for (let m = PHONE_RE.exec(text); m !== null; m = PHONE_RE.exec(text)) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    parts.push(
+      <a className="cphone" href={telHref(m[0])} key={`${m.index}-${m[0]}`}>
+        {m[0]}
+      </a>,
+    );
+    last = m.index + m[0].length;
+  }
+  if (parts.length === 0) return <>{text}</>;
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
+function CopyMini({ value, what }: { value: string; what: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="cmini"
+      aria-label={`Copy ${what}`}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1800);
+        } catch {
+          // Clipboard blocked. Say nothing false — the address is on screen.
+          setDone(false);
+        }
+      }}
+    >
+      {done ? "✓" : "copy"}
+    </button>
+  );
+}
+
+function MailLine({ label, email }: { label: string; email: string }) {
+  return (
+    <div className="cline">
+      <span className="lbl">{label}</span>
+      <a className="cmail" href={`mailto:${email}`}>
+        {email}
+      </a>
+      <CopyMini value={email} what={`${label} address`} />
+    </div>
+  );
+}
+
+const clean = (s: string | null | undefined) => {
+  const t = (s ?? "").trim();
+  return t === "" ? null : t;
+};
+// Prose in `lenders.notes` / the submission profile's `internal_notes` carries
+// real contact detail ("Francine Grimaldi (Account Manager) - Direct
+// 929-531-9989, Cell 646-491-1130"). It is QUOTED, never parsed into fields: a
+// wrong phone number is worse than a sentence someone has to read.
+const mentionsContact = (s: string | null) => !!s && (s.includes("@") || /\d{3}[).\-\s]?\d{3}[.\-\s]?\d{4}/.test(s));
+
+function ContactBlock({
+  l,
+  profile,
+  profilesReadable,
+}: {
+  l: ContactFields & { company_name: string };
+  profile: ProfileRow | undefined;
+  profilesReadable: boolean;
+}) {
+  const name = clean(l.primary_contact_name);
+  const email = clean(l.primary_contact_email);
+  const phone = clean(l.primary_contact_phone);
+  const site = clean(l.website);
+  const people = (l.contacts ?? []).filter((p) => clean(p?.name) || clean(p?.email) || clean(p?.phone));
+  // The primary rep is usually repeated inside `contacts` — don't print them twice.
+  const others = people.filter((p) => !email || clean(p.email)?.toLowerCase() !== email.toLowerCase());
+
+  const subTo = clean(profile?.to_email);
+  const subCc = (profile?.cc_emails ?? []).map(clean).filter((x): x is string => !!x);
+  const subPortal = clean(profile?.portal_url);
+  const catalogSub = clean(l.submission_email);
+
+  const profNote = clean(profile?.internal_notes);
+  const lenderNote = clean(l.notes);
+  const notes: { k: string; v: string }[] = [];
+  if (mentionsContact(profNote)) notes.push({ k: "From the submission profile's notes", v: profNote as string });
+  if (mentionsContact(lenderNote)) notes.push({ k: "From the funder record's notes", v: lenderNote as string });
+
+  return (
+    <div className="contact">
+      <div className="cgroup">
+        <div className="ck">Who to chase — the rep</div>
+        {name ? <div className="cline"><span className="who">{name}</span></div> : <div className="cnone">Name not recorded.</div>}
+        {email ? <MailLine label="Email" email={email} /> : <div className="cnone">Email not recorded.</div>}
+        {phone ? (
+          <div className="cline">
+            <span className="lbl">Phone</span>
+            <span>
+              <PhoneText text={phone} />
+            </span>
+            <CopyMini value={phone} what="phone number" />
+          </div>
+        ) : (
+          <div className="cnone">Phone not recorded.</div>
+        )}
+      </div>
+
+      <div className="cgroup">
+        <div className="ck">Other people on file</div>
+        {others.length === 0 ? (
+          <div className="cnone">No other contacts recorded for this funder.</div>
+        ) : (
+          others.map((p, i) => (
+            <div className="cperson" key={`${clean(p.email) ?? clean(p.phone) ?? i}`}>
+              <div className="cline">
+                <span className="who">{clean(p.name) ?? "Name not recorded"}</span>
+                {clean(p.title) && <span className="lbl">{clean(p.title)}</span>}
+              </div>
+              {clean(p.email) && <MailLine label="Email" email={clean(p.email) as string} />}
+              {clean(p.phone) && (
+                <div className="cline">
+                  <span className="lbl">Phone</span>
+                  <span>
+                    <PhoneText text={clean(p.phone) as string} />
+                  </span>
+                  <CopyMini value={clean(p.phone) as string} what="phone number" />
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="cgroup">
+        <div className="ck">Where the deal goes — submission</div>
+        {!profilesReadable ? (
+          <>
+            <div className="cunk">
+              Submission recipe UNKNOWN — the profile table came back empty or unreadable for your account. Not
+              "no address": ask Ops before sending anything.
+            </div>
+            {catalogSub && <MailLine label="Catalog" email={catalogSub} />}
+          </>
+        ) : subTo || subPortal || catalogSub ? (
+          <>
+            {subTo && <MailLine label="Deals to" email={subTo} />}
+            {subCc.map((cc) => (
+              <MailLine key={cc} label="CC" email={cc} />
+            ))}
+            {subPortal && (
+              <div className="cline">
+                <span className="lbl">Portal</span>
+                <a className="cmail" href={subPortal} target="_blank" rel="noreferrer">
+                  {subPortal}
+                </a>
+              </div>
+            )}
+            {!subTo && !subPortal && catalogSub && (
+              <>
+                <MailLine label="Catalog" email={catalogSub} />
+                <div className="cnone">
+                  From the funder record, not from a send recipe — no submission profile is set up for this funder.
+                </div>
+              </>
+            )}
+          </>
+        ) : (
+          <div className="cnone">No submission address or portal recorded for this funder.</div>
+        )}
+      </div>
+
+      {notes.length > 0 && (
+        <div className="cgroup">
+          {notes.map((n) => (
+            <div className="cnote" key={n.k}>
+              <span className="k">{n.k} — quoted, not parsed into fields</span>
+              {n.v}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="cgroup">
+        {site ? (
+          <div className="cline">
+            <span className="lbl">Website</span>
+            <a className="cmail" href={site} target="_blank" rel="noreferrer">
+              {site}
+            </a>
+          </div>
+        ) : (
+          <div className="cnone">Website not recorded.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Product tabs ─────────────────────────────────────────────────────────────
 // MCA is the working product and keeps the whole original page. The four credit
 // products get their own tab, sourced from lenders.lender_types.
@@ -623,11 +878,10 @@ const MARKETPLACES: {
   },
 ];
 
-type ProductLenderRow = {
+type ProductLenderRow = ContactFields & {
   id: string;
   company_name: string;
   status: string | null;
-  website: string | null;
   lender_types: string[] | null;
   min_funding_amount: number | string | null;
   max_funding_amount: number | string | null;
@@ -636,17 +890,63 @@ type ProfileRow = {
   lender_id: string;
   method: string | null;
   to_email: string | null;
+  cc_emails: string[] | null;
   portal_url: string | null;
   required_stips: string[] | null;
   active: boolean | null;
   special_instructions: string | null;
+  internal_notes: string | null;
 };
+type ProfileState = {
+  map: Record<string, ProfileRow>;
+  // FALSE means UNREADABLE — never "no profile exists".
+  readable: boolean;
+  error: string | null;
+};
+
+const PROFILE_COLS =
+  "lender_id, method, to_email, cc_emails, portal_url, required_stips, active, special_instructions, internal_notes";
+
+// One read of the submission recipes, shared by every tab. Both failure modes
+// collapse to `readable: false`, because a setter (role `closer`) is not on the
+// RLS policy for funder_submission_profiles and gets zero rows with NO error —
+// "none recorded" and "you may not read these" are indistinguishable from here.
+// Merging keeps the pessimistic side: once any read came back unreadable, the
+// page keeps saying so rather than letting a later partial read imply coverage.
+function mergeProfiles(prev: ProfileState, next: ProfileState): ProfileState {
+  return {
+    map: { ...prev.map, ...next.map },
+    readable: prev.readable && next.readable,
+    error: prev.error ?? next.error,
+  };
+}
+
+async function loadProfiles(ids: string[]): Promise<ProfileState> {
+  if (ids.length === 0) return { map: {}, readable: true, error: null };
+  const { data, error } = await supabase.from("funder_submission_profiles").select(PROFILE_COLS).in("lender_id", ids);
+  if (error) {
+    return {
+      map: {},
+      readable: false,
+      error: `Submission addresses and recipes could not be read — ${error.message}. This is a READ FAILURE: every submission contact below is UNKNOWN, not absent.`,
+    };
+  }
+  const rows = (data ?? []) as ProfileRow[];
+  if (rows.length === 0) {
+    return {
+      map: {},
+      readable: false,
+      error:
+        "No submission profile came back for any funder. Either none is recorded or your role can't read them — Ops can see these, a setter account cannot. Treat every submission address below as UNKNOWN, not as absent, and confirm with Ops before sending a deal anywhere.",
+    };
+  }
+  const map: Record<string, ProfileRow> = {};
+  for (const r of rows) map[r.lender_id] = r;
+  return { map, readable: true, error: null };
+}
 type ProductData = {
   state: "idle" | "loading" | "ready" | "error";
   rows: ProductLenderRow[];
-  profiles: Record<string, ProfileRow>;
-  // FALSE means the profile table could not be read — never "no profile exists".
-  profilesReadable: boolean;
   error: string | null;
 };
 
@@ -699,6 +999,7 @@ function ProductFunderRow({
   profile: ProfileRow | undefined;
   profilesReadable: boolean;
 }) {
+  const [who, setWho] = useState(false);
   const [open, setOpen] = useState(false);
   const spec = PRODUCT_SPEC[product];
   const live = l.status === "live_vendor";
@@ -756,6 +1057,11 @@ function ProductFunderRow({
         credit box. Confirm time in business, credit and documents with the rep before you quote anything to a merchant.
       </div>
 
+      <button type="button" className="more" onClick={() => setWho((w) => !w)} aria-expanded={who}>
+        {who ? "Hide who to call ↑" : "Who to call ↓"}
+      </button>
+      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} />}
+
       {(stips.length > 0 || profile?.special_instructions) && (
         <>
           <button type="button" className="more" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -783,9 +1089,11 @@ function ProductFunderRow({
 function ProductTabView({
   product,
   data,
+  profiles,
 }: {
   product: Exclude<ProductId, "mca">;
   data: ProductData;
+  profiles: ProfileState;
 }) {
   const spec = PRODUCT_SPEC[product];
   const markets = MARKETPLACES.filter((m) => m.products.includes(product));
@@ -904,6 +1212,7 @@ function ProductTabView({
         </div>
 
         {data.error && <div className="err">{data.error}</div>}
+        {profiles.error && <div className="err">{profiles.error}</div>}
 
         {data.state === "loading" && <div className="loadnote">Reading the funder catalog…</div>}
         {data.state === "error" && (
@@ -928,8 +1237,8 @@ function ProductTabView({
                   key={l.id}
                   l={l}
                   product={product}
-                  profile={data.profiles[l.id]}
-                  profilesReadable={data.profilesReadable}
+                  profile={profiles.map[l.id]}
+                  profilesReadable={profiles.readable}
                 />
               ))}
             </div>
@@ -945,8 +1254,8 @@ function ProductTabView({
                   key={l.id}
                   l={l}
                   product={product}
-                  profile={data.profiles[l.id]}
-                  profilesReadable={data.profilesReadable}
+                  profile={profiles.map[l.id]}
+                  profilesReadable={profiles.readable}
                 />
               ))}
             </div>
@@ -973,20 +1282,19 @@ export default function FunderCheatSheetPage() {
   const [bucket, setBucket] = useState<"all" | BucketId>("all");
   const [positions, setPositions] = useState<PosFilter>("all");
   const [tab, setTab] = useState<ProductId>("mca");
-  const [prod, setProd] = useState<ProductData>({
-    state: "idle",
-    rows: [],
-    profiles: {},
-    profilesReadable: true,
-    error: null,
-  });
+  const [prod, setProd] = useState<ProductData>({ state: "idle", rows: [], error: null });
+  // Submission recipes — the "where the deal goes" half of every contact block.
+  // Shared by the MCA cards and the credit tabs; merged as each tab loads.
+  const [profiles, setProfiles] = useState<ProfileState>({ map: {}, readable: true, error: null });
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const { data, error: err } = await supabase
         .from("lenders")
-        .select("id, company_name, min_funding_amount, max_funding_amount, category")
+        .select(
+          "id, company_name, min_funding_amount, max_funding_amount, category, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, website, notes",
+        )
         .eq("status", "live_vendor");
       if (cancelled) return;
       if (err) {
@@ -1002,6 +1310,9 @@ export default function FunderCheatSheetPage() {
       });
       setLenders(rows);
       setLoading(false);
+      const res = await loadProfiles(rows.map((r) => r.id));
+      if (cancelled) return;
+      setProfiles((prev) => mergeProfiles(prev, res));
     })();
     return () => {
       cancelled = true;
@@ -1018,7 +1329,9 @@ export default function FunderCheatSheetPage() {
     (async () => {
       const { data, error: err } = await supabase
         .from("lenders")
-        .select("id, company_name, status, website, lender_types, min_funding_amount, max_funding_amount")
+        .select(
+          "id, company_name, status, lender_types, min_funding_amount, max_funding_amount, primary_contact_name, primary_contact_email, primary_contact_phone, contacts, submission_email, website, notes",
+        )
         .neq("status", "rejected")
         .overlaps("lender_types", CREDIT_PRODUCTS);
       if (cancelled) return;
@@ -1026,40 +1339,15 @@ export default function FunderCheatSheetPage() {
         setProd({
           state: "error",
           rows: [],
-          profiles: {},
-          profilesReadable: false,
           error: `Could not read the funder catalog for the product tabs — ${err.message}. This is a READ FAILURE, not an empty network.`,
         });
         return;
       }
       const rows = (data ?? []) as ProductLenderRow[];
-      const ids = rows.map((r) => r.id);
-      const profiles: Record<string, ProfileRow> = {};
-      let profilesReadable = true;
-      let profErr: string | null = null;
-      if (ids.length > 0) {
-        const { data: pd, error: pe } = await supabase
-          .from("funder_submission_profiles")
-          .select("lender_id, method, to_email, portal_url, required_stips, active, special_instructions")
-          .in("lender_id", ids);
-        if (cancelled) return;
-        if (pe) {
-          profilesReadable = false;
-          profErr = `Submission paths could not be read — ${pe.message}. Every funder below shows an unknown path: that is a READ FAILURE, not "no path on file."`;
-        } else if ((pd ?? []).length === 0) {
-          // Zero rows for a non-empty funder set is AMBIGUOUS, and the ambiguity
-          // is real: RLS on funder_submission_profiles admits admins, employees
-          // and processors, so a plain closer gets an empty result set with NO
-          // error. "None recorded" and "you may not read these" look identical
-          // from here, so neither is asserted.
-          profilesReadable = false;
-          profErr =
-            "No submission profile came back for any funder. Either none is recorded or your role can't read them — Ops can see these, a setter account cannot. Treat every submission path below as UNKNOWN, not as absent, and confirm with Ops before telling a merchant anything.";
-        } else {
-          for (const p of (pd ?? []) as ProfileRow[]) profiles[p.lender_id] = p;
-        }
-      }
-      setProd({ state: "ready", rows, profiles, profilesReadable, error: profErr });
+      setProd({ state: "ready", rows, error: null });
+      const res = await loadProfiles(rows.map((r) => r.id));
+      if (cancelled) return;
+      setProfiles((prev) => mergeProfiles(prev, res));
     })();
     return () => {
       cancelled = true;
@@ -1135,11 +1423,14 @@ export default function FunderCheatSheetPage() {
           ))}
         </div>
 
-        {tab !== "mca" && <ProductTabView product={tab as Exclude<ProductId, "mca">} data={prod} />}
+        {tab !== "mca" && (
+          <ProductTabView product={tab as Exclude<ProductId, "mca">} data={prod} profiles={profiles} />
+        )}
 
         {tab === "mca" && (
           <>
         {error && <div className="err">{error}</div>}
+        {profiles.error && <div className="err">{profiles.error}</div>}
 
         {/* PAPER EDUCATION */}
         <section aria-labelledby="paper-h">
@@ -1341,7 +1632,14 @@ export default function FunderCheatSheetPage() {
 
           <div className="grid">
             {shown.map(({ l, papers, tags }) => (
-              <FunderCard key={l.id} l={l} papers={papers} tags={tags} />
+              <FunderCard
+                key={l.id}
+                l={l}
+                papers={papers}
+                tags={tags}
+                profile={profiles.map[l.id]}
+                profilesReadable={profiles.readable}
+              />
             ))}
           </div>
           {!loading && shown.length === 0 && (
@@ -1429,8 +1727,21 @@ export default function FunderCheatSheetPage() {
 // first: how deep a stack the funder takes, and whether defaults/collections are
 // a hard stop. Everything else folds away (reference content folds; the box the
 // closer acts on stays visible).
-function FunderCard({ l, papers, tags }: { l: LenderRow; papers: string[]; tags: string[] }) {
+function FunderCard({
+  l,
+  papers,
+  tags,
+  profile,
+  profilesReadable,
+}: {
+  l: LenderRow;
+  papers: string[];
+  tags: string[];
+  profile: ProfileRow | undefined;
+  profilesReadable: boolean;
+}) {
   const [open, setOpen] = useState(false);
+  const [who, setWho] = useState(false);
   const c = criteriaOf(l);
   const pos = positionStance(l);
   const ctone = collectionsTone(l);
@@ -1562,6 +1873,11 @@ function FunderCard({ l, papers, tags }: { l: LenderRow; papers: string[]; tags:
           )}
         </div>
       )}
+
+      <button type="button" className="more" onClick={() => setWho((w) => !w)} aria-expanded={who}>
+        {who ? "Hide who to call ↑" : "Who to call ↓"}
+      </button>
+      {who && <ContactBlock l={l} profile={profile} profilesReadable={profilesReadable} />}
 
       <div className="tags">
         {tags.map((t) => (
