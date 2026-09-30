@@ -481,18 +481,18 @@ function Plain({ value, suffix = "", digits = 0 }: { value: number | null; suffi
 }
 
 // ── Table chrome (mirrors the page's) ────────────────────────────────────────
-const TABLE_WRAP = "overflow-x-auto rounded-lg border border-base-300";
+const TABLE_WRAP = "overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700";
 const TABLE = "table w-full";
-const THEAD = "bg-base-200/60 dark:bg-gray-800/50";
+const THEAD = "bg-gray-100/60 dark:bg-gray-800/50";
 const TH =
-  "px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap border-b border-base-300";
+  "px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap border-b border-gray-200 dark:border-gray-700";
 const TH_NUM = `${TH} text-right`;
 const TD = "px-3 py-2.5 text-sm text-gray-700 dark:text-gray-200";
 const TD_NUM = `${TD} text-right tabular-nums whitespace-nowrap`;
-const TBODY = "divide-y divide-base-300/70";
-const TR = "hover:bg-base-200/40 dark:hover:bg-gray-800/30 transition-colors";
+const TBODY = "divide-y divide-gray-200 dark:divide-gray-700";
+const TR = "hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors";
 
-const CARD = "card bg-base-100 border border-base-300 shadow-sm";
+const CARD = "card shadow-sm";
 
 /** The two-colour split used for occupancy everywhere on this tab. */
 const DIALING_FILL = "#00C49A";
@@ -769,7 +769,7 @@ export default function DialCeilingPanel({
           </div>
 
           {/* The two things a reader must know BEFORE reading any number here. */}
-          <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-[11px] text-gray-600 dark:text-gray-300 space-y-1">
+          <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2 text-[11px] text-gray-600 dark:text-gray-300 space-y-1">
             <div>
               <b>"Shift" here means the dialing window, not the time clock.</b> Nothing on this tab reads{" "}
               <code>time_entries</code>. Per line per Eastern day it measures <b>first dial → last dial</b>,
@@ -1281,7 +1281,7 @@ export default function DialCeilingPanel({
               {rows.map((r) => (
                 <div
                   key={r.key}
-                  className="rounded-lg border border-base-300 bg-base-100 px-3 py-2 text-xs flex items-center gap-2"
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white px-3 py-2 text-xs flex items-center gap-2"
                 >
                   <span className="font-semibold text-gray-700 dark:text-gray-200">{nameOf(r)}</span>
                   <span className="text-gray-400">·</span>
@@ -1495,7 +1495,7 @@ function ProductiveSection({
         </div>
 
         {/* The reason both columns are on screen at once. */}
-        <div className="rounded-lg border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2.5 text-xs text-gray-600 dark:text-gray-300 flex items-start gap-2">
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100/50 dark:bg-gray-800/40 px-3 py-2.5 text-xs text-gray-600 dark:text-gray-300 flex items-start gap-2">
           <InformationCircleIcon className="w-4 h-4 shrink-0 mt-0.5" />
           <span>
             <b>These two sides are never added together.</b> Read the gap: a setter with far more{" "}
@@ -1538,7 +1538,7 @@ function ProductiveSection({
                     <th className={TH_NUM} title="Positive dispositions the setter LOGGED on the dial side">
                       Positives logged
                     </th>
-                    <th className={`${TH_NUM} border-l border-base-300`} title="Distinct deals carrying at least one stage stamp in this range">
+                    <th className={`${TH_NUM} border-l border-gray-200 dark:border-gray-700`} title="Distinct deals carrying at least one stage stamp in this range">
                       Productive contacts
                     </th>
                     <th className={TH_NUM}>Contacted</th>
@@ -1572,7 +1572,7 @@ function ProductiveSection({
                       <td className={`${TD_NUM} text-gray-500 dark:text-gray-400`}>
                         <Plain value={r.positivesLogged} />
                       </td>
-                      <td className={`${TD_NUM} border-l border-base-300 font-semibold text-base`}>
+                      <td className={`${TD_NUM} border-l border-gray-200 dark:border-gray-700 font-semibold text-base`}>
                         {r.deals.toLocaleString()}
                       </td>
                       <td className={TD_NUM}>{r.contacted.toLocaleString()}</td>
@@ -1604,7 +1604,7 @@ function ProductiveSection({
                 this panel obeys: the pace is HANDED IN, not re-derived, and a
                 range too short to extrapolate from gets the reason printed
                 rather than a scaled-up guess. */}
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-2">
               <span className="font-semibold text-gray-600 dark:text-gray-300">Funded vs industry:</span>
               <BenchmarkChip id="deals_per_rep_month" value={repMonthlyPace} />
               <span>
@@ -1753,7 +1753,7 @@ function OccupancyCard({
           </p>
         )}
 
-        <div className="grid grid-cols-2 gap-3 text-xs border-t border-base-300 pt-2">
+        <div className="grid grid-cols-2 gap-3 text-xs border-t border-gray-200 dark:border-gray-700 pt-2">
           <div
             title="Median first dial across the days worked. Idle% cannot see the time BEFORE this — a late start shortens the window instead of raising idle."
           >

@@ -409,7 +409,7 @@ export default function AssignmentsPanel({
   const colCount = 8;
 
   return (
-    <div className="card bg-base-100 border border-base-300 shadow-sm">
+    <div className="card shadow-sm">
       <div className="card-body p-4 space-y-3">
         {/* ── Header + scope ───────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -752,7 +752,7 @@ export default function AssignmentsPanel({
 
                       {openNotes === r.id && (
                         <tr>
-                          <td colSpan={colCount} className="bg-base-200/60 dark:bg-gray-800/40">
+                          <td colSpan={colCount} className="bg-gray-100/60 dark:bg-gray-800/40">
                             <NotesDrawer
                               dealId={r.id}
                               customerId={r.customer_id}

@@ -110,7 +110,7 @@ export function BenchmarkTile({
   const bm = INDUSTRY_BENCHMARKS[id];
   const rag = benchmarkRag(value, bm);
   return (
-    <div className="card bg-base-100 border border-base-300 shadow-sm" title={titleFor(id, value, rag)}>
+    <div className="card shadow-sm" title={titleFor(id, value, rag)}>
       <div className="card-body p-4 gap-1">
         <div className="text-xs uppercase tracking-wide text-gray-400">{label ?? bm.label}</div>
         <div className="flex items-baseline gap-2">
@@ -174,7 +174,7 @@ export function IndustryComparisonCard({
   rangeLabel?: string;
 }) {
   return (
-    <details className="group card bg-base-100 border border-base-300 shadow-sm">
+    <details className="group card shadow-sm">
       <summary className="card-body p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -194,33 +194,33 @@ export function IndustryComparisonCard({
       <div className="card-body p-4 pt-0 space-y-3">
         <BenchmarkLegend />
 
-        <div className="overflow-x-auto rounded-lg border border-base-300">
+        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
           <table className="table w-full">
-            <thead className="bg-base-200/60 dark:bg-gray-800/50">
+            <thead className="bg-gray-100/60 dark:bg-gray-800/50">
               <tr>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-base-300">
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
                   Benchmark
                 </th>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-base-300">
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
                   Industry
                 </th>
-                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-base-300 text-right whitespace-nowrap">
+                <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700 text-right whitespace-nowrap">
                   This shop
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-base-300/70">
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
               {INDUSTRY_BENCHMARK_GROUPS.map((g) =>
                 g.members.map((id, i) => {
                   const bm = INDUSTRY_BENCHMARKS[id];
                   const value = values[id] ?? null;
                   const rag = benchmarkRag(value, bm);
                   return (
-                    <tr key={id} className="hover:bg-base-200/40 dark:hover:bg-gray-800/30 transition-colors">
+                    <tr key={id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors">
                       <td className="px-3 py-2.5 text-sm text-gray-700 dark:text-gray-200 align-top">
                         <div className="flex items-start gap-2">
                           {i === 0 ? (
-                            <span className="mt-0.5 shrink-0 w-5 h-5 rounded-full bg-base-200 dark:bg-gray-700/60 text-[10px] font-semibold text-gray-500 dark:text-gray-300 flex items-center justify-center">
+                            <span className="mt-0.5 shrink-0 w-5 h-5 rounded-full bg-gray-200 dark:bg-gray-700/60 text-[10px] font-semibold text-gray-500 dark:text-gray-300 flex items-center justify-center">
                               {g.n}
                             </span>
                           ) : (

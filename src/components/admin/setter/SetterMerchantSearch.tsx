@@ -235,7 +235,7 @@ export default function SetterMerchantSearch({
             placeholder="Search by business, name, phone, or email"
             autoComplete="off"
             aria-label="Search merchants by business, name, phone, or email"
-            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 pl-9 pr-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue/40"
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 pl-9 pr-9 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue/40"
           />
           {state.kind === "loading" && (
             <span className="loading loading-spinner loading-xs absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
