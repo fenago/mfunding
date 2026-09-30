@@ -165,7 +165,11 @@ export interface AuditMetrics {
 
 // The reason value the close-deal dialog writes when a lead denies ever asking for
 // info — the headline vendor-junk signal. Kept here so the audit and the dialog agree.
-export const BOGUS_REASON = "bogus_never_requested";
+// The coded value. closed_reason's 'bogus_never_requested' was migrated to
+// lost_reason's 'bogus_lead' on 2026-09-30 (20260930d); the legacy constant
+// stays so rows written before the repoint still count.
+export const BOGUS_REASON = "bogus_lead";
+export const BOGUS_REASON_LEGACY = "bogus_never_requested";
 
 // Opens are collected by the ghl-email-open-sweep poll (the webhook push stream is
 // dead — zero events ever arrived). The poll reads each email record's status on a
@@ -580,11 +584,20 @@ function foldCampaign(
     if (has(d.funded_at) || FUNDED_STATUSES.has(d.status)) funded += 1;
 
     if (TERMINAL_STATUSES.has(d.status)) terminalCounts[d.status] = (terminalCounts[d.status] || 0) + 1;
-    if (has(d.closed_reason)) closeReasons[d.closed_reason!] = (closeReasons[d.closed_reason!] || 0) + 1;
+    // closed_reason is the retired vocabulary — every value was migrated into
+    // lost_reason by 20260930d. Tally the coded column so the two panels stop
+    // disagreeing; the old column is still written by nothing and read here
+    // only as a fallback for any row the migration could not map.
+    if (has(d.lost_reason)) closeReasons[d.lost_reason!] = (closeReasons[d.lost_reason!] || 0) + 1;
+    else if (has(d.closed_reason)) closeReasons[d.closed_reason!] = (closeReasons[d.closed_reason!] || 0) + 1;
     if (has(d.lost_reason)) lostReasons[d.lost_reason!] = (lostReasons[d.lost_reason!] || 0) + 1;
     // Bogus = the closer marked it bogus_never_requested OR a call was graded
     // 'never_requested'. Deduped per deal (one lead counts once no matter how many).
-    if (d.closed_reason === BOGUS_REASON || (cs?.neverRequested ?? 0) > 0) bogus += 1;
+    // BOTH arms kept: the closer's coded verdict (either vocabulary) OR a call
+    // graded 'never_requested'. This is how the owner proves a lead vendor sold
+    // him garbage, so it must not narrow when the column moves.
+    if (d.lost_reason === BOGUS_REASON || d.closed_reason === BOGUS_REASON_LEGACY
+        || (cs?.neverRequested ?? 0) > 0) bogus += 1;
 
     // ── truth gap ──
     const uw = uwByDeal.get(d.id);

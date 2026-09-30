@@ -62,6 +62,8 @@ export type LostReason =
   | "prohibited_industry"
   | "business_closed"       // the business itself is closing
   | "bogus_lead"            // merchant denies ever requesting funding info
+  | "went_to_competitor"    // lost to a named competitor — competitive signal
+  | "rate_too_high"         // price objection, the one decline you can act on
   | "other";
 
 /** Picker options, ordered by how often they actually apply. */
@@ -72,6 +74,8 @@ export const LOST_REASON_OPTIONS: { value: LostReason; label: string }[] = [
   { value: "disqualified", label: "Doesn't qualify" },
   { value: "funders_declined_all", label: "All funders declined" },
   { value: "bank_data_fail", label: "Bank data didn't support it" },
+  { value: "went_to_competitor", label: "Went with a competitor" },
+  { value: "rate_too_high", label: "Rate too high" },
   { value: "business_closed", label: "Business is closing" },
   { value: "bogus_lead", label: "Says they never requested info" },
   { value: "prohibited_industry", label: "Prohibited industry" },

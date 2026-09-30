@@ -384,7 +384,9 @@ Deno.serve(async (req) => {
         market: deal.market,
         temperature: deal.temperature,
         lead_qual: deal.lead_qual,
-        closed_reason: deal.closed_reason,
+        // lost_reason is the coded column the analytics read; closed_reason is
+        // the retired vocabulary, kept only for rows written before 20260930d.
+        closed_reason: deal.lost_reason ?? deal.closed_reason,
         closed_note: deal.closed_note,
         lost_reason: deal.lost_reason,
         merchant_replied_at: deal.merchant_reply_at,

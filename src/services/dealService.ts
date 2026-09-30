@@ -829,6 +829,10 @@ export async function updateDealStatus(
     updateData.nurture_at = null;
     updateData.closed_reason = null;
     updateData.closed_note = null;
+    // lost_reason is the coded twin of closed_reason and has to be cleared with
+    // it. Leaving it behind means a revived deal keeps answering "why was this
+    // parked?" with the reason it was parked for BEFORE it came back.
+    updateData.lost_reason = null;
   }
 
   // ── A stage move settles the callback. ──

@@ -4561,16 +4561,22 @@ const CLOSE_OUTCOMES: { value: DealStatus; label: string; hint: string }[] = [
 // question is a merge nobody has done yet; until then this keeps the coded
 // column populated without a second prompt. Anything unmapped falls to "other"
 // rather than guessing.
+// Mirrors public.closed_reason_to_lost_reason (20260930d) exactly. The database
+// holds the same table so the 57-row recovery and this dialog cannot drift into
+// two different answers for the same input — keep both in step.
 function closeReasonToLostReason(reason: string): LostReason {
   switch (reason) {
     case "unresponsive": return "no_contact";
     case "docs_never_arrived": return "docs_not_provided";
-    case "rate_too_high":
-    case "went_with_competitor": return "merchant_declined";
-    case "not_qualified":
+    case "went_with_competitor": return "went_to_competitor";
+    case "rate_too_high": return "rate_too_high";
+    case "not_qualified": return "disqualified";
+    // Stacking has no value of its own yet — promote it the moment a real row
+    // picks it (see 20260930d). Until then this is the honest nearest fit.
     case "too_many_positions": return "disqualified";
     case "funders_declined": return "funders_declined_all";
     case "bogus_never_requested": return "bogus_lead";
+    case "no_contact": return "no_contact";
     default: return "other";
   }
 }
