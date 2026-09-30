@@ -88,21 +88,45 @@ export const clean = (s: string | null | undefined) => {
 // holds a pasted partner-portal dump with "uid: <email>" and "pw: <secret>" on
 // consecutive lines — a complete working pair that the first version of this
 // guard sailed straight past, because it only knew the word "password".
-const SECRET_WORD_RX =
-  /\b(pass(word|wd)?|pwd|credentials?)\b|\b(un\s*\/\s*pw|u\s*\/\s*p)\b|\b(pw|uid|un|user(name)?|login)\s*[:=]/i;
+// TWO predicates, because the four free-text columns need two different answers
+// and collapsing them gets one of them wrong:
+//
+//   containsCredentialValue() — is an actual SECRET in here? An assignment with
+//     a value after it (pw: x, uid: x, un/pw: x), or an email followed by a
+//     token that is not a phone, an email or a URL. The strict one.
+//
+//   looksLikeSecret() — the above PLUS the bare words password / credentials.
+//     Used for prose columns (notes, internal_notes, submission_notes) where
+//     over-withholding costs a sentence somebody can ask Ops for, and
+//     under-withholding costs a password.
+//
+// `login:` and `username` are deliberately NOT secret signals: they introduce
+// an identifier, not a secret, and they are how a legitimate hint is written.
+const SECRET_ASSIGNMENT_RX = /\b(pw|pwd|pass(word|wd)?|uid|un)\s*[:=]\s*\S/i;
+const UNPW_RX = /\b(un\s*\/\s*pw|u\s*\/\s*p)\b/i;
+const SECRET_WORD_RX = /\b(password|passwd|credentials?)\b/i;
 const EMAIL_PAIR_RX = /[\w.+-]+@[\w.-]+\.[a-z]{2,}\s*[/:]\s*(\S+)/gi;
 const TOKEN_IS_HARMLESS = (t: string) =>
   /^[\d()+.\-\s]{7,}$/.test(t) || t.includes("@") || /^https?:/i.test(t) || /^www\./i.test(t);
 
-export function looksLikeSecret(text: string | null | undefined): boolean {
+/** Is there an actual credential VALUE in this text? */
+export function containsCredentialValue(text: string | null | undefined): boolean {
   const t = (text ?? "").trim();
   if (t === "") return false;
-  if (SECRET_WORD_RX.test(t)) return true;
+  if (SECRET_ASSIGNMENT_RX.test(t) || UNPW_RX.test(t)) return true;
+  // A module-level /g regex is shared state, and these blocks render up to six
+  // times per merchant — reset before every scan, never yield inside the loop.
   EMAIL_PAIR_RX.lastIndex = 0;
   for (let m = EMAIL_PAIR_RX.exec(t); m !== null; m = EMAIL_PAIR_RX.exec(t)) {
     if (!TOKEN_IS_HARMLESS(m[1])) return true;
   }
   return false;
+}
+
+/** Strict enough for prose: a credential value, or the words around one. */
+export function looksLikeSecret(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  return t !== "" && (containsCredentialValue(t) || SECRET_WORD_RX.test(t));
 }
 
 // Every free-text quote on this page goes through here. Returns the text, or
@@ -232,7 +256,20 @@ export const DOC_TYPE_LABEL: Record<string, string> = {
 // Anything that doesn't look like a labelled hint is withheld rather than
 // printed on a page setters can open — a bare two-word string is as likely to
 // be a passphrase as a note, and there is no upside to guessing right.
-export const CREDENTIAL_LOOKS_LABELLED = /@|https?:|\b(login|user|username|reset|sso|portal|ask|set via|not stored|invite)\b/i;
+const CREDENTIAL_LOOKS_LABELLED = /@|https?:|\b(login|user|username|reset|sso|portal|ask|set via|not stored|invite)\b/i;
+
+/**
+ * A credential hint is meant to say WHERE the credentials live, not to BE one.
+ * Shown only when it reads as a labelled hint AND carries no actual value:
+ *   "portal login: username x@y, password set via reset link"  → shown
+ *   "uid: x@y   pw: <value>"                                   → withheld (a value)
+ *   "French Philo"                                             → withheld (unlabelled —
+ *      as likely a passphrase as a note, and no upside to guessing right)
+ */
+export function hintIsShowable(hint: string | null | undefined): boolean {
+  const t = (hint ?? "").trim();
+  return t !== "" && CREDENTIAL_LOOKS_LABELLED.test(t) && !containsCredentialValue(t);
+}
 
 export type ProfileRow = {
   lender_id: string;

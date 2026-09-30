@@ -7,7 +7,7 @@ import {
   type DocState,
   type LenderDoc,
   type ProfileRow,
-  CREDENTIAL_LOOKS_LABELLED,
+  hintIsShowable,
   DOC_TYPE_LABEL,
   clean,
 } from "@/lib/funderDisclosure";
@@ -29,7 +29,7 @@ export function FunderLinksBlock({
   const profilePortal = clean(profile?.portal_url);
   const subNotes = clean(l.submission_notes);
   const hint = clean(profile?.portal_credentials_hint);
-  const hintSafe = !!hint && CREDENTIAL_LOOKS_LABELLED.test(hint);
+  const hintSafe = hintIsShowable(hint);
   const mine = docs.byLender[l.id] ?? [];
   // Same URL recorded in both columns is one portal, not two.
   const sameUrl = brokerPortal && profilePortal && brokerPortal.trim() === profilePortal.trim();
