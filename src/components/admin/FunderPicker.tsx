@@ -32,6 +32,8 @@ import { getMatchingLenders } from "../../services/lenderMatchingService";
 import { getFunderAvailability } from "../../services/funderAvailability";
 import { updateSubmission } from "../../services/dealService";
 import { uploadSignedApplication } from "../../services/signedApplication";
+import { readDocsStatus, type GhlDocsStatus } from "@/lib/ghlDocs";
+import { invokeThrow } from "@/utils/invokeError";
 import type { DealWithCustomer } from "../../types/deals";
 
 // GHL Documents & Contracts (Completed e-sign) for the MFunding sub-account —
@@ -219,6 +221,14 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // automatically) vs only in GHL (must be downloaded + re-uploaded here).
   const [appDocs, setAppDocs] = useState<Set<string>>(new Set());
   const [ghlDocs, setGhlDocs] = useState<Set<string>>(new Set());
+  // ⚠ The GHL half of that union CAN FAIL, and its failure used to be swallowed
+  // whole. That is not cosmetic here: `docsPresent` feeds the stips guard, so an
+  // unread VibeReach turns into "Blocked — missing: bank statements" on a
+  // merchant whose statements are sitting on his contact. The block stays (we
+  // genuinely cannot see the file, so claiming it is present would be the same
+  // lie in reverse) — but it must SAY that it was computed blind, or the closer
+  // reads a read failure as the merchant's failure.
+  const [ghlDocsError, setGhlDocsError] = useState<string | null>(null);
   // The deal's app-side document inventory + which of them ride with the next
   // submission (pick-and-choose). Passed to submit-to-funders as documentIds.
   const [inventory, setInventory] = useState<InventoryDoc[]>([]);
@@ -324,11 +334,23 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         }
         const appPresent = new Set(invRows.map((d) => d.document_type));
         const ghlPresent = new Set<string>();
+        let ghlErr: string | null = null;
         if (deal.ghl_contact_id) {
           try {
-            const { data: ghl } = await supabase.functions.invoke("ghl-docs-status", {
+            const { data: ghl, error: ghlInvokeErr } = await supabase.functions.invoke("ghl-docs-status", {
               body: { ghl_contact_id: deal.ghl_contact_id },
             });
+            // invokeThrow recovers the server's real reason from error.context;
+            // readDocsStatus is the one definition of unreadable-vs-empty and
+            // also catches a truncated crawl / unidentifiable merchant, both of
+            // which arrive here looking like a contact with no documents.
+            if (ghlInvokeErr) await invokeThrow(ghlInvokeErr);
+            const st = readDocsStatus(ghl as GhlDocsStatus, null);
+            if (st.kind === "unreadable") throw new Error(st.why);
+            if (st.caveat) ghlErr = st.caveat;
+            // The uploads half fails independently of the documents half.
+            const upErr = (ghl as GhlDocsStatus)?.uploads_error ?? null;
+            if (upErr) ghlErr = ghlErr ? `${ghlErr}; ${upErr}` : upErr;
             for (const doc of (ghl?.documents ?? []) as { name?: string; signed?: boolean }[]) {
               if (doc.signed && /application/i.test(doc.name ?? "")) ghlPresent.add("application");
             }
@@ -343,9 +365,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 ghlPresent.add("voided_check");
               }
             }
-          } catch { /* GHL peek is best-effort; app docs still count */ }
+          } catch (e) {
+            // Best-effort for the DATA, never for the VERDICT: app docs still
+            // count, but the missing-stip list below is now known to be blind.
+            ghlErr = e instanceof Error ? e.message : "VibeReach didn't answer";
+          }
         }
-        if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); }
+        if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); setGhlDocsError(ghlErr); }
         setExistingErr(
           subRes.error
             ? subRes.error.message
@@ -404,7 +430,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // and any per-funder "forward the signed application" warning goes moot.
   async function reloadAppDocs() {
     if (!deal.customer_id) return;
-    const { data } = await supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id);
+    const { data, error } = await supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id);
+    // A failed re-read must not empty the set: the slot would flip back to "not
+    // on file" moments after the closer watched the upload succeed, and the
+    // stips guard would re-block a funder over a document that is right there.
+    // Keep what we had; the next open re-reads it.
+    if (error) return;
     setAppDocs(new Set(((data ?? []) as { document_type: string }[]).map((d) => d.document_type)));
   }
 
@@ -688,8 +719,14 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       setPayloadOpen((p) => { const n = { ...p }; delete n[r.lenderId]; return n; });
       return;
     }
-    const { data } = await supabase.from("deal_submissions").select("sent_payload").eq("id", r.submissionId).maybeSingle();
-    setPayloadOpen((p) => ({ ...p, [r.lenderId]: data?.sent_payload ?? null }));
+    const { data, error } = await supabase.from("deal_submissions").select("sent_payload").eq("id", r.submissionId).maybeSingle();
+    // "null" here reads as "we sent them nothing". Say which it is.
+    setPayloadOpen((p) => ({
+      ...p,
+      [r.lenderId]: error
+        ? { error: `Couldn't read what was sent — ${error.message}. This is not "nothing was sent".` }
+        : (data?.sent_payload ?? null),
+    }));
   }
 
   const nameOf = (lenderId: string) => matches.find((m) => m.id === lenderId)?.company_name ?? "Funder";
@@ -1508,7 +1545,18 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                     {p.blocked ? (
                       <div className="px-3 py-3 text-[12px] text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5">
                         <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                        <span>Blocked — missing: {(p.blockedLabels ?? p.blocked).join(", ")}. Nothing will be sent to this funder.</span>
+                        <span>
+                          Blocked — missing: {(p.blockedLabels ?? p.blocked).join(", ")}. Nothing will be sent to this funder.
+                          {ghlDocsError && (
+                            <>
+                              {" "}
+                              <span className="font-bold underline decoration-2">
+                                We could not read VibeReach ({ghlDocsError}), so this "missing" was worked out without seeing
+                                anything the merchant uploaded there — check before you chase him for it.
+                              </span>
+                            </>
+                          )}
+                        </span>
                       </div>
                     ) : p.isPortalOnly ? (
                       /* Portal-only funder — no email is sent. */

@@ -169,6 +169,15 @@ function ContactMenu({ contacts, onPick }: { contacts: { label: string; email: s
         <p className="px-3 py-2 text-[11px] text-gray-400">No saved contacts — they'll appear here once we capture them.</p>
       ) : (
         contacts.map((c) => (
+          // An entry with no email is the "we couldn't read this funder's
+          // contacts" note, not a contact — it must not be clickable, and an
+          // empty menu must not be the only thing the closer sees after a
+          // failed read.
+          !c.email ? (
+            <p key={c.label} className="px-3 py-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              {c.label}
+            </p>
+          ) : (
           <button
             key={c.email}
             type="button"
@@ -178,6 +187,7 @@ function ContactMenu({ contacts, onPick }: { contacts: { label: string; email: s
             <span className="block text-[12px] font-medium text-gray-900 dark:text-white truncate">{c.label}</span>
             <span className="block text-[11px] text-gray-500 truncate">{c.email}</span>
           </button>
+          )
         ))
       )}
     </div>
@@ -225,6 +235,12 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [contactMenuFor, setContactMenuFor] = useState<"cc" | "bcc" | null>(null);
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
   const [sentLog, setSentLog] = useState<SentLogEntry[]>([]);
+  // ⚠ An EMPTY correspondence trail and an UNREADABLE one look identical on a
+  // funder card: no lines under the card. Empty reads "we never contacted them
+  // / they never replied" — an accusation against a closer AND against a
+  // funder, on the screen where the closer decides whether to chase or re-send.
+  // So the failure is kept and rendered; it never decays into silence.
+  const [sentLogError, setSentLogError] = useState<string | null>(null);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   // "View email" modal — fetches ONE email's full body from GHL (get-funder-email).
   const [emailView, setEmailView] = useState<EmailView | null>(null);
@@ -234,6 +250,10 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // Funder-message attachments: the deal's documents, checkbox-selected.
   // `uploaded` marks rows the closer added ad-hoc from the dropzone below.
   const [docs, setDocs] = useState<{ id: string; filename: string | null; document_type: string; created_at: string; uploaded?: boolean }[]>([]);
+  /** Non-null = the attachable-document read failed. An empty attach list under a
+   *  failed read tells the closer there is nothing to send a funder who has just
+   *  asked for a stip — so it has to say it couldn't look, not that there's none. */
+  const [docsError, setDocsError] = useState<string | null>(null);
   const [selectedDocIds, setSelectedDocIds] = useState<Record<string, boolean>>({});
   // Ad-hoc uploads in flight / failed (successful ones fold into `docs`).
   const [adhocUploads, setAdhocUploads] = useState<{ localId: string; name: string; status: "uploading" | "error"; error?: string }[]>([]);
@@ -326,11 +346,12 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     setMsgError(null);
     setMsgOpen(true);
     // Load the deal's documents so the closer can attach the requested stip.
-    const { data } = await supabase
+    const { data, error: docsErr } = await supabase
       .from("customer_documents")
       .select("id, filename, document_type, created_at")
       .eq("customer_id", deal.customer_id)
       .order("created_at", { ascending: false });
+    setDocsError(docsErr ? docsErr.message : null);
     setDocs((data ?? []) as { id: string; filename: string | null; document_type: string; created_at: string }[]);
     // Load the funder's known contacts so the closer can CC/BCC an ISO rep inline.
     setFunderContacts(await loadFunderContacts(s.lenderId));
@@ -340,11 +361,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // submission email), de-dupe by lowercased email, and return {label, email} rows.
   // Entries without an email are skipped — you can't CC someone with no address.
   async function loadFunderContacts(lenderId: string): Promise<{ label: string; email: string }[]> {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("lenders")
       .select("contacts, primary_contact_name, primary_contact_email, submission_email")
       .eq("id", lenderId)
       .maybeSingle();
+    // A failed read would render as "this funder has no contacts", which is a
+    // claim about the funder record, not about the read. Surface it as a row the
+    // closer can see rather than an empty menu.
+    if (error) return [{ label: `⚠ Couldn't read this funder's contacts — ${error.message}`, email: "" }];
     if (!data) return [];
     const out: { label: string; email: string }[] = [];
     const seen = new Set<string>();
@@ -499,16 +524,23 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     const PAGE = 1000;
     const data: { created_at: string; subject: string | null; content: string | null }[] = [];
     for (let from = 0; ; from += PAGE) {
-      const { data: page } = await supabase
+      const { data: page, error: pageError } = await supabase
         .from("activity_log")
         .select("created_at, subject, content")
         .eq("entity_type", "deal").eq("entity_id", deal.id)
         .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%,subject.like.funder:withdrawn%")
         .order("created_at", { ascending: false })
         .range(from, from + PAGE - 1);
+      // A FAILED PAGE IS NOT THE END OF THE LIST. Treating it as one is the
+      // .limit(20) truncation bug in a new costume: the loop would exit and the
+      // partial trail would render as the complete audit record. Bail loudly,
+      // and leave the previously-loaded trail alone rather than replacing a
+      // good history with a half-read one.
+      if (pageError) { setSentLogError(pageError.message); return; }
       data.push(...(page ?? []));
       if (!page || page.length < PAGE) break;
     }
+    setSentLogError(null);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
       // Pull the open-flag AND the email/message ids out first, then scrub EVERY
@@ -1175,6 +1207,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     </div>
                   </div>
                 )}
+                {sentLogError && (
+                  <p className="mt-1.5 border-t border-dashed border-rose-300 dark:border-rose-700 pt-1.5 text-[10.5px] font-semibold text-rose-700 dark:text-rose-300">
+                    ⚠ Correspondence couldn't be loaded — this is NOT "nothing sent" or "no reply". Reload before chasing or re-sending.
+                  </p>
+                )}
                 {sentLog.filter((m) => m.re === s.lenderName).length > 0 && (
                   <ul className="mt-1.5 space-y-1 border-t border-dashed border-gray-200 dark:border-gray-700 pt-1.5">
                     {sentLog.filter((m) => m.re === s.lenderName).slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((m, i) => {
@@ -1365,7 +1402,17 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     <PaperClipIcon className="w-3.5 h-3.5" /> Attach documents
                   </p>
                   {docs.length === 0 ? (
-                    <p className="text-[11px] text-gray-400">No documents on file for this merchant.</p>
+                    docsError ? (
+                      <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                        Couldn't read this merchant's documents — {docsError}. <b>Not</b> "none on file": drop a file in
+                        below or reopen this before telling the funder you have nothing.
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-gray-400">
+                        Nothing in this app's document store. Files the merchant uploaded through the VibeReach form
+                        live on his contact — check there before replying "we don't have it".
+                      </p>
+                    )
                   ) : (
                     <ul className="space-y-1 max-h-40 overflow-y-auto">
                       {docs.map((d) => (

@@ -18,6 +18,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
+import { readDocsStatus, type GhlDocsStatus } from "@/lib/ghlDocs";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import type { DealWithCustomer } from "../../types/deals";
 
@@ -50,6 +51,19 @@ export default function DocumentChecklist({
   const [saving, setSaving] = useState<string | null>(null);
   // slug → human hints of what detection found on record ("signed in GHL", etc.).
   const [hints, setHints] = useState<Record<string, string[]>>({});
+  // ⚠ WHY THIS IS NOT JUST A HINT PANEL.
+  // Detection feeding `hints` used to be `data ?? []` and `ghl?.documents ?? []`
+  // with both errors dropped, and the ghl-docs-status envelope's own
+  // `documents_error` / `identity_readable: false` ignored entirely. So a FAILED
+  // read produced the same screen as a merchant who sent nothing: no hints, rows
+  // unticked, "chase the bank statements". That is the 2026-09-30 incident — he
+  // had sent a bank statement and a driver's licence.
+  //
+  // It is also not cosmetic here: an empty `found` feeds the one-time pre-seed
+  // below, so a failed read can bake "nothing collected" into deals.doc_checklist
+  // — the column that decides funder availability. Detection that could not run
+  // says so, and does not seed.
+  const [detectFailures, setDetectFailures] = useState<string[]>([]);
   const seededRef = useRef(false);
   // A live Plaid connection means the merchant's transactions are on file — a
   // HINT on the Bank statements row (never an auto-tick: statement PDFs are a
@@ -75,12 +89,15 @@ export default function DocumentChecklist({
         (found[slug] ??= []).push(text);
       };
 
+      const failures: string[] = [];
+
       // App-side customer_documents — already typed to slugs.
       if (deal.customer_id) {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("customer_documents")
           .select("document_type")
           .eq("customer_id", deal.customer_id);
+        if (error) failures.push(`our own document records (${error.message})`);
         for (const d of (data ?? []) as { document_type: string }[]) {
           if (d.document_type) add(d.document_type, "on record (customer docs)");
         }
@@ -89,9 +106,25 @@ export default function DocumentChecklist({
       // GHL side — signed contracts + uploaded stip files (best-effort).
       if (deal.ghl_contact_id) {
         try {
-          const { data: ghl } = await supabase.functions.invoke("ghl-docs-status", {
+          const { data: raw, error: invokeError } = await supabase.functions.invoke("ghl-docs-status", {
             body: { ghl_contact_id: deal.ghl_contact_id },
           });
+          // readDocsStatus is the shared reader that knows the envelope's own
+          // failure modes — a truncated crawl (documents_error) and an
+          // unidentifiable merchant (identity_readable: false) both return
+          // EMPTY lists with no transport error. Reading `ghl?.documents` past
+          // them is exactly how the 44-merchants-with-nothing-to-sign bug read
+          // as fact.
+          const state = readDocsStatus(raw as GhlDocsStatus | null, invokeError);
+          if (state.kind === "unreadable") throw new Error(state.why);
+          if (state.caveat) failures.push(`VibeReach, partly (${state.caveat})`);
+          const ghl = state.status;
+          // readDocsStatus rules on the DOCUMENTS half. The UPLOADS half — the
+          // merchant's own bank statements and ID on his FILE_UPLOAD fields —
+          // fails on its own and returns a SHORT list with no error anywhere
+          // readDocsStatus looks. A short upload list is exactly what makes a
+          // bank_statement row read "not collected" for a merchant who sent one.
+          if (ghl?.uploads_error) failures.push(`the merchant's uploaded files (${ghl.uploads_error})`);
           for (const doc of (ghl?.documents ?? []) as GhlDoc[]) {
             if (doc.signed && /application/i.test(doc.name ?? "")) add("application", "signed in GHL");
           }
@@ -110,18 +143,22 @@ export default function DocumentChecklist({
               else add("other", where);
             }
           }
-        } catch {
-          /* best-effort — hints only */
+        } catch (e) {
+          failures.push(`the merchant's VibeReach files (${e instanceof Error ? e.message : "the read failed"})`);
         }
       }
 
       if (cancelled) return;
       setHints(found);
+      setDetectFailures(failures);
 
       // One-time pre-seed of the OBVIOUS rows when the checklist is untouched.
       // Ambiguous rows (id, etc.) stay UNchecked for the closer to confirm.
       const untouched = !deal.doc_checklist || Object.keys(deal.doc_checklist).length === 0;
-      if (untouched && !seededRef.current) {
+      // Never seed from an incomplete picture: the seed WRITES doc_checklist,
+      // and a half-read detection would persist "not collected" into the column
+      // that gates funder availability.
+      if (untouched && !seededRef.current && failures.length === 0) {
         seededRef.current = true;
         const seed: Record<string, boolean> = {};
         if (found.application?.length) seed.application = true;
@@ -182,6 +219,18 @@ export default function DocumentChecklist({
         <p className="text-[11px] text-gray-500 dark:text-gray-400">
           Files may live in GHL; if you see it there, tick it here. Detection below is a hint only — you decide.
         </p>
+        {detectFailures.length > 0 && (
+          <div className="rounded-md border-2 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/25 px-3 py-2">
+            <p className="text-[12px] font-semibold text-amber-900 dark:text-amber-200">
+              ⚠ Couldn't check {detectFailures.join(" and ")}
+            </p>
+            <p className="mt-0.5 text-[11px] text-amber-800 dark:text-amber-300">
+              An unticked row below means <span className="font-semibold">we couldn't look</span>, not that the merchant
+              didn't send it. <span className="underline font-semibold">Do not chase him for documents off this screen</span> —
+              reload, or open his files directly, before telling him anything is missing.
+            </p>
+          </div>
+        )}
         <ul className="space-y-1">
           {DOC_ROWS.map((row) => {
             const on = checklist[row.slug] === true;
