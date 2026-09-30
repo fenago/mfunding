@@ -1,6 +1,7 @@
 // A recorded credit box — see @/lib/funderDisclosure for why a funder WITHOUT
 // one must never render as a blank cell.
 import { type ProgramRow, fmtMonths, fmtMoney, fmtPts, num, prettyExtra } from "@/lib/funderDisclosure";
+import { FX } from "./tw";
 
 
 export function FunderProgramBox({ p, productLabel }: { p: ProgramRow; productLabel: string }) {
@@ -34,11 +35,11 @@ export function FunderProgramBox({ p, productLabel }: { p: ProgramRow; productLa
   const details = (p.important_details ?? []).filter(Boolean);
 
   return (
-    <div className="prog">
-      <div className="ph">Recorded {productLabel.toLowerCase()} box — from this funder's own packet</div>
+    <div className={FX.prog}>
+      <div className={FX.ph}>Recorded {productLabel.toLowerCase()} box — from this funder's own packet</div>
       {pts && (
-        <div className="pay">
-          We get paid <span className="n">{pts}</span>
+        <div className={FX.pay}>
+          We get paid <span className={FX.n}>{pts}</span>
           {details.length === 0 && (
             <span style={{ fontWeight: 600, color: "var(--c)" }}>
               {" "}
@@ -48,42 +49,42 @@ export function FunderProgramBox({ p, productLabel }: { p: ProgramRow; productLa
         </div>
       )}
       {cells.length > 0 && (
-        <div className="dgrid">
+        <div className={FX.dgrid}>
           {cells.map((c) => (
-            <div className="dcell" key={c.k}>
-              <div className="k">{c.k}</div>
-              <div className="v">{c.v}</div>
+            <div className={FX.dcell} key={c.k}>
+              <div className={FX.k}>{c.k}</div>
+              <div className={FX.v}>{c.v}</div>
             </div>
           ))}
         </div>
       )}
       {docs.length > 0 && (
         <div>
-          <div className="ph" style={{ marginBottom: 4 }}>Documents</div>
-          <div className="chips">
+          <div className={FX.ph} style={{ marginBottom: 4 }}>Documents</div>
+          <div className={FX.chips}>
             {docs.map((d) => (
-              <span className="c" key={d}>
+              <span className={FX.c} key={d}>
                 {d}
               </span>
             ))}
           </div>
         </div>
       )}
-      {p.doc_conditions && <div className="drow">{p.doc_conditions}</div>}
-      {p.doc_other && <div className="drow">{p.doc_other}</div>}
+      {p.doc_conditions && <div className={FX.drow}>{p.doc_conditions}</div>}
+      {p.doc_other && <div className={FX.drow}>{p.doc_other}</div>}
       {p.industries_note && (
-        <div className="drow">
-          <b>Industries:</b> {p.industries_note}
+        <div className={FX.drow}>
+          <b className={FX.drowB}>Industries:</b> {p.industries_note}
         </div>
       )}
       {details.length > 0 && (
-        <ul>
+        <ul className={FX.progUl}>
           {details.map((d) => (
-            <li key={d}>{d}</li>
+            <li key={d} className={FX.progLi}>{d}</li>
           ))}
         </ul>
       )}
-      {p.notes && <div className="drow">{p.notes}</div>}
+      {p.notes && <div className={FX.drow}>{p.notes}</div>}
     </div>
   );
 }

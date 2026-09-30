@@ -12,6 +12,7 @@ import {
   clean,
 } from "@/lib/funderDisclosure";
 import { LinkLine, Quoted } from "./parts";
+import { FX } from "./tw";
 
 export function FunderLinksBlock({
   l,
@@ -50,22 +51,22 @@ export function FunderLinksBlock({
 
   return (
     <>
-      <div className="cgroup">
-        <div className="ck">Partner portal — where you log in</div>
+      <div className={FX.cgroup}>
+        <div className={FX.ck}>Partner portal — where you log in</div>
         {brokerPortal || profilePortal ? (
-          <div className="portal">
+          <div className={FX.portal}>
             {brokerPortal && (
               <>
-                <div className="pt">Broker / ISO portal</div>
+                <div className={FX.pt}>Broker / ISO portal</div>
                 <LinkLine label="" url={brokerPortal} />
               </>
             )}
             {profilePortal && !sameUrl && (
               <>
-                <div className="pt">{brokerPortal ? "Portal on the submission profile" : "Submission portal"}</div>
+                <div className={FX.pt}>{brokerPortal ? "Portal on the submission profile" : "Submission portal"}</div>
                 <LinkLine label="" url={profilePortal} />
                 {brokerPortal && (
-                  <div className="cred">
+                  <div className={FX.cred}>
                     Two different portal links are recorded for this funder. Neither has been confirmed as the current
                     one — try the broker portal first and tell Ops which works.
                   </div>
@@ -74,61 +75,61 @@ export function FunderLinksBlock({
             )}
             {hint ? (
               hintSafe ? (
-                <div className="cred">
-                  <b>Credentials:</b> {hint}
+                <div className={FX.cred}>
+                  <b className={FX.credB}>Credentials:</b> {hint}
                 </div>
               ) : (
-                <div className="credhold">
+                <div className={FX.credhold}>
                   A credential hint is on file but it isn't labelled — it may be the credential itself, so it is not
                   shown here. Ask Ops.
                 </div>
               )
             ) : profilesReadable ? (
-              <div className="credhold">
-                <b>Portal on file, no credentials recorded.</b> Someone has to request access — that's an action item,
+              <div className={FX.credhold}>
+                <b className={FX.credB}>Portal on file, no credentials recorded.</b> Someone has to request access — that's an action item,
                 not a dead end.
               </div>
             ) : (
-              <div className="credhold">Credentials unknown — the submission profile could not be read.</div>
+              <div className={FX.credhold}>Credentials unknown — the submission profile could not be read.</div>
             )}
           </div>
         ) : (
-          <div className="cnone">No partner portal recorded for this funder.</div>
+          <div className={FX.cnone}>No partner portal recorded for this funder.</div>
         )}
       </div>
 
       {subNotes && (
-        <div className="cgroup">
+        <div className={FX.cgroup}>
           <Quoted label="Submission notes — quoted, not parsed" text={subNotes} />
         </div>
       )}
 
-      <div className="cgroup">
-        <div className="ck">Material we already hold</div>
+      <div className={FX.cgroup}>
+        <div className={FX.ck}>Material we already hold</div>
         {!docs.readable ? (
-          <div className="cunk">
+          <div className={FX.cunk}>
             Stored material is UNKNOWN — `lender_documents` is admin-only and returned nothing for your account. Not
             "no material": ask Ops.
           </div>
         ) : mine.length === 0 ? (
-          <div className="cnone">Nothing captured from this funder's packet yet.</div>
+          <div className={FX.cnone}>Nothing captured from this funder's packet yet.</div>
         ) : (
-          <div className="doclist">
+          <div className={FX.doclist}>
             {mine.map((d) => {
               // UCS stores two copies each of its ISO Agreement and Partner Info
               // Sheet — same filename, different bytes, both approved. Say that
               // out loud rather than silently showing one of them.
               const twins = mine.filter((x) => (x.filename ?? "") === (d.filename ?? "")).length;
               return (
-                <div className="docrow" key={d.id}>
-                  <span className="dt">{DOC_TYPE_LABEL[d.document_type ?? ""] ?? d.document_type ?? "file"}</span>
+                <div className={FX.docrow} key={d.id}>
+                  <span className={FX.dt}>{DOC_TYPE_LABEL[d.document_type ?? ""] ?? d.document_type ?? "file"}</span>
                   <span>{d.filename ?? "unnamed file"}</span>
                   {twins > 1 && (
-                    <span className="dt" title="Same filename stored more than once, with different contents. Nobody has said which is current.">
+                    <span className={FX.dt} title="Same filename stored more than once, with different contents. Nobody has said which is current.">
                       {twins} copies
                     </span>
                   )}
-                  <button type="button" className="docopen" onClick={() => open(d)}>
+                  <button type="button" className={FX.docopen} onClick={() => open(d)}>
                     open
                   </button>
                 </div>
@@ -136,7 +137,7 @@ export function FunderLinksBlock({
             })}
           </div>
         )}
-        {docErr && <div className="docerr">{docErr}</div>}
+        {docErr && <div className={FX.docerr}>{docErr}</div>}
       </div>
     </>
   );

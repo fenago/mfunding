@@ -3,6 +3,7 @@
 import { type ContactFields, type DocState, type ProfileRow, clean, mentionsContact } from "@/lib/funderDisclosure";
 import { CopyMini, LinkLine, MailLine, PhoneText, Quoted } from "./parts";
 import { FunderLinksBlock } from "./FunderLinksBlock";
+import { FX } from "./tw";
 
 export function FunderContactBlock({
   l,
@@ -38,39 +39,39 @@ export function FunderContactBlock({
   if (mentionsContact(lenderNote)) notes.push({ k: "From the funder record's notes", v: lenderNote as string });
 
   return (
-    <div className="contact">
-      <div className="cgroup">
-        <div className="ck">Who to chase — the rep</div>
-        {name ? <div className="cline"><span className="who">{name}</span></div> : <div className="cnone">Name not recorded.</div>}
-        {email ? <MailLine label="Email" email={email} /> : <div className="cnone">Email not recorded.</div>}
+    <div className={FX.contact}>
+      <div className={FX.cgroup}>
+        <div className={FX.ck}>Who to chase — the rep</div>
+        {name ? <div className={FX.cline}><span className={FX.who}>{name}</span></div> : <div className={FX.cnone}>Name not recorded.</div>}
+        {email ? <MailLine label="Email" email={email} /> : <div className={FX.cnone}>Email not recorded.</div>}
         {phone ? (
-          <div className="cline">
-            <span className="lbl">Phone</span>
+          <div className={FX.cline}>
+            <span className={FX.lbl}>Phone</span>
             <span>
               <PhoneText text={phone} />
             </span>
             <CopyMini value={phone} what="phone number" />
           </div>
         ) : (
-          <div className="cnone">Phone not recorded.</div>
+          <div className={FX.cnone}>Phone not recorded.</div>
         )}
       </div>
 
-      <div className="cgroup">
-        <div className="ck">Other people on file</div>
+      <div className={FX.cgroup}>
+        <div className={FX.ck}>Other people on file</div>
         {others.length === 0 ? (
-          <div className="cnone">No other contacts recorded for this funder.</div>
+          <div className={FX.cnone}>No other contacts recorded for this funder.</div>
         ) : (
           others.map((p, i) => (
-            <div className="cperson" key={`${clean(p.email) ?? clean(p.phone) ?? i}`}>
-              <div className="cline">
-                <span className="who">{clean(p.name) ?? "Name not recorded"}</span>
-                {clean(p.title) && <span className="lbl">{clean(p.title)}</span>}
+            <div className={FX.cperson} key={`${clean(p.email) ?? clean(p.phone) ?? i}`}>
+              <div className={FX.cline}>
+                <span className={FX.who}>{clean(p.name) ?? "Name not recorded"}</span>
+                {clean(p.title) && <span className={FX.lbl}>{clean(p.title)}</span>}
               </div>
               {clean(p.email) && <MailLine label="Email" email={clean(p.email) as string} />}
               {clean(p.phone) && (
-                <div className="cline">
-                  <span className="lbl">Phone</span>
+                <div className={FX.cline}>
+                  <span className={FX.lbl}>Phone</span>
                   <span>
                     <PhoneText text={clean(p.phone) as string} />
                   </span>
@@ -82,11 +83,11 @@ export function FunderContactBlock({
         )}
       </div>
 
-      <div className="cgroup">
-        <div className="ck">Where the deal goes — submission</div>
+      <div className={FX.cgroup}>
+        <div className={FX.ck}>Where the deal goes — submission</div>
         {!profilesReadable ? (
           <>
-            <div className="cunk">
+            <div className={FX.cunk}>
               Submission recipe UNKNOWN — the profile table came back empty or unreadable for your account. Not
               "no address": ask Ops before sending anything.
             </div>
@@ -99,9 +100,9 @@ export function FunderContactBlock({
               <MailLine key={cc} label="CC" email={cc} />
             ))}
             {subPortal && (
-              <div className="cline">
-                <span className="lbl">Portal</span>
-                <a className="cmail" href={subPortal} target="_blank" rel="noreferrer">
+              <div className={FX.cline}>
+                <span className={FX.lbl}>Portal</span>
+                <a className={FX.cmail} href={subPortal} target="_blank" rel="noreferrer">
                   {subPortal}
                 </a>
               </div>
@@ -109,19 +110,19 @@ export function FunderContactBlock({
             {!subTo && !subPortal && catalogSub && (
               <>
                 <MailLine label="Catalog" email={catalogSub} />
-                <div className="cnone">
+                <div className={FX.cnone}>
                   From the funder record, not from a send recipe — no submission profile is set up for this funder.
                 </div>
               </>
             )}
           </>
         ) : (
-          <div className="cnone">No submission address or portal recorded for this funder.</div>
+          <div className={FX.cnone}>No submission address or portal recorded for this funder.</div>
         )}
       </div>
 
       {notes.length > 0 && (
-        <div className="cgroup">
+        <div className={FX.cgroup}>
           {notes.map((n) => (
             <Quoted key={n.k} label={`${n.k} — quoted, not parsed into fields`} text={n.v} />
           ))}
@@ -130,11 +131,11 @@ export function FunderContactBlock({
 
       <FunderLinksBlock l={l} profile={profile} profilesReadable={profilesReadable} docs={docs} />
 
-      <div className="cgroup">
+      <div className={FX.cgroup}>
         {site ? (
           <LinkLine label="Website" url={site} />
         ) : (
-          <div className="cnone">Website not recorded.</div>
+          <div className={FX.cnone}>Website not recorded.</div>
         )}
       </div>
     </div>

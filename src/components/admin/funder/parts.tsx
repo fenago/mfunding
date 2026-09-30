@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { LINK_CHIP, PHONE_RE, classifyLink, safeQuote, telHref } from "@/lib/funderDisclosure";
+import { FX } from "./tw";
 
 export function PhoneText({ text }: { text: string }) {
   const parts: ReactNode[] = [];
@@ -11,7 +12,7 @@ export function PhoneText({ text }: { text: string }) {
   for (let m = PHONE_RE.exec(text); m !== null; m = PHONE_RE.exec(text)) {
     if (m.index > last) parts.push(text.slice(last, m.index));
     parts.push(
-      <a className="cphone" href={telHref(m[0])} key={`${m.index}-${m[0]}`}>
+      <a className={FX.cphone} href={telHref(m[0])} key={`${m.index}-${m[0]}`}>
         {m[0]}
       </a>,
     );
@@ -28,7 +29,7 @@ export function CopyMini({ value, what }: { value: string; what: string }) {
   return (
     <button
       type="button"
-      className="cmini"
+      className={FX.cmini}
       aria-label={`Copy ${what}`}
       onClick={async () => {
         try {
@@ -48,9 +49,9 @@ export function CopyMini({ value, what }: { value: string; what: string }) {
 
 export function MailLine({ label, email }: { label: string; email: string }) {
   return (
-    <div className="cline">
-      <span className="lbl">{label}</span>
-      <a className="cmail" href={`mailto:${email}`}>
+    <div className={FX.cline}>
+      <span className={FX.lbl}>{label}</span>
+      <a className={FX.cmail} href={`mailto:${email}`}>
         {email}
       </a>
       <CopyMini value={email} what={`${label} address`} />
@@ -66,7 +67,7 @@ export function Quoted({ label, text }: { label: string; text: string | null | u
   const q = safeQuote(text);
   if (q.withheld) {
     return (
-      <div className="credhold">
+      <div className={FX.credhold}>
         {label} — <b>not shown.</b> This note contains what looks like a credential, and this page is open to every
         setter. Ops has it.
       </div>
@@ -74,8 +75,8 @@ export function Quoted({ label, text }: { label: string; text: string | null | u
   }
   if (!q.text) return null;
   return (
-    <div className="cnote">
-      <span className="k">{label}</span>
+    <div className={FX.cnote}>
+      <span className={FX.cnoteK}>{label}</span>
       {q.text}
     </div>
   );
@@ -85,9 +86,9 @@ export function LinkLine({ label, url }: { label: string; url: string }) {
   const k = classifyLink(url);
   const chip = LINK_CHIP[k];
   return (
-    <div className="lrow">
-      <span className="lk">{label}</span>
-      <a className="cmail" href={url} target="_blank" rel="noreferrer">
+    <div className={FX.lrow}>
+      <span className={FX.lk}>{label}</span>
+      <a className={FX.cmail} href={url} target="_blank" rel="noreferrer">
         {url}
       </a>
       <span className={chip.cls} title={chip.title}>

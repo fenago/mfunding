@@ -14,6 +14,7 @@
 // A second copy of either would re-ship a leak or a lie on another page.
 // ─────────────────────────────────────────────────────────────────────────────
 import supabase from "@/supabase";
+import { BCHIP_BASE, BCHIP_OPEN, BCHIP_WARN } from "@/components/admin/funder/tw";
 
 // Money/number formatting shared by the disclosure blocks and the cheat sheet.
 export const num = (v: number | string | null): number | null => {
@@ -163,19 +164,21 @@ export function classifyLink(url: string): LinkClass {
   return "unattributed";
 }
 
+// Tailwind strings, not `.fcs` class names: these chips render on the
+// processor page too, which has no .fcs stylesheet.
 export const LINK_CHIP: Record<LinkClass, { cls: string; label: string; title: string }> = {
   attributed: {
-    cls: "bchip open",
+    cls: BCHIP_OPEN,
     label: "carries our ID ✓",
     title: "This link identifies Momentum Funding. Safe to send a merchant.",
   },
   internal: {
-    cls: "bchip",
+    cls: BCHIP_BASE,
     label: "we log in — never send",
     title: "Our own portal. Sending it to a merchant does nothing useful.",
   },
   unattributed: {
-    cls: "bchip warn",
+    cls: BCHIP_WARN,
     label: "⚠ no ID — we are not credited",
     title:
       "This URL carries nothing that identifies Momentum Funding. If a merchant applies through it they are a walk-in and the commission is gone. Check how attribution actually works for this funder before sending it to anyone.",

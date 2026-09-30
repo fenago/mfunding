@@ -45,7 +45,6 @@ import DeclineCloseOut from "@/components/admin/DeclineCloseOut";
 // them — hand-rolling any of the three here would re-ship a leak or a lie.
 import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
 import { FunderProgramBox } from "@/components/admin/funder/FunderProgramBox";
-import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
 import {
   loadDocs,
   loadPrograms,
@@ -233,9 +232,9 @@ function FunderLine({
 }
 
 /** The two green disclosures from /admin/cheat-sheet, per funder.
- *  `.fcs fcs-embed` is required: the blocks' CSS is scoped to `.fcs`, and
- *  `fcs-embed` drops the page background/min-height so it sits inside this
- *  panel instead of painting over it. */
+ *  No `.fcs` wrapper and no injected stylesheet: the blocks carry their own
+ *  Tailwind now. That incantation was the whole problem — a component that
+ *  renders as unstyled divs unless the host knows a secret, on a green build. */
 function FunderDisclosures({ s, disc }: { s: SubSummary; disc: DiscState }) {
   if (disc.kind === "loading" || disc.kind === "idle") {
     return <span className="text-[10px] text-gray-400">loading contacts…</span>;
@@ -259,7 +258,7 @@ function FunderDisclosures({ s, disc }: { s: SubSummary; disc: DiscState }) {
   // re-parented by the browser, which no typecheck or build would have caught.
   return (
     <div className="basis-full">
-      <div className="fcs fcs-embed">
+      <div>
         <details className="mt-1">
           <summary className="cursor-pointer select-none text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
             Who to call · submission links ↓
@@ -657,9 +656,6 @@ export default function FunderChaseTab() {
 
   return (
     <div className="space-y-3">
-      {/* The disclosure blocks' CSS, injected once for the whole page. */}
-      <FunderDisclosureStyles />
-
       {/* Controls */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <div className="flex flex-wrap items-center gap-2 mb-3">
