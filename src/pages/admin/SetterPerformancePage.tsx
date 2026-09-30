@@ -1809,6 +1809,21 @@ function localTimeTitle(iso: string | null): string {
   return `Your local time: ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
 }
 
+/** " from Aug 31–Sep 6", or " from Aug 31" when they fall on one day, or ""
+ *  when the dates could not be read. The span only ever DESCRIBES the frozen
+ *  calls — the counts decide whether the line renders at all — so an unreadable
+ *  pair drops the phrase and keeps the number, rather than inventing a range. */
+function stubDateSpan(oldest: string | null, newest: string | null): string {
+  if (!oldest || !newest) return "";
+  const o = new Date(oldest);
+  const n = new Date(newest);
+  if (Number.isNaN(o.getTime()) || Number.isNaN(n.getTime())) return "";
+  const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const a = short(o);
+  const b = short(n);
+  return a === b ? ` from ${a}` : ` from ${a}–${b}`;
+}
+
 function sinceText(iso: string | null): string {
   if (!iso) return "never";
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -2278,8 +2293,13 @@ export default function SetterPerformancePage() {
    *  and never finalised (20260918f). `unrecoverable` are the ones we have ASKED
    *  WAVV about and which WAVV cannot finalise either; the rest are still
    *  questions. null means the count itself could not be read, which renders as
-   *  nothing rather than as a reassuring zero. */
-  const [stubs, setStubs] = useState<{ total: number; unrecoverable: number } | null>(null);
+   *  nothing rather than as a reassuring zero.
+   *  `oldest`/`newest` date the span for the quiet variant below; they are
+   *  decoration, so a failed read drops the phrase rather than the banner — the
+   *  COUNTS decide what is shown, never the dates. */
+  const [stubs, setStubs] = useState<
+    { total: number; unrecoverable: number; oldest: string | null; newest: string | null } | null
+  >(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
   /** Application send + signature state per DEAL for the applications sent in
    *  range. null = UNREADABLE, which renders "—", never "nobody signed". */
@@ -2455,7 +2475,7 @@ export default function SetterPerformancePage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [stateRes, targetRes, countRes, rangeCountRes, stubRes, stubBadRes] = await Promise.all([
+      const [stateRes, targetRes, countRes, rangeCountRes, stubRes, stubBadRes, stubOldRes, stubNewRes] = await Promise.all([
         supabase.from("platform_settings").select("value").eq("key", "wavv_sync").maybeSingle(),
         supabase.from("platform_settings").select("value").eq("key", "ph_dialer_kpi_targets").maybeSingle(),
         supabase.from(CALLS_VIEW).select("wavv_call_id", { count: "exact", head: true }),
@@ -2473,6 +2493,12 @@ export default function SetterPerformancePage() {
         supabase.from("v_wavv_unfinalized_calls").select("wavv_call_id", { count: "exact", head: true }),
         supabase.from("v_wavv_unfinalized_calls").select("wavv_call_id", { count: "exact", head: true })
           .not("refetch_state", "is", null),
+        // The span they cover, read from the view like everything else — never
+        // typed in. A fifth stub tomorrow moves these on its own.
+        supabase.from("v_wavv_unfinalized_calls").select("started_at")
+          .order("started_at", { ascending: true }).limit(1).maybeSingle(),
+        supabase.from("v_wavv_unfinalized_calls").select("started_at")
+          .order("started_at", { ascending: false }).limit(1).maybeSingle(),
       ]);
 
       if (stateRes.error) throw new Error(stateRes.error.message);
@@ -2486,7 +2512,12 @@ export default function SetterPerformancePage() {
       setStubs(
         stubRes.error || stubBadRes.error
           ? null
-          : { total: stubRes.count ?? 0, unrecoverable: stubBadRes.count ?? 0 },
+          : {
+              total: stubRes.count ?? 0,
+              unrecoverable: stubBadRes.count ?? 0,
+              oldest: stubOldRes.error ? null : (stubOldRes.data?.started_at ?? null),
+              newest: stubNewRes.error ? null : (stubNewRes.data?.started_at ?? null),
+            },
       );
       // A failed/absent targets read leaves targets null — every RAG then reads
       // "no target" (grey), which is the honest state, not a silent all-green.
@@ -4934,8 +4965,19 @@ export default function SetterPerformancePage() {
           setter who missed. Measured: two of these turned out to be a 25-minute
           and a 13-minute conversation, both dispositioned by the setter.
           Shown here because the recovery job is automatic but its FAILURES were
-          previously visible only in a database view nobody opens. */}
-      {!dealsTabActive && stubs && stubs.total > 0 && (
+          previously visible only in a database view nobody opens.
+
+          Two volumes, chosen by whether anything is still ACTIONABLE — not by
+          age, and not by count. While any stub is still an open question a sync
+          might yet resolve it, so the full warning stands. Once every remaining
+          one has been asked about and WAVV has nothing either, no future sync
+          changes the number: it would otherwise shout the same unactionable
+          total every day forever, which is how a banner teaches people to stop
+          reading banners. It stays VISIBLE at a quieter volume because those
+          rows really are excluded from every count on this page, and somebody
+          reconciling a total needs to be able to find that out. A single new
+          recoverable stub flips it straight back to the loud form. */}
+      {!dealsTabActive && stubs && stubs.total > 0 && stubs.total > stubs.unrecoverable && (
         <div className="alert alert-warning">
           <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
           <div>
@@ -4955,6 +4997,19 @@ export default function SetterPerformancePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Every remaining stub has been asked about and WAVV has nothing either,
+          so there is nothing to act on and no sync will move the number. Stated
+          once, quietly, because the exclusion is real. */}
+      {!dealsTabActive && stubs && stubs.total > 0 && stubs.total === stubs.unrecoverable && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {stubs.total.toLocaleString()} call{stubs.total === 1 ? "" : "s"}
+          {stubDateSpan(stubs.oldest, stubs.newest)} never finalised and never will —{" "}
+          {stubs.total === 1 ? "it was" : "they were"} re-requested from WAVV, which has no record
+          of {stubs.total === 1 ? "it" : "them"} either. {stubs.total === 1 ? "It is" : "They are"}{" "}
+          excluded from every count on this page.
+        </p>
       )}
 
       {!dealsTabActive && !ceilingTabActive && loadError && (
