@@ -1085,7 +1085,11 @@ const PAYROLL_TREATMENT: Record<string, { label: string; detail: string }> = {
   },
 };
 
-function RevenueThreeWays({ m }: { m: Partial<UWMetrics> }) {
+function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsCovered: number }) {
+  // The divisor the server used: by_source totals / months = the monthly figure.
+  // Prefer the panel's recomputed month count (which survives older runs) and fall
+  // back to the stored one.
+  const monthsForSources = monthsCovered || m.months_covered || 0;
   const reported = m.reported_avg_monthly_revenue;
   const truth = m.true_avg_monthly_revenue;
   const cons = m.conservative_avg_monthly_revenue;
@@ -1173,8 +1177,25 @@ function RevenueThreeWays({ m }: { m: Partial<UWMetrics> }) {
         <div className="mt-3">
           <p className="text-xs font-semibold text-gray-800 dark:text-gray-100">
             {money(qMonthly)}/mo of revenue we would not stand behind
-            {sources.length > 0 && <span className="font-normal text-gray-500 dark:text-gray-400"> — by source:</span>}
           </p>
+          {/* ⚠ TWO DIFFERENT UNITS, AND THEY WERE STACKED AS IF THEY MATCHED.
+              `questionable_revenue_monthly` is a MONTHLY AVERAGE;
+              `questionable_revenue_by_source` values are TOTALS ACROSS THE MONTHS
+              READ. Verified exactly on five runs across three deals —
+              MF-2026-0013 is $60,123 over 5 months = $12,024.60/mo, MF-2026-0442
+              $27,737.30 over 4 = $6,934.33, MF-2026-0160 $76,390 over 4 =
+              $19,097.50. The first version of this block printed the monthly
+              figure and then listed the totals under "by source:", so a reader
+              would have taken $29,405 for a monthly number — a 5x overstatement
+              of one payer, on the panel whose whole job is to stop numbers being
+              read as something they are not. The unit is now in the heading of
+              the list rather than inferred from the line above it. */}
+          {sources.length > 0 && (
+            <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+              By source, <span className="font-semibold">totalled across the {num(monthsForSources)} month
+              {monthsForSources === 1 ? "" : "s"} read</span> — not monthly:
+            </p>
+          )}
           {sources.length > 0 ? (
             <div className="mt-1.5 space-y-1">
               {sources.map(([desc, amt]) => (
@@ -1593,7 +1614,7 @@ function ResultView({
 
           {/* Reported vs true vs conservative, plus the payroll policy that
               explains the gap and the per-source evidence behind it. */}
-          <RevenueThreeWays m={m} />
+          <RevenueThreeWays m={m} monthsCovered={monthsCovered} />
 
           {/* Direction, not just the average. */}
           {perMonth.length > 0 && (
