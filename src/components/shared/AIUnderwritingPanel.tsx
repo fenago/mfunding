@@ -1048,6 +1048,163 @@ function SubmissionFacts({ facts }: { facts: Record<string, unknown> }) {
   );
 }
 
+// ── Revenue, three ways — and the policy that explains the gap ───────────────
+//
+// Five keys were being computed and stored and shown to NOBODY:
+// `conservative_avg_monthly_revenue`, `conservative_max_affordable_advance`,
+// `owner_payroll_treatment`, `questionable_revenue_monthly` and
+// `questionable_revenue_by_source`. On 76 of 187 stored runs the conservative
+// figure is materially (>5%) below the true figure, so the gap is the normal
+// case, and until now a reader could not see that it existed at all.
+//
+// `owner_payroll_treatment` is what makes the other four legible, which is why it
+// is a sentence here rather than a chip: "flag_and_discount" and "exclude" produce
+// different numbers and a different conversation with a funder, and a reader who
+// cannot tell whether a discount was APPLIED or merely FLAGGED cannot defend
+// either figure.
+//
+// THE BREAKDOWN IS THE POINT. An aggregate ("$12,025/mo questionable") cannot be
+// argued with; the per-source list can. It is what shows at a glance that an
+// entire revenue line is one third-party payroll ACH — MF-2026-0013, where
+// $15,083 true becomes $3,059 conservative and the breakdown is three spellings
+// of the same "YOUR HEALTH QUOT" payer.
+const PAYROLL_TREATMENT: Record<string, { label: string; detail: string }> = {
+  count: {
+    label: "counted as revenue",
+    detail:
+      "Owner payroll is left IN both figures. Nothing has been discounted for it — if a funder strips it, both numbers move.",
+  },
+  flag_and_discount: {
+    label: "flagged and discounted",
+    detail:
+      "Owner payroll stays in the true figure and is removed from the conservative one. The conservative number is the one that survives a funder stripping it.",
+  },
+  exclude: {
+    label: "excluded entirely",
+    detail: "Owner payroll is out of BOTH figures. Neither number depends on it.",
+  },
+};
+
+function RevenueThreeWays({ m }: { m: Partial<UWMetrics> }) {
+  const reported = m.reported_avg_monthly_revenue;
+  const truth = m.true_avg_monthly_revenue;
+  const cons = m.conservative_avg_monthly_revenue;
+  const qMonthly = m.questionable_revenue_monthly;
+  const bySource = m.questionable_revenue_by_source ?? {};
+  const treatment = m.owner_payroll_treatment;
+  const t = treatment ? PAYROLL_TREATMENT[treatment] : undefined;
+  if (cons == null && qMonthly == null && treatment == null) return null;
+
+  const widest = Math.max(reported ?? 0, truth ?? 0, cons ?? 0) || 1;
+  const bar = (v: number | null | undefined, cls: string) => (
+    <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+      <div className={`h-full ${cls}`} style={{ width: `${Math.max(0, Math.min(100, ((v ?? 0) / widest) * 100))}%` }} />
+    </div>
+  );
+  const sources = Object.entries(bySource)
+    .filter(([, v]) => (Number(v) || 0) !== 0)
+    .sort(([, a], [, b]) => (Number(b) || 0) - (Number(a) || 0));
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Revenue, three ways</h4>
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+          what he says · what the statements show · what we&apos;d defend to a funder
+        </span>
+      </div>
+
+      <div className="space-y-2.5">
+        <div>
+          <div className="flex items-baseline justify-between text-sm">
+            <span className="text-gray-500 dark:text-gray-400">Reported by the merchant</span>
+            <span className="font-semibold text-gray-700 dark:text-gray-200 tabular-nums">{money(reported)}</span>
+          </div>
+          {bar(reported, "bg-gray-400 dark:bg-gray-500")}
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between text-sm">
+            <span className="text-gray-700 dark:text-gray-200 font-medium">True (padding stripped)</span>
+            <span className="font-bold text-gray-900 dark:text-white tabular-nums">{money(truth)}</span>
+          </div>
+          {bar(truth, "bg-ocean-blue")}
+        </div>
+        {cons != null && (
+          <div>
+            <div className="flex items-baseline justify-between text-sm">
+              <span className="text-gray-700 dark:text-gray-200 font-medium">
+                Conservative — the defensible floor
+              </span>
+              <span className="font-bold text-amber-700 dark:text-amber-300 tabular-nums">{money(cons)}</span>
+            </div>
+            {bar(cons, "bg-amber-500")}
+            {truth != null && truth > 0 && cons < truth * 0.95 && (
+              <p className="mt-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                {Math.round((1 - cons / truth) * 100)}% below the true figure — submit on this number if the
+                funder is strict about deposit sources.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Both advance figures together, since the ask is judged against them. */}
+      {m.conservative_max_affordable_advance != null && (
+        <p className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300">
+          Max advance on the true figure <span className="font-bold">{money(m.max_affordable_advance)}</span>, on
+          the conservative figure{" "}
+          <span className="font-bold text-amber-700 dark:text-amber-300">
+            {money(m.conservative_max_affordable_advance)}
+          </span>
+          .
+        </p>
+      )}
+
+      {/* The policy. A sentence, not a chip — it is what makes the gap readable. */}
+      {treatment && (
+        <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+          <span className="font-semibold">Owner payroll: {t?.label ?? humanize(treatment)}.</span>{" "}
+          {t?.detail ?? "This run recorded a treatment this screen doesn't have wording for — check the policy before quoting either figure."}
+        </p>
+      )}
+
+      {/* The evidence behind the conservative figure. */}
+      {qMonthly != null && qMonthly > 0 && (
+        <div className="mt-3">
+          <p className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+            {money(qMonthly)}/mo of revenue we would not stand behind
+            {sources.length > 0 && <span className="font-normal text-gray-500 dark:text-gray-400"> — by source:</span>}
+          </p>
+          {sources.length > 0 ? (
+            <div className="mt-1.5 space-y-1">
+              {sources.map(([desc, amt]) => (
+                <div key={desc} className="flex items-baseline justify-between gap-3 text-[11px]">
+                  <span className="text-gray-600 dark:text-gray-300 truncate font-mono">{desc}</span>
+                  <span className="font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">
+                    {money(Number(amt) || 0)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            // An amount with no breakdown is a number you cannot argue with. Say so.
+            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+              No per-source breakdown on this run, so this total cannot be checked against the statements.
+              Re-run if you need to defend it line by line.
+            </p>
+          )}
+        </div>
+      )}
+      {qMonthly === 0 && (
+        <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300">
+          <span className="font-semibold">No questionable revenue</span> — every credit in the true figure has a
+          source we can stand behind, so the conservative and true figures agree.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Consolidation: a trade with two halves, and neither may be shown alone ────
 //
 // `metrics.consolidation_analysis` is NOT the same question as `metrics.refi`.
@@ -1434,6 +1591,10 @@ function ResultView({
             />
           )}
 
+          {/* Reported vs true vs conservative, plus the payroll policy that
+              explains the gap and the per-source evidence behind it. */}
+          <RevenueThreeWays m={m} />
+
           {/* Direction, not just the average. */}
           {perMonth.length > 0 && (
             <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
@@ -1555,7 +1716,23 @@ function ResultView({
             <Metric label="Debt service" value={pct(m.debt_service_pct)} tone={(m.debt_service_pct ?? 0) >= 25 ? "bad" : undefined} />
             <Metric label="Safe daily capacity" value={money(m.safe_daily_debit_capacity)} />
             <Metric label="Deposit concentration" value={pct(m.deposit_concentration_pct)} tone={(m.deposit_concentration_pct ?? 0) >= 40 ? "bad" : undefined} />
-            <Metric label="Revenue trend" value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "—"} />
+            {/* NULL IS NOT FLAT AND NOT A DASH. `revenue_trend` became nullable on
+                2026-10-01, gated to >=6 months with no anomalous month, because
+                the direction was flipping between runs on identical statements.
+                A "—" here reads as "no data"; the honest reading is "we refused
+                to claim a direction", which is a different and more useful fact.
+                Rendering it as "flat" would be worse again — asserting the
+                stability we declined to assert. */}
+            <Metric
+              label="Revenue trend"
+              value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "Not claimed"}
+              caption={m.revenue_trend ? undefined : "not enough months to claim a direction"}
+              hint={
+                m.revenue_trend
+                  ? undefined
+                  : "Needs 6+ months with no anomalous month. Fewer than that and the direction flips run to run on the same statements, so no direction is asserted. This is NOT 'flat'."
+              }
+            />
           </div>
         </div>
       )}
@@ -3213,13 +3390,31 @@ function DocumentLedger({ rows }: { rows: UWDocumentLedgerRow[] }) {
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "bad" }) {
+function Metric({
+  label, value, tone, hint, caption,
+}: {
+  label: string;
+  value: string;
+  tone?: "bad";
+  /** Tooltip: why the value reads the way it does. */
+  hint?: string;
+  /** A short VISIBLE line under the value. Use it where a non-numeric value would
+   *  otherwise be mistaken for missing data — a tooltip nobody hovers is not a
+   *  disclosure. See the revenue-trend card. */
+  caption?: string;
+}) {
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+    <div
+      className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700"
+      title={hint}
+    >
       <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
       <div className={`text-lg font-semibold mt-0.5 ${tone === "bad" ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white"}`}>
         {value}
       </div>
+      {caption && (
+        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 leading-snug">{caption}</div>
+      )}
     </div>
   );
 }

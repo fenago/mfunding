@@ -483,7 +483,43 @@ export interface UWMetrics {
   latest_month_is_partial?: boolean;
   max_affordable_advance: number;
   amount_requested: number;
-  revenue_trend: "up" | "flat" | "down";
+  /**
+   * ⚠ NULLABLE SINCE 2026-10-01, and null does NOT mean "flat".
+   *
+   * It is gated to >=6 months with no anomalous month, because the direction was
+   * flipping between runs on identical statements. Null means "not enough months
+   * to claim a direction" — a surface that renders it as "flat", "—" or a blank
+   * cell is asserting stability we explicitly refused to assert.
+   */
+  revenue_trend: "up" | "flat" | "down" | null;
+  /**
+   * THE DEFENSIBLE FLOOR, beside `true_avg_monthly_revenue`. It strips
+   * `questionable_revenue_monthly` — credits whose source we cannot stand behind
+   * to a funder — and applies `owner_payroll_treatment`. On 76 of 187 stored runs
+   * it is materially (>5%) below the true figure, so the gap is the norm and not
+   * an edge case.
+   */
+  conservative_avg_monthly_revenue?: number;
+  /** `max_affordable_advance` recomputed off the conservative revenue. */
+  conservative_max_affordable_advance?: number;
+  /**
+   * THE KEY THAT MAKES THE OTHER FOUR LEGIBLE. The stored policy actually applied
+   * to owner payroll: "count" (left in revenue), "flag_and_discount" (left in the
+   * true figure, removed from the conservative one) or "exclude" (out of both).
+   * Without it a reader cannot tell whether a discount was APPLIED or merely
+   * FLAGGED, which are different numbers and a different conversation with a
+   * funder.
+   */
+  owner_payroll_treatment?: string;
+  /** Monthly dollars of revenue we would not stand behind to a funder. */
+  questionable_revenue_monthly?: number;
+  /**
+   * Descriptor → monthly dollars. The breakdown is the point: it is what shows at
+   * a glance that a $24,000 wire from an oil-and-gas consultancy had been stripped
+   * from a drilling-fluids company, or that a whole "revenue" line is one
+   * third-party payroll ACH. An aggregate alone cannot be argued with.
+   */
+  questionable_revenue_by_source?: Record<string, number>;
   deposit_concentration_pct: number;
   statements_analyzed: number;
   months_covered: number;
