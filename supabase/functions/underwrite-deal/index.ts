@@ -4302,6 +4302,20 @@ Deno.serve(async (req) => {
     // credibility. Coverage rides along so "nothing adverse found" can never be
     // phrased as "nothing adverse exists": an unreadable document is not a clean month.
     let submissionParagraph: string | null = null;
+    // WHY a paragraph is absent, so the UI never has to guess. A NULL paragraph has
+    // three very different causes and they call for different words on screen:
+    // "pre_feature" (no submission_facts at all — the run predates this), "failed"
+    // (the writer errored or returned nothing usable), and "rejected_compliance"
+    // (it produced copy that asserted something we will not send a funder). The last
+    // one is NOT a system error — it is the gate working — and must not be shown as
+    // a crash. Absence is reported, never inferred from a blank string.
+    let submissionWriterStatus: "ok" | "failed" | "too_short" | "rejected_compliance" = "failed";
+    let submissionRejectedFor: string[] | null = null;
+    // Response-only (never persisted, never rendered to a closer): the copy that was
+    // refused. A bare NULL plus a rule name is not enough to tell a real violation
+    // from a gate that is too eager, and that distinction decides whether to fix the
+    // prompt or the pattern.
+    let submissionRejectedText: string | null = null;
     const settlementForFunder = [...new Map(
       settlementHits.map((h) => [h.servicer, h]),
     ).values()].map((h) => ({
@@ -4328,18 +4342,24 @@ Deno.serve(async (req) => {
     let revenueFloorBasis = "current run only";
     let revenueBandLow = trueAvgMonthlyRevenue;
     try {
+      // Every run on this document set, not a recent window. A limit here is a bug,
+      // not an optimisation: with the 12 most recent runs only, the lowest figure we
+      // ever published AGES OUT as runs accumulate and the "floor" drifts upward —
+      // observed live, a $39,766 low silently becoming $45,211. Only the single jsonb
+      // field is selected (not the whole metrics blob) so this stays a few bytes per
+      // row rather than an egress problem.
       const { data: priorRuns, error: priorErr } = await db
         .from("deal_underwriting")
-        .select("version, metrics")
+        .select("version, rev:metrics->>true_avg_monthly_revenue")
         .eq("deal_id", dealId)
         .eq("docs_hash", docsHash)
         .order("version", { ascending: false })
-        .limit(12);
+        .limit(500);
       if (priorErr) {
         revenueFloorBasis = `UNREADABLE (${priorErr.message}) — using this run's figure only`;
       } else {
         const priors = (priorRuns ?? [])
-          .map((r) => num((r.metrics as Any)?.true_avg_monthly_revenue))
+          .map((r) => num((r as Any).rev))
           .filter((v): v is number => v != null && v > 0);
         if (priors.length === 0) {
           revenueFloorBasis = "no prior run on these same documents";
@@ -4431,6 +4451,10 @@ Deno.serve(async (req) => {
       // COVERAGE — so a silence can never be sold as a clean bill of health.
       months_read: monthsCovered,
       documents_unreadable: unreadableDocs,
+      // Filled in after the writer runs (see below) so a reader of the stored row can
+      // tell WHY a paragraph is missing without guessing.
+      writer_status: "not_run" as string,
+      writer_rejected_for: null as string[] | null,
     };
     try {
       const subSystem =
@@ -4525,7 +4549,16 @@ Deno.serve(async (req) => {
           "states a position count"],
         [/\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:open|active)\s+(?:advances?|positions?)\b/i,
           "states a count of open advances"],
-        [/\bposition count\b/i, "refers to a position count"],
+        // Requires a NUMBER attributed to the count, within the same sentence. A blanket
+        // ban on the phrase was too crude and killed a good paragraph: saying the RAM
+        // debit "does not belong in any position count or payoff calculation" DENIES a
+        // count, it does not assert one, and that denial is the most valuable sentence
+        // in the paragraph. `[^.]` keeps it inside one sentence so an unrelated figure
+        // in the next sentence cannot trip it.
+        [/\bposition count\b[^.]{0,40}?\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
+          "asserts a numeric position count"],
+        [/\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b[^.]{0,20}?\bposition count\b/i,
+          "asserts a numeric position count"],
         [/\bdebt service\b/i, "states a debt-service burden"],
         [/\bholdback\b/i, "states a holdback percentage"],
         [/\b\d{1,3}(?:\.\d+)?\s?%\s*(?:of|against)\s+(?:the\s+)?(?:verified\s+|monthly\s+|average\s+)*revenue/i,
@@ -4541,14 +4574,19 @@ Deno.serve(async (req) => {
       // A too-short reply is a failed generation, not a terse paragraph — leave NULL
       // rather than ship a stub a closer would paste in front of a funder.
       if (cand.length < 120) {
+        submissionWriterStatus = "too_short";
         console.error(`[underwrite-deal] submission paragraph unusable for deal ${dealId} (${cand.length} chars)`);
       } else if (complianceViolations.length) {
+        submissionWriterStatus = "rejected_compliance";
+        submissionRejectedFor = complianceViolations;
+        submissionRejectedText = cand;
         console.error(
           `[underwrite-deal] submission paragraph REJECTED for deal ${dealId} — ` +
           `funder-facing compliance: ${complianceViolations.join("; ")}. Paragraph discarded.`,
         );
       } else {
         submissionParagraph = cand;
+        submissionWriterStatus = "ok";
       }
     } catch (e) {
       // Never sinks the run: the underwriting itself is unaffected and the column stays
@@ -4559,6 +4597,9 @@ Deno.serve(async (req) => {
         String(e instanceof Error ? e.message : e),
       );
     }
+
+    submissionFacts.writer_status = submissionWriterStatus;
+    submissionFacts.writer_rejected_for = submissionRejectedFor;
 
     // ---- Persist a new version ----
     const { data: prev } = await db
@@ -4662,6 +4703,7 @@ Deno.serve(async (req) => {
       ai_narrative: narrativeOut,
       // Shape of the judge's reply (not persisted) — makes a silent fallback debuggable.
       judge_diag: judgeDiag,
+      submission_rejected_text: submissionRejectedText,
       // NULL (not "") when the writer could not produce a usable paragraph, so the UI
       // shows "not generated" rather than an empty box a closer might paste.
       submission_paragraph: submissionParagraph,
