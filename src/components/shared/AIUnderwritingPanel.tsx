@@ -663,8 +663,16 @@ function EvidenceStrip({
   // Evidence strength is a DESCRIBED composite, not an invented score: months of
   // coverage, minus any month we failed to read, plus a lift for feed-verified
   // months. The inputs are all printed next to it so nobody has to trust it.
+  // ZERO MONTHS IS ITS OWN STATE AND IT USED TO RENDER AS "single month".
+  // Two persisted runs have statements_analyzed = 0 and months_covered = 0
+  // (MF-2026-0138 v6, all five documents errored; MF-2026-0016 v1, no ledger at
+  // all) — both pre-date the engine's failed-run guard but both are still
+  // readable by this panel today. "Evidence: single month" over zero months
+  // overstates the evidence by a whole month and, worse, legitimises the
+  // findings below it.
+  const nothingRead = months === 0 && (statements ?? 0) === 0;
   const strength: Tone =
-    errored.length > 0 ? "critical" : months >= 3 ? (feedMonths > 0 ? "good" : "good") : months === 2 ? "warn" : "critical";
+    nothingRead || errored.length > 0 ? "critical" : months >= 3 ? "good" : months === 2 ? "warn" : "critical";
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
       <span className="inline-flex items-center gap-1.5">
@@ -681,13 +689,15 @@ function EvidenceStrip({
           ))}
         </span>
         <span className={`font-bold ${TONE_TEXT[strength]}`}>
-          {errored.length > 0
-            ? "Incomplete read"
-            : months >= 3
-              ? "Evidence: solid"
-              : months === 2
-                ? "Evidence: thin"
-                : "Evidence: single month"}
+          {nothingRead
+            ? "NOTHING WAS READ"
+            : errored.length > 0
+              ? "Incomplete read"
+              : months >= 3
+                ? "Evidence: solid"
+                : months === 2
+                  ? "Evidence: thin"
+                  : "Evidence: single month"}
         </span>
       </span>
       <span className="text-gray-500 dark:text-gray-400">
@@ -704,6 +714,12 @@ function EvidenceStrip({
         <span className="font-bold text-red-700 dark:text-red-300">
           ⚠ {errored.length} document{errored.length === 1 ? "" : "s"} failed to parse — those months are NOT in
           these numbers. Nothing below is a statement that they are clean. (Working → Documents)
+        </span>
+      )}
+      {nothingRead && (
+        <span className="font-bold text-red-700 dark:text-red-300">
+          ⚠ No statement month was analysed on this run. Nothing below is a finding — every zero on this
+          screen is the absence of a read, not the absence of a problem. Re-run.
         </span>
       )}
       {months === 1 && errored.length === 0 && (
@@ -1085,7 +1101,14 @@ const PAYROLL_TREATMENT: Record<string, { label: string; detail: string }> = {
   },
 };
 
-function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsCovered: number }) {
+function RevenueThreeWays({
+  m, monthsCovered, nothingWasRead,
+}: {
+  m: Partial<UWMetrics>;
+  monthsCovered: number;
+  /** No statement month was analysed on this run — so no zero in here is earned. */
+  nothingWasRead: boolean;
+}) {
   // The divisor the server used: by_source totals / months = the monthly figure.
   // Prefer the panel's recomputed month count (which survives older runs) and fall
   // back to the stored one.
@@ -1317,12 +1340,21 @@ function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsC
           )}
         </div>
       )}
-      {qMonthly === 0 && (
+      {/* An earned zero needs a read behind it. On a run where no month was
+          analysed there are no credits to have stood behind, so this sentence was
+          describing a file nobody had looked at. */}
+      {qMonthly === 0 && (nothingWasRead ? (
+        <p className="mt-3 text-xs font-semibold text-red-700 dark:text-red-300">
+          No questionable revenue could be assessed — no statement month was analysed on this run. The
+          conservative and true figures agree at {money(truth)} because both are empty, not because the
+          revenue is clean.
+        </p>
+      ) : (
         <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300">
           <span className="font-semibold">No questionable revenue</span> — every credit in the true figure has a
           source we can stand behind, so the conservative and true figures agree.
         </p>
-      )}
+      ))}
     </div>
   );
 }
@@ -1587,6 +1619,18 @@ function ResultView({
     !!m.collection_activity?.detected ||
     (m.collection_activity?.settlement_servicers ?? []).length > 0;
   const ledgerErrors = (m.document_ledger ?? []).filter((d) => d.status === "error").length;
+  // ── AN EARNED ZERO REQUIRES THAT SOMETHING WAS READ ───────────────────────
+  // Every "none found across the N months read" on this panel is a claim, and a
+  // claim needs a basis. Two persisted runs have none at all (0 statements, 0
+  // months), and on those the earned-zero branches were printing "no open MCA
+  // positions across the 0 months read ... safe daily capacity $0, all of it
+  // available" and "no questionable revenue — every credit has a source we can
+  // stand behind" over a file where no credit had ever been seen.
+  //
+  // `ledgerErrors > 0` was the wrong guard: MF-2026-0016 v1 has an EMPTY ledger,
+  // so zero errors and zero reads look identical through it. The right question is
+  // whether a month was analysed at all.
+  const nothingWasRead = monthsCovered === 0 && (m.statements_analyzed ?? 0) === 0;
   const fraudChecks = (m.provenance?.cross_checks ?? []).filter((c) => c.fraud).length;
 
   // Risk count on the tab = everything that tab holds which is genuinely bad.
@@ -1715,7 +1759,7 @@ function ResultView({
 
           {/* Reported vs true vs conservative, plus the payroll policy that
               explains the gap and the per-source evidence behind it. */}
-          <RevenueThreeWays m={m} monthsCovered={monthsCovered} />
+          <RevenueThreeWays m={m} monthsCovered={monthsCovered} nothingWasRead={nothingWasRead} />
 
           {/* Direction, not just the average. */}
           {perMonth.length > 0 && (
@@ -1742,6 +1786,16 @@ function ResultView({
           {activePositions.length > 0 ? (
             <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
               <PositionStack positions={activePositions} capacity={m.safe_daily_debit_capacity} />
+            </div>
+          ) : nothingWasRead ? (
+            <div className="rounded-xl p-4 border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25">
+              <p className="text-sm font-bold text-red-800 dark:text-red-200">
+                No position read was possible — no statement month was analysed on this run.
+              </p>
+              <p className="text-xs text-red-700 dark:text-red-300 mt-1">
+                This is <span className="font-bold">not</span> an unstacked merchant. There is no evidence
+                either way. Re-run before quoting anything on this screen.
+              </p>
             </div>
           ) : (
             <div className={`rounded-xl p-4 border ${
@@ -1914,7 +1968,8 @@ function ResultView({
               which on the Risks tab reads as "we didn't look". The earned zero is
               stated instead; the full detail of WHY it is zero (the one-off debits
               that were excluded from the count) is in Working → Position timeline. */}
-          {activePositions.length === 0 &&
+          {!nothingWasRead &&
+            activePositions.length === 0 &&
             (m.ended_positions ?? []).length === 0 &&
             (m.other_obligations ?? []).length === 0 && (
             <p className="text-sm text-gray-600 dark:text-gray-300 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
@@ -1954,11 +2009,17 @@ function ResultView({
 
           {riskCount === 0 && (
             <TabEmpty
-              what="No flags, no collections, no negative days and no NSFs in the months read."
+              what={
+                nothingWasRead
+                  ? "No risks could be assessed — no statement month was analysed."
+                  : "No flags, no collections, no negative days and no NSFs in the months read."
+              }
               why={
-                ledgerErrors > 0
-                  ? `⚠ But ${ledgerErrors} document(s) failed to parse, so this is a clean read of an INCOMPLETE set — not a clean file.`
-                  : `Scoped to the ${monthsCovered} month(s) analysed. It is not a representation about anything outside them.`
+                nothingWasRead
+                  ? "⚠ An empty risk list here means nothing was read, NOT that the file is clean. Re-run."
+                  : ledgerErrors > 0
+                    ? `⚠ But ${ledgerErrors} document(s) failed to parse, so this is a clean read of an INCOMPLETE set — not a clean file.`
+                    : `Scoped to the ${monthsCovered} month(s) analysed. It is not a representation about anything outside them.`
               }
             />
           )}
