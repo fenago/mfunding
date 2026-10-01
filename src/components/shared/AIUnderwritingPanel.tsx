@@ -1089,7 +1089,12 @@ function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsC
   // The divisor the server used: by_source totals / months = the monthly figure.
   // Prefer the panel's recomputed month count (which survives older runs) and fall
   // back to the stored one.
-  const monthsForSources = monthsCovered || m.months_covered || 0;
+  // The server's OWN divisor first — it is what `monthly` was computed with, so
+  // quoting a different month count beside those figures would make the
+  // arithmetic on screen not add up. Panel-recomputed months are the fallback for
+  // runs stored before the basis was published.
+  const monthsForSources =
+    m.questionable_revenue_basis_months ?? monthsCovered ?? m.months_covered ?? 0;
   const reported = m.reported_avg_monthly_revenue;
   const truth = m.true_avg_monthly_revenue;
   const cons = m.conservative_avg_monthly_revenue;
@@ -1108,6 +1113,22 @@ function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsC
   const sources = Object.entries(bySource)
     .filter(([, v]) => (Number(v) || 0) !== 0)
     .sort(([, a], [, b]) => (Number(b) || 0) - (Number(a) || 0));
+  // Payer-grouped, largest first — concentration is what the reader is looking for.
+  const payers = [...(m.questionable_revenue_by_payer ?? [])].sort(
+    (a, b) => (Number(b.total) || 0) - (Number(a.total) || 0),
+  );
+  // Reconciliation: the sum of per-payer monthlies against the engine's own
+  // figure. Non-null = they disagree, and the value is what the payers sum to.
+  // Only computed when every payer carries a monthly; a null monthly in the set
+  // means the sum is not comparable and silence is correct there.
+  const payerMonthlySum =
+    payers.length > 0 && payers.every((pg) => pg.monthly != null)
+      ? payers.reduce((acc, pg) => acc + (Number(pg.monthly) || 0), 0)
+      : null;
+  const payerMonthlyMismatch =
+    payerMonthlySum != null && qMonthly != null && Math.abs(payerMonthlySum - qMonthly) > 1
+      ? payerMonthlySum
+      : null;
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
@@ -1190,13 +1211,92 @@ function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsC
               of one payer, on the panel whose whole job is to stop numbers being
               read as something they are not. The unit is now in the heading of
               the list rather than inferred from the line above it. */}
-          {sources.length > 0 && (
+          {/* ── PREFER THE PAYER GROUPING, FALL BACK TO THE FLAT MAP ──────────
+              `questionable_revenue_by_payer` (2026-10-01) groups descriptor
+              variants onto one payer: MF-2026-0013 had FOUR spellings of "YOUR
+              HEALTH QUOT" totalling $60,123, which rendered flat reads as four
+              sources and understates the one thing this list exists to show. A
+              funder stripping that payer strips all of it.
+
+              Only 1 of the stored runs carries the new key and 105 carry only the
+              flat map, so both shapes render — this is additive, not a migration. */}
+          {payers.length > 0 ? (
+            <>
+              <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                By payer, with every statement descriptor that rolled into it:
+              </p>
+              <div className="mt-1.5 space-y-2">
+                {payers.map((pg) => (
+                  <div
+                    key={pg.payer_key}
+                    className="rounded-lg border border-gray-200 dark:border-gray-700 p-2.5"
+                  >
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-xs font-semibold text-gray-900 dark:text-white truncate">
+                        {pg.label}
+                      </span>
+                      <span className="text-xs font-bold tabular-nums shrink-0 text-gray-900 dark:text-white">
+                        {/* NULL monthly is not $0/mo. The server sends null when
+                            there is no basis to divide by, and a figure we cannot
+                            compute must not print as a figure of zero. */}
+                        {pg.monthly != null ? `${money(pg.monthly)}/mo` : "monthly n/a"}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                      {money(pg.total)} total across the {num(monthsForSources)} month
+                      {monthsForSources === 1 ? "" : "s"} read
+                      {pg.monthly == null && (
+                        <span className="text-amber-700 dark:text-amber-300">
+                          {" "}· no month basis recorded, so it cannot be stated monthly
+                        </span>
+                      )}
+                    </div>
+                    {(pg.descriptors ?? []).length > 0 && (
+                      <details className="group mt-1.5">
+                        <summary className="flex items-center gap-1 cursor-pointer list-none text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                          <ChevronDownIcon className="w-3 h-3 text-gray-400 group-open:rotate-180 transition-transform" />
+                          {(pg.descriptors ?? []).length} statement descriptor
+                          {(pg.descriptors ?? []).length === 1 ? "" : "s"} — match these against the statement
+                        </summary>
+                        <div className="mt-1 space-y-0.5 pl-4">
+                          {(pg.descriptors ?? []).map((d, i) => (
+                            <div key={`${d.descriptor}-${i}`} className="flex items-baseline justify-between gap-3 text-[11px]">
+                              <span className="text-gray-600 dark:text-gray-300 truncate font-mono">
+                                {d.descriptor}
+                              </span>
+                              <span className="font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">
+                                {money(d.total)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {/* ── THE STANDING RECONCILIATION ────────────────────────────────
+                  Sum the per-payer monthlies and check them against the engine's
+                  own `questionable_revenue_monthly`. It reconciles exactly today
+                  (12024.6 vs 12024.6 on MF-2026-0013 v27) — which is the point:
+                  this is the arithmetic that caught my own unit bug, wired in as a
+                  permanent assertion instead of a thing I happened to do once. If
+                  the two ever disagree, the panel says so rather than showing two
+                  numbers that quietly contradict each other.
+                  $1 tolerance absorbs rounding; anything larger is real drift. */}
+              {payerMonthlyMismatch != null && (
+                <p className="mt-2 text-[11px] font-bold text-amber-700 dark:text-amber-300">
+                  ⚠ These payer figures sum to {money(payerMonthlyMismatch)}/mo, but the engine reports{" "}
+                  {money(qMonthly)}/mo. They should agree — treat both as unverified and tell an engineer.
+                </p>
+              )}
+            </>
+          ) : sources.length > 0 ? (
+            <>
             <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
               By source, <span className="font-semibold">totalled across the {num(monthsForSources)} month
               {monthsForSources === 1 ? "" : "s"} read</span> — not monthly:
             </p>
-          )}
-          {sources.length > 0 ? (
             <div className="mt-1.5 space-y-1">
               {sources.map(([desc, amt]) => (
                 <div key={desc} className="flex items-baseline justify-between gap-3 text-[11px]">
@@ -1207,6 +1307,7 @@ function RevenueThreeWays({ m, monthsCovered }: { m: Partial<UWMetrics>; monthsC
                 </div>
               ))}
             </div>
+            </>
           ) : (
             // An amount with no breakdown is a number you cannot argue with. Say so.
             <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">

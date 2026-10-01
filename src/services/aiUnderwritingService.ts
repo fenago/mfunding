@@ -520,6 +520,41 @@ export interface UWMetrics {
    * third-party payroll ACH. An aggregate alone cannot be argued with.
    */
   questionable_revenue_by_source?: Record<string, number>;
+  /**
+   * The SAME questionable revenue, grouped by payer (2026-10-01). Supersedes
+   * `questionable_revenue_by_source` for display and does not replace it — 105
+   * stored runs carry only the flat map, so both shapes must render.
+   *
+   * Why it exists: on MF-2026-0013 one payer appeared as FOUR descriptor variants
+   * ("YOUR HEALTH QUOT", "YOUR HEALTH QUOTES (PAYROLL ACH)", …) totalling
+   * $60,123. Rendered flat, that reads as four sources — which understates
+   * concentration, and concentration is the only thing the list is for. A funder
+   * stripping that payer strips all of it, not a quarter of it.
+   *
+   * Group on `payer_key`, head the group with `label` (the fullest raw variant),
+   * and print `descriptors` so a human can match the text against the statement
+   * by eye. The server merges on a >=8-char prefix after stripping parentheticals
+   * — deliberately cautious, because OVER-merging inflates apparent concentration
+   * and is just as misleading as splitting ("AMERICAN" would swallow both AMERICAN
+   * EXPRESS and AMERICAN NATIONAL). If two payers should be one, send the
+   * descriptors to the engine owner; do NOT re-group on a looser key in the view.
+   */
+  questionable_revenue_by_payer?: {
+    payer_key: string;
+    label: string;
+    /** Over the months read — NOT monthly. See `questionable_revenue_basis_months`. */
+    total: number;
+    /** `total / basis`, computed server-side. NULL — never 0 — when there is no
+     *  basis to divide by. A monthly we cannot compute must not render as $0/mo. */
+    monthly: number | null;
+    descriptors?: { descriptor: string; total: number }[];
+  }[];
+  /** The divisor behind every `monthly` above. */
+  questionable_revenue_basis_months?: number;
+  /** What the `total` figures are measured over, in the server's own words
+   *  (e.g. "total_over_months_read") — so the UI's wording follows the basis
+   *  instead of hardcoding an assumption about it. */
+  questionable_revenue_by_source_basis?: string;
   deposit_concentration_pct: number;
   statements_analyzed: number;
   months_covered: number;
