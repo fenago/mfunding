@@ -175,7 +175,18 @@ interface DocRow {
 // budget. Anything over stays a secure link instead of failing the send.
 // (Titan 9/9: ~35MB of statements rode through the old 20MB budget because
 // unknown sizes counted as ZERO — all three funder emails failed silently.)
-const MAX_ATTACH_BYTES = 15 * 1024 * 1024;
+// 11MB RAW, not 15. The comment above has always said attachments carry ~33%
+// base64 overhead and the number underneath it has always ignored that, so a
+// "15MB" budget shipped ~20MB on the wire: the 2026-09-11 batch was measured at
+// 17.8MB and 16.9MB in the delivered copies. GHL's own ceiling is 25MB, but a
+// 10MB cap is ordinary at a corporate mail gateway, and a funder silently
+// dropping our email is indistinguishable from a funder ignoring us. 11MB raw
+// is ~14.7MB encoded, which clears both.
+const MAX_ATTACH_BYTES = 11 * 1024 * 1024;
+/** What `MAX_ATTACH_BYTES` of raw files becomes once base64'd — the number the
+ *  recipient's gateway actually measures. Recorded in sent_payload so a
+ *  link-only fallback can be explained without re-deriving the arithmetic. */
+const BASE64_RATIO = 4 / 3;
 const MAX_ATTACH_COUNT = 15;
 
 /** Resolve an attachment URL's true byte size before counting it against the
@@ -651,6 +662,65 @@ Deno.serve(async (req) => {
     (lenders ?? []).map((l) => [l.id as string, l as Record<string, unknown>]),
   );
 
+  // ── OPEN STANDING INSTRUCTIONS FROM THESE FUNDERS ─────────────────────────
+  //
+  // This is the guard at the point of harm. On 2026-09-17 Uplyft told us in
+  // writing to stop using underwriting@uplyftcapital.com; on 2026-09-29
+  // MF-2026-0366 and MF-2026-0385 both went there anyway and got silence. The
+  // instruction existed in the database the whole time. Nothing read it HERE,
+  // which is the only place that could have stopped the send.
+  //
+  // ⚠️ AN UNREADABLE CHECK IS NOT A PASSED CHECK. If this read fails we do not
+  // quietly proceed as though the funder had nothing on file — that is the
+  // precise failure shape being fixed. `directivesUnreadable` carries the
+  // error through to the preview and the result so a human is told the guard
+  // did not run, rather than being shown its silence as an all-clear.
+  type OpenDirective = {
+    id: string; lender_id: string; kind: string; summary: string;
+    retired_email: string | null; new_email: string | null;
+    evidence_quote: string; received_at: string | null; from_email: string | null;
+  };
+  const { data: directiveRows, error: directiveErr } = await db
+    .from("funder_directives")
+    .select("id, lender_id, kind, summary, retired_email, new_email, evidence_quote, received_at, from_email")
+    .eq("status", "open")
+    .in("lender_id", lenderIds)
+    .order("received_at", { ascending: false });
+  const directivesUnreadable = directiveErr?.message ?? null;
+  const directivesByLender = new Map<string, OpenDirective[]>();
+  for (const d of (directiveRows ?? []) as OpenDirective[]) {
+    const list = directivesByLender.get(d.lender_id) ?? [];
+    list.push(d);
+    directivesByLender.set(d.lender_id, list);
+  }
+
+  /**
+   * HARD BLOCK vs WARN — and the line between them is "can we PROVE it".
+   *
+   * BLOCK only when the resolved destination is an address an open directive
+   * says in the funder's own words to stop using. That is not a judgement call:
+   * the funder wrote "stop sending submissions to X", we are about to send to
+   * exactly X, and the submission was going to a dead inbox either way. The
+   * cost of a wrong block is one dismissal click by an admin; the cost of a
+   * wrong send is a deal that sits silent for twelve days.
+   *
+   * WARN, never block, for everything else — portal-only, new required docs, a
+   * changed contact, or an address change whose destination we could not read.
+   * Those need a human to interpret, and a hard block on an interpretation
+   * stops real deals going out on a detection we cannot verify. The processor
+   * sees the funder's quote in the preview, next to the To line, before arming
+   * the send.
+   */
+  function directiveBlockFor(lenderId: string, to: string): OpenDirective | null {
+    const addr = (to ?? "").trim().toLowerCase();
+    if (!addr) return null;
+    for (const d of directivesByLender.get(lenderId) ?? []) {
+      if (d.kind !== "submission_email_change") continue;
+      if (d.retired_email && d.retired_email.trim().toLowerCase() === addr) return d;
+    }
+    return null;
+  }
+
   // GHL is the email transport. Load creds once.
   let cfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
   let ghlError: string | undefined;
@@ -848,6 +918,12 @@ Deno.serve(async (req) => {
     sentPayload: Record<string, unknown>;
     docsWarning?: string;
     blocked?: string[]; blockedLabels?: string[];
+    /** Every OPEN standing instruction on file for this funder (warn-level). */
+    directives: OpenDirective[];
+    /** Set when `to` is an address a directive says to stop using — HARD BLOCK. */
+    directiveBlock: OpenDirective | null;
+    /** Non-null when the directive check could not be RUN. Not an all-clear. */
+    directivesUnreadable: string | null;
   }
 
   async function renderForLender(lenderId: string): Promise<Rendered> {
@@ -859,6 +935,12 @@ Deno.serve(async (req) => {
     const to = recipe?.to_email || (lender.submission_email as string) || "";
     // Effective CC the funder actually gets — recipe CC plus the always-on owner.
     const cc = Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC]));
+
+    // Standing instructions resolved BEFORE the stips gate, so a funder with a
+    // dead inbox still reports it even when the package is also short a doc.
+    // Two separate reasons not to send must not hide each other.
+    const directives = directivesByLender.get(lenderId) ?? [];
+    const directiveBlock = directiveBlockFor(lenderId, to);
 
     // --- Stips guard: every required stip must be on file before we send.
     // voided_check NEVER blocks (a bank-portal screenshot satisfies it) — mirrors
@@ -876,6 +958,7 @@ Deno.serve(async (req) => {
         subject: "", bodyText: "", bodyHtml: "",
         docs: [], attachmentUrls: [], attachedNames: [], docLinkLines: [],
         sentPayload: {}, blocked: missing, blockedLabels: missing.map(docLabel),
+        directives, directiveBlock, directivesUnreadable,
       };
     }
 
@@ -913,6 +996,11 @@ Deno.serve(async (req) => {
     const collapsedDuplicates: Array<Record<string, unknown>> = [];
     const sameNameKept: Array<Record<string, unknown>> = [];
     const unnormalizedNames: string[] = [];
+    // Documents whose type neither the stored MIME nor the original name
+    // revealed, so the outbound name carries NO extension. Named out loud rather
+    // than guessed at — a part that claims .pdf and is not one is worse at a
+    // gateway than a part with no suffix.
+    const unknownTypeNames: string[] = [];
     const usedOutboundNames = new Set<string>();
     const hashBudget: HashBudget = { files: 0, bytes: 0 };
     const dealNo = (deal as Record<string, unknown>).deal_number as string | null;
@@ -994,15 +1082,32 @@ Deno.serve(async (req) => {
     const keptApp = appCands.filter((cand) => !droppedAppIds.has(cand.d.id));
 
     // ---- STEP 3: the app-side attachments, under FUNDER-SAFE names ----
-    // The merchant's own filename never reaches the MIME header. On MF-2026-0385
-    // the merchant used emoji and GHL stored the name double-mojibake'd, so the
-    // funder's gateway was handed bytes like "Ã°ÂÂÂNEW Ã¢ÂÂCHASE SEPT 2026.pdf"
-    // in a Content-Disposition — an ordinary cause of quarantine or silent
-    // stripping, and a funder reported receiving nothing on 2026-10-01. Supabase
-    // storage honours `download=<name>`, which sets
-    // `Content-Disposition: attachment; filename=...; filename*=UTF-8''...`, so we
-    // name every attachment after what the document IS and keep the merchant's
-    // name in sent_payload where it belongs.
+    // `attachments` on GHL's send is an array of URL STRINGS — every example in
+    // their API docs, no object-with-a-name shape exists — so GHL fetches each
+    // URL and names the MIME part from the HTTP response. `attachedNames` below
+    // is therefore NOT what the funder sees; it only ever fed the body footer.
+    //
+    // What the funder actually saw, from the raw MIME of the MF-2026-0366
+    // delivery to submissions@highlandhillcap.com (2026-09-29), is worse than a
+    // bad name:
+    //   Content-Disposition: attachment; filename="attached file"        x4
+    //   Content-Disposition: attachment; filename="June statement 2026"  x3
+    // Four parts named identically, and not one with an extension. Our signed
+    // URLs served no Content-Disposition at all, so GHL fell back to "attached
+    // file"; the leadconnector URLs served `inline; filename="…2026.pdf"` and GHL
+    // propagated the stem without the suffix.
+    //
+    // Supabase honours `download=<name>`, which makes the signed URL answer
+    // `Content-Disposition: attachment; filename=…; filename*=UTF-8''…` — the one
+    // lever we have on the name, verified live against this bucket. So every
+    // attachment we host is named for what the document IS, and the merchant's
+    // own name stays in sent_payload where an audit trail belongs.
+    //
+    // NOT YET ESTABLISHED: whether GHL preserves the extension from an
+    // `attachment` disposition, given it dropped one from an `inline` disposition.
+    // If it strips regardless, these names arrive descriptive but extensionless —
+    // still strictly better than four identical "attached file" parts, and still
+    // short of safe. It takes one self-addressed send to read off the wire.
     let appLinkCount = 0; // app-side signed-application copies actually linked
     // A sequence suffix only earns its place when there is something to
     // disambiguate — "MF-2026-0366_Signed_Application.pdf", not "..._01.pdf".
@@ -1027,6 +1132,7 @@ Deno.serve(async (req) => {
       const label = `${docLabel(slug)} (${outName})`;
       docLinkLines.push(`${label} — ${url}`);
       docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
+      if (!/\.[A-Za-z0-9]{1,5}$/.test(outName)) unknownTypeNames.push(outName);
       const attached = await tryAttach(url, outName, cand.size);
       docs.push({ label: docLabel(slug), filename: outName, delivery: attached ? "attached" : "link" });
       attachmentLedger.push({
@@ -1136,6 +1242,12 @@ Deno.serve(async (req) => {
         `Import the GHL uploads to give them clean funder-facing names.`;
       docsWarning = docsWarning ? `${docsWarning} ${note}` : note;
     }
+    if (unknownTypeNames.length) {
+      const note = `${unknownTypeNames.length} attachment${unknownTypeNames.length === 1 ? "" : "s"} ` +
+        `ha${unknownTypeNames.length === 1 ? "s" : "ve"} no file extension — we don't know the file type ` +
+        `(no stored MIME type, nothing in the original name) and won't guess one: ${unknownTypeNames.join(", ")}.`;
+      docsWarning = docsWarning ? `${docsWarning} ${note}` : note;
+    }
     const wantsApp = attachSlugs.some((s) => s === "application" || s === "signed_application");
     if (wantsApp && appLinkCount === 0) {
       docLinkLines.push("Signed application: attached separately / available on request");
@@ -1187,11 +1299,15 @@ Deno.serve(async (req) => {
       // every one of them, plus — when GHL had stored it mojibake'd — the exact
       // corrupt string as it still sits in customer_documents.
       attachmentLedger,
+      // The number the RECIPIENT's gateway measures, not the one we budgeted.
+      attachedBytesRaw: attachBytes,
+      attachedBytesEncoded: Math.ceil(attachBytes * BASE64_RATIO),
       // Evidence for every document that did NOT ride, so a count that looks
       // short can always be explained without re-deriving it.
       ...(collapsedDuplicates.length ? { collapsedDuplicates } : {}),
       ...(sameNameKept.length ? { sameNameKept } : {}),
       ...(unnormalizedNames.length ? { unnormalizedAttachmentNames: unnormalizedNames } : {}),
+      ...(unknownTypeNames.length ? { unknownTypeAttachments: unknownTypeNames } : {}),
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
       ...(waivedMissing.length ? { stipOverridden: waivedMissing } : {}),
     };
@@ -1200,6 +1316,7 @@ Deno.serve(async (req) => {
       lenderId, name, method, recipe, isPortalOnly, to, cc,
       subject, bodyText, bodyHtml, docs, attachmentUrls, attachedNames,
       docLinkLines, sentPayload, docsWarning,
+      directives, directiveBlock, directivesUnreadable,
     };
   }
 
@@ -1218,8 +1335,19 @@ Deno.serve(async (req) => {
     const previews: Array<Record<string, unknown>> = [];
     for (const lenderId of lenderIds) {
       const R = await renderForLender(lenderId);
+      // The directive fields ride on BOTH preview shapes. A funder that is
+      // short a stip AND has a dead inbox has two independent reasons not to
+      // send, and the first must not hide the second.
+      const directiveFields = {
+        directives: R.directives,
+        directiveBlock: R.directiveBlock,
+        directivesUnreadable: R.directivesUnreadable,
+      };
       if (R.blocked) {
-        previews.push({ lenderId: R.lenderId, name: R.name, method: R.method, blocked: R.blocked, blockedLabels: R.blockedLabels });
+        previews.push({
+          lenderId: R.lenderId, name: R.name, method: R.method,
+          blocked: R.blocked, blockedLabels: R.blockedLabels, ...directiveFields,
+        });
         continue;
       }
       previews.push({
@@ -1228,9 +1356,10 @@ Deno.serve(async (req) => {
         to: R.to, cc: R.cc, subject: R.subject, body: R.bodyText,
         docs: R.docs, docsWarning: R.docsWarning,
         portal: (R.isPortalOnly || R.method === "email_and_portal") ? portalInfoOf(R) : undefined,
+        ...directiveFields,
       });
     }
-    return json({ ok: true, preview: true, dealId, previews });
+    return json({ ok: true, preview: true, dealId, previews, directivesUnreadable });
   }
 
   // HARD GATE (send only): the signed application must be ON FILE (app-side) so
@@ -1281,6 +1410,43 @@ Deno.serve(async (req) => {
       results.push({ lenderId, name, method, status: "blocked", blocked: R.blocked, blockedLabels: R.blockedLabels });
       continue;
     }
+
+    // ── THE GUARD AT THE POINT OF HARM ───────────────────────────────────────
+    //
+    // The funder told us in writing to stop using this exact inbox and we are
+    // about to use it. Refuse, and say so in the funder's own words.
+    //
+    // This blocks on a PROVABLE contradiction only — `to` equal to an address
+    // an open directive names as retired. It is not a judgement call and the
+    // email was going to a dead mailbox either way, so the block costs nothing
+    // a wrong send would not have cost more. Every other open directive is a
+    // warning the processor saw in the preview, not a block: stopping a real
+    // deal on a detection we cannot verify is the worse failure.
+    //
+    // Checked server-side as well as rendered client-side on purpose. The
+    // preview banner is what a human reads; this is what holds when somebody
+    // calls the function directly or clicks Send without previewing.
+    if (R.directiveBlock) {
+      const d = R.directiveBlock;
+      results.push({
+        lenderId, name, method, status: "blocked_directive",
+        to: R.to,
+        directive: {
+          id: d.id, kind: d.kind, summary: d.summary,
+          newEmail: d.new_email, retiredEmail: d.retired_email,
+          quote: d.evidence_quote, receivedAt: d.received_at, fromEmail: d.from_email,
+        },
+        error:
+          `Not sent. ${name} asked us to stop using ${d.retired_email}` +
+          (d.received_at ? ` on ${String(d.received_at).slice(0, 10)}` : "") +
+          `, and that is still the address on this funder's recipe` +
+          (d.new_email ? `. They said to use ${d.new_email} instead` : "") +
+          `. Update the recipe, then mark the instruction applied on ` +
+          `/admin/funder-instructions. Their words: "${d.evidence_quote.slice(0, 220)}"`,
+      });
+      continue;
+    }
+
     const isPortalOnly = R.isPortalOnly;
     const to = R.to;
     const attachmentUrls = R.attachmentUrls;
@@ -1463,8 +1629,15 @@ Great news — your file for ${biz} has passed our internal review ` +
     dealId,
     total: results.length,
     sentCount: results.filter((r) => r.status === "sent").length,
+    blockedByDirective: results.filter((r) => r.status === "blocked_directive").length,
     via: "ghl",
-    warning: ghlError
+    // An unreadable directive check is reported as its own warning and is NOT
+    // folded into "nothing on file". The guard either ran or it did not, and a
+    // send that happened without it must say so.
+    directivesUnreadable,
+    warning: directivesUnreadable
+      ? `⚠ The funder-instruction check could not run (${directivesUnreadable}). These funders may have asked us to change where submissions go, and nothing verified it before sending.`
+      : ghlError
       ? `GHL credentials unavailable (${ghlError}) — funders were NOT emailed; submissions are recorded.`
       : anySent ? undefined : "No funder emails were sent — check each funder's recipe / submission email.",
     results,
