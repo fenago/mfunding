@@ -107,6 +107,8 @@ Deno.serve(async (req) => {
   let scanned = 0;
   let flagged = 0;
   let written = 0;
+  /** Replies whose rows were written but could not be counted back. */
+  let uncounted = 0;
   const failures: Array<{ replyId: string; error: string }> = [];
   const found: Array<{ replyId: string; lenderId: string; kinds: string[]; subject: string | null }> = [];
 
@@ -125,7 +127,9 @@ Deno.serve(async (req) => {
     if (res.error) failures.push({ replyId: r.id as string, error: res.error });
     if (res.kinds.length) {
       flagged++;
-      written += res.written;
+      // null = the read-back failed. Adding 0 would quietly understate the
+      // total and make a failed verification look like an absent row.
+      if (res.written === null) uncounted++; else written += res.written;
       found.push({
         replyId: r.id as string,
         lenderId: r.lender_id as string,
@@ -144,7 +148,11 @@ Deno.serve(async (req) => {
     ok: failures.length === 0,
     scanned,
     repliesWithADirective: flagged,
-    rowsWritten: written,
+    // Rows VERIFIED on file by a read-back, not what the upsert claimed it
+    // wrote — `.upsert(ignoreDuplicates).select()` returns [] even on insert,
+    // which made the first backfill report 0 while writing 7.
+    rowsOnFile: written,
+    repliesWhoseRowsCouldNotBeCounted: uncounted,
     // null, not 0 — "we could not count" is a different fact from "none open".
     openDirectives: countErr ? null : (openCount ?? 0),
     openDirectivesError: countErr?.message ?? null,

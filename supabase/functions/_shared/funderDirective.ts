@@ -471,7 +471,13 @@ export interface RecordDirectivesOpts {
 
 export interface RecordDirectivesResult {
   kinds: DirectiveKind[];
-  written: number;
+  /**
+   * How many rows are ON FILE for this reply afterwards, read back from the
+   * table — NOT what the upsert claimed. `null` means the read-back itself
+   * failed, which is a different fact from zero. See the long note at the
+   * read-back for why this is not taken from the write's own return value.
+   */
+  written: number | null;
   error: string | null;
 }
 
@@ -546,18 +552,43 @@ export async function recordDirectives(
     if (rows.length === 0) return { kinds: found.map((d) => d.kind), written: 0, error: null };
   }
 
-  const { data, error } = await db
+  const { error } = await db
     .from("funder_directives")
-    .upsert(rows, { onConflict: "funder_reply_id,kind", ignoreDuplicates: true })
-    .select("id, kind");
+    .upsert(rows, { onConflict: "funder_reply_id,kind", ignoreDuplicates: true });
 
   if (error) {
     await noteFailure(db, o, error.message);
     return { kinds: found.map((d) => d.kind), written: 0, error: error.message };
   }
+
+  // READ BACK WHAT ACTUALLY EXISTS, rather than trusting what the write said.
+  //
+  // `.upsert(..., { ignoreDuplicates: true }).select()` returns an EMPTY array
+  // even when it inserted — PostgREST's ON CONFLICT DO NOTHING path returns no
+  // representation. The first live backfill therefore reported
+  // `repliesWithADirective: 4, rowsWritten: 0` while writing all 7 rows, so the
+  // one number a reader would check said nothing had been recorded. Counting
+  // the write's own claim is how "nothing happened" and "we did not look" end
+  // up indistinguishable, which is the entire defect this module exists for.
+  //
+  // `onFile` is therefore the number of rows that are THERE, verified by a
+  // separate read, not the number the upsert believed it wrote. `null` means
+  // the read-back failed — never 0, which would assert they are absent.
+  const { data: back, error: backErr } = await db
+    .from("funder_directives")
+    .select("id")
+    .eq("funder_reply_id", o.funderReplyId)
+    .in("kind", rows.map((r) => r.kind));
+  if (backErr) {
+    return {
+      kinds: found.map((d) => d.kind),
+      written: null,
+      error: `written, but the read-back failed so the count is unknown: ${backErr.message}`,
+    };
+  }
   return {
     kinds: found.map((d) => d.kind),
-    written: (data ?? []).length,
+    written: (back ?? []).length,
     error: null,
   };
 }
