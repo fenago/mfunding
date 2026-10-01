@@ -37,6 +37,7 @@ import {
   ModelCapabilityError,
 } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
+import { tallyPadding } from "../_shared/paddingPolicy.ts";
 import { getPlaidSettings } from "../_shared/plaid.ts";
 import { loadMerchantIdentity } from "../_shared/merchantIdentity.ts";
 import { BANK_STATEMENTS_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
@@ -180,6 +181,15 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // Guards against a negative or non-finite input returning something nonsensical.
 const floorTo1k = (n: number): number =>
   Number.isFinite(n) && n > 0 ? Math.floor(n / 1000) * 1000 : 0;
+// SUPPRESSION-SAFE sibling of floorTo1k, and the one to use for any figure that is
+// allowed to be WITHHELD. floorTo1k returns 0 for null/NaN, which is right for a
+// genuine zero but catastrophic for a suppressed one: a revenue figure we decided
+// not to state would reach a funder as "$0", and "$0 worst month" reads as a dead
+// merchant rather than as a missing number. The paragraph prompt already says to
+// say nothing about a null field, so null is the only safe way to withhold. Never
+// swap one of these for the other — that is the whole bug they exist to prevent.
+const floorTo1kOrNull = (n: number | null | undefined): number | null =>
+  n == null || !Number.isFinite(n) ? null : floorTo1k(n);
 
 // US state name → USPS code. Funder criteria record restricted states as free-ish
 // text ("CA", "HI (not currently funding)", "Canada (non-US)") and the merchant
@@ -367,7 +377,13 @@ function extractionSystem(enabledCategories: string[]): string {
     "Padding categories mean: zelle/venmo/cashapp = peer-to-peer app transfers in; paypal_personal = " +
     "personal (non-merchant) PayPal transfers; internal_transfer = transfer between the owner's own " +
     "accounts; owner_deposit = owner capital injection / personal money in; reversal = a returned/reversed " +
-    "debit credited back; round_number = suspiciously round large deposits inconsistent with sales; " +
+    "debit credited back; round_number = a suspiciously round large deposit with NO identifiable payer — " +
+    "this category is REVIEW-ONLY and is never deducted from revenue, so do NOT use it for a deposit whose " +
+    "descriptor names a third-party business, and NEVER for an incoming WIRE from a named company: a round " +
+    "$24,000 wire from an oil-and-gas consulting firm into a drilling-fluids company is a customer paying an " +
+    "invoice, which is exactly what revenue looks like. A round amount by itself is not evidence. " +
+    "If a deposit already belongs in another category, use THAT one and do not also list it as round_number — " +
+    "list each credit ONCE. " +
     "same_day_in_out = money deposited and withdrawn same day (wash). If a category is NOT in the enabled " +
     "list, do NOT treat that type as padding. " +
     "SEPARATELY from padding, list QUESTIONABLE deposits: recurring third-party PAYROLL deposits paid to the " +
@@ -1084,6 +1100,17 @@ Deno.serve(async (req) => {
               // 16k so a busy month's deposits + AGGREGATED debits never truncate the
               // tool JSON (per-date debit listing once truncated July's mca_debits to
               // empty; aggregation + headroom fixes it).
+              //
+              // ⚠️ `temperature: 0` IS NOT SENT and never has been. Both models this
+              // task has ever been configured with (claude-opus-5 now, claude-sonnet-5
+              // before) match anthropicOmitsTemperature() in _shared/llm.ts, which
+              // STRIPS the parameter because those models 400 on it outright. So this
+              // call runs at the API default and extraction is NOT deterministic —
+              // do not read this line as a reproducibility guarantee and go looking
+              // elsewhere for the variance. It is left in deliberately: it is correct
+              // intent, and llm.ts will start honouring it the day a configured model
+              // accepts the parameter again. Reproducibility has to come from caching
+              // the per-byte-set extraction or from deciding in code, not from here.
               system: exSystem, maxTokens: 16384, temperature: 0, jsonMode: true,
               tools: [EXTRACTION_TOOL],
               toolChoice: { type: "tool", name: "report_statement" },
@@ -1390,7 +1417,14 @@ Deno.serve(async (req) => {
     // as true revenue by default but are a judgment call (see owner_payroll_treatment).
     const perMonthQuestionable: number[] = [];
     const perMonthNet: number[] = [];
+    // Months where padding came out ABOVE deposits — arithmetically impossible, so
+    // proof the classification is wrong. Excluded from every funder-facing figure.
+    const perMonthRevenueAnomalous: boolean[] = [];
+    // Padding money that is REPORTED but never deducted (round_number). Kept
+    // separate so the panel can still show it without it moving revenue.
+    const perMonthPaddingFlaggedOnly: number[] = [];
     const paddingByCategory: Record<string, number> = {};
+    const paddingFlaggedByCategory: Record<string, number> = {};
     const questionableBySource: Record<string, number> = {};
     let nsfTotal = 0;
     let negativeDays = 0;
@@ -1403,11 +1437,18 @@ Deno.serve(async (req) => {
 
     for (const s of analyzed) {
       const reported = numOr0(s.total_deposits);
-      const padding = (s.padding_deposits ?? []).reduce((sum, p) => {
-        const amt = Math.abs(numOr0(p.amount));
-        if (p.category) paddingByCategory[p.category] = (paddingByCategory[p.category] ?? 0) + amt;
-        return sum + amt;
-      }, 0);
+      // Deterministic padding policy: collapse duplicate (date, amount) entries and
+      // split the money into what may be DEDUCTED vs what is only FLAGGED. See
+      // tallyPadding — the raw-array sum this replaced double-subtracted a $40,000
+      // deposit that the model had filed under two categories at once.
+      const padTally = tallyPadding(s.padding_deposits);
+      const padding = padTally.deducted;
+      for (const [c, v] of Object.entries(padTally.deductedByCategory)) {
+        paddingByCategory[c] = (paddingByCategory[c] ?? 0) + v;
+      }
+      for (const [c, v] of Object.entries(padTally.flaggedByCategory)) {
+        paddingFlaggedByCategory[c] = (paddingFlaggedByCategory[c] ?? 0) + v;
+      }
       const questionable = (s.questionable_deposits ?? []).reduce((sum, q) => {
         const amt = Math.abs(numOr0(q.amount));
         // Collapse case/whitespace variants of the same payer (e.g. "Your Health
@@ -1420,9 +1461,23 @@ Deno.serve(async (req) => {
       // "net" (true revenue) = deposits − padding. Questionable owner-payroll is NOT
       // padding, so by default it stays IN net (the 'count' / 'flag_and_discount'
       // behavior). It is subtracted below only when treatment == 'exclude'.
-      const net = Math.max(0, reported - padding);
+      //
+      // REFUSE, DON'T CLAMP. `Math.max(0, …)` alone used to turn an IMPOSSIBLE state
+      // into a plausible number: padding is drawn FROM the deposits, so it cannot
+      // exceed them, and a negative here is proof-grade evidence that the month's
+      // classification is wrong — not evidence of a lean month. One run stripped
+      // $98,770.19 out of a May holding $81,051.23, the clamp made it $0, and the
+      // funder paragraph then asserted "one month on the statements shows zero
+      // revenue" about a month the merchant banked $81K in. The clamp stays (the
+      // internal series must not go negative) but the month is now MARKED, reported
+      // as a critical data-quality flag, and excluded from every funder-facing figure.
+      const rawNet = reported - padding;
+      const revenueAnomalous = rawNet < -0.01;
+      const net = Math.max(0, rawNet);
+      perMonthRevenueAnomalous.push(revenueAnomalous);
       perMonthReported.push(reported);
       perMonthPadding.push(padding);
+      perMonthPaddingFlaggedOnly.push(padTally.flaggedOnly);
       perMonthQuestionable.push(questionable);
       perMonthNet.push(net);
       nsfTotal += numOr0(s.nsf_count);
@@ -1433,8 +1488,25 @@ Deno.serve(async (req) => {
 
       // Per-month row.
       const label = s.month ?? s._filename ?? "a statement";
+      // Both of these are LOUD on purpose: each one is a defect we can prove from
+      // the arithmetic, and the whole lesson of the clamp is that a guard which
+      // makes an impossible value look possible is worse than the crash it prevents.
+      if (padTally.duplicatesCollapsed > 0) {
+        dataQualityIssues.push(
+          `${label}: ${padTally.duplicatesCollapsed} padding item(s) were listed twice for the same date and amount ` +
+          `(${money(padTally.duplicateDollars)} would have been subtracted twice) — collapsed to one`,
+        );
+      }
+      if (revenueAnomalous) {
+        dataQualityIssues.push(
+          `${label}: padding (${money(padding)}) EXCEEDS deposits (${money(reported)}) by ${money(-rawNet)} — ` +
+          `impossible, so this month's padding classification is wrong; month excluded from verified revenue`,
+        );
+      }
       const listedDeposits = s.deposits?.length ?? 0;
-      const paddingItems = s.padding_deposits?.length ?? 0;
+      // DEDUCTED items only: a flag-only item (round_number) never left the deposit
+      // count, and a collapsed duplicate was never two credits to begin with.
+      const paddingItems = padTally.deductedItemCount;
       // TOTAL credit count from the model. Repair when it's missing or implausibly
       // zero while deposits clearly exist — fall back to the listed-deposit count
       // and record a data-quality note (never silently store a 0).
@@ -2038,7 +2110,11 @@ Deno.serve(async (req) => {
 
     const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
     const reportedAvgMonthlyRevenue = round2(avg(perMonthReported));
+    // paddingTotal is now DEDUCTED padding only. Money that was classified as
+    // padding but is not allowed to move revenue is reported separately so it stays
+    // visible without being silently folded back into a deduction.
     const paddingTotal = round2(perMonthPadding.reduce((a, b) => a + b, 0));
+    const paddingFlaggedNotDeducted = round2(perMonthPaddingFlaggedOnly.reduce((a, b) => a + b, 0));
 
     // Owner-payroll ("questionable") treatment. 'count'/'flag_and_discount' leave it
     // IN true revenue; 'exclude' removes it. The conservative figure (revenue if the
@@ -2083,6 +2159,41 @@ Deno.serve(async (req) => {
       : trueAvgMonthlyRevenue;
     const allMonthsNetVals = [...netByMonthK.values()];
     const worstMonthRevenue = allMonthsNetVals.length ? round2(Math.min(...allMonthsNetVals)) : trueAvgMonthlyRevenue;
+
+    // ── FUNDER-FACING REVENUE: TRUSTED MONTHS ONLY ─────────────────────────────
+    // A month whose padding exceeded its deposits has been PROVEN misclassified, so
+    // it is not evidence about revenue in either direction. The internal series
+    // above keeps every month (the panel shows the flag next to it), but nothing a
+    // funder reads may rest on a month we have just disproved.
+    //
+    // These are deliberately `number | null`, never a 0 fallback: a suppressed
+    // figure that renders as $0 is the exact failure this is here to prevent, and a
+    // "$0 worst month" is a sentence that kills a fundable merchant's file.
+    const anomalousMonthCount = perMonthRevenueAnomalous.filter(Boolean).length;
+    const trustedNet = effPerMonthNet.filter((_, i) => !perMonthRevenueAnomalous[i]);
+    // Every month tripped → there is nothing honest to say about revenue. Emit NO
+    // funder-facing figure rather than an average over months we misclassified.
+    const verifiedRevenueReportable = trustedNet.length > 0;
+    const verifiedAvgMonthlyRevenueForFunder = verifiedRevenueReportable
+      ? round2(avg(trustedNet))
+      : null;
+    // Worst month, over trusted months only.
+    const netByMonthKTrusted = new Map<number, number>();
+    analyzed.forEach((s, i) => {
+      if (perMonthRevenueAnomalous[i]) return;
+      const t = Date.parse(`1 ${String(s.month ?? "").trim()}`);
+      if (Number.isNaN(t)) return;
+      const mk = new Date(t).getUTCFullYear() * 12 + new Date(t).getUTCMonth();
+      netByMonthKTrusted.set(mk, (netByMonthKTrusted.get(mk) ?? 0) + (effPerMonthNet[i] ?? 0));
+    });
+    const trustedMonthNetVals = [...netByMonthKTrusted.values()];
+    const worstMonthRevenueForFunder = verifiedRevenueReportable && trustedMonthNetVals.length
+      ? round2(Math.min(...trustedMonthNetVals))
+      : null;
+    // Normal-season rests on the SAME contaminated series, so suppress it outright
+    // the moment any month is anomalous rather than trying to repair it.
+    const normalSeasonAvgMonthlyRevenueForFunder =
+      verifiedRevenueReportable && anomalousMonthCount === 0 ? normalSeasonAvgMonthlyRevenue : null;
 
     // ── REFI / CONSOLIDATION FEASIBILITY ──
     // Roll the estimated outstanding MCA balance (mid-case) into one longer-term
@@ -2148,6 +2259,21 @@ Deno.serve(async (req) => {
 
     // Revenue trend across the analyzed months (first vs last third).
     const revenueTrend = trendOf(effPerMonthNet);
+
+    // ── TREND IS A CLAIM, AND A CLAIM NEEDS ENOUGH MONTHS TO BE ONE ────────────
+    // trendOf compares the first third against the last third, so at 4 months
+    // `third` is 1 and the "trend" is ONE month against ONE month inside a ±10%
+    // band. On MF-2026-0442 that flipped on identical statements twenty minutes
+    // apart — one run's paragraph said "an upward revenue trend", the next said
+    // "revenue is trending down". A direction nobody double-checks is the easiest
+    // kind of wrong to ship, so it is withheld unless each side averages at least
+    // two months AND no month is anomalous. The INTERNAL revenueTrend above is
+    // unchanged — flags and risk scoring still use it.
+    const TREND_MIN_MONTHS_FOR_FUNDER = 6;
+    const revenueTrendForFunder =
+      anomalousMonthCount === 0 && effPerMonthNet.length >= TREND_MIN_MONTHS_FOR_FUNDER
+        ? revenueTrend
+        : null;
 
     // Deposit concentration — largest single sales deposit vs total deposits
     // (a proxy for one-customer dependency). Computed across all analyzed months.
@@ -2661,6 +2787,17 @@ Deno.serve(async (req) => {
       padding_by_category: Object.fromEntries(
         Object.entries(paddingByCategory).map(([k, v]) => [k, round2(v)]),
       ),
+      // ADDITIVE (null-guard in the UI; older persisted rows won't have these).
+      // Padding that was identified but deliberately NOT deducted — round_number.
+      padding_flagged_not_deducted: paddingFlaggedNotDeducted,
+      padding_flagged_by_category: Object.fromEntries(
+        Object.entries(paddingFlaggedByCategory).map(([k, v]) => [k, round2(v)]),
+      ),
+      // Months proven misclassified (padding > deposits) and therefore excluded
+      // from the funder-facing revenue, plus whether ANY figure survived.
+      anomalous_month_count: anomalousMonthCount,
+      verified_revenue_reportable: verifiedRevenueReportable,
+      verified_avg_monthly_revenue_trusted: verifiedAvgMonthlyRevenueForFunder,
       // Owner-payroll ("questionable") income — the base-vs-conservative sensitivity.
       owner_payroll_treatment: ownerPayrollTreatment,
       questionable_revenue_total: questionableTotal,
@@ -2907,6 +3044,34 @@ Deno.serve(async (req) => {
         code: "data_quality",
         severity: "warn",
         message: `Per-month data repaired on ${dataQualityIssues.length} field(s): ${dataQualityIssues.join("; ")}.`,
+      });
+    }
+    // A month whose padding exceeded its deposits is a DETECTED BUG, not a lean
+    // month, and it must never read as a quiet footnote: critical severity, and it
+    // says plainly that the figure is understated rather than that the merchant is weak.
+    if (anomalousMonthCount > 0) {
+      flags.push({
+        code: "padding_exceeds_deposits",
+        severity: "critical",
+        message:
+          `${anomalousMonthCount} month(s) classified MORE padding than the month had deposits — impossible, so ` +
+          `the padding classification for those months is wrong and true revenue is UNDERSTATED, not low. ` +
+          (verifiedRevenueReportable
+            ? `Those month(s) are excluded from the verified revenue sent to a funder.`
+            : `EVERY month is affected, so no verified revenue figure is being sent to a funder at all.`) +
+          ` Re-run, and read padding_by_category before quoting any revenue figure.`,
+      });
+    }
+    // Round-number deposits are shown but never deducted. Say so explicitly, so
+    // nobody re-adds the deduction believing the money was simply missed.
+    if (paddingFlaggedNotDeducted > 0) {
+      flags.push({
+        code: "round_number_deposits_flagged",
+        severity: "info",
+        message:
+          `${money(paddingFlaggedNotDeducted)} of round-number deposits were flagged for review but NOT deducted ` +
+          `from revenue (a round amount is not evidence of non-revenue — this category has stripped genuine ` +
+          `customer wires). Review them if the deposit mix looks wrong; do not treat them as padding.`,
       });
     }
     if (swapNotes.length > 0) {
@@ -4348,9 +4513,27 @@ Deno.serve(async (req) => {
       // observed live, a $39,766 low silently becoming $45,211. Only the single jsonb
       // field is selected (not the whole metrics blob) so this stays a few bytes per
       // row rather than an egress problem.
+      // POISONED PRIORS ARE EXCLUDED. A floor built from "the lowest figure we ever
+      // published" latches onto our worst bug and keeps it forever: for MF-2026-0442
+      // the pool held $40,121.31 (a $24,000 customer wire stripped as round_number)
+      // and $39,766.06 (a month whose padding exceeded its own deposits — arithmetically
+      // impossible). Quoting $39,000 for that merchant on every future submission is
+      // safe in direction and wrong in magnitude by ~$7,000/mo, which costs him
+      // approval size forever. So a run that FAILED its own anomaly check is not
+      // evidence about this merchant and does not get a vote.
+      //
+      // Prefer the trusted-months average when the row has one; fall back to the old
+      // field for rows written before that existed. Both read as text via ->> and are
+      // parsed defensively, because a missing key must arrive as null, never as 0.
       const { data: priorRuns, error: priorErr } = await db
         .from("deal_underwriting")
-        .select("version, rev:metrics->>true_avg_monthly_revenue")
+        .select(
+          "version," +
+          "rev:metrics->>true_avg_monthly_revenue," +
+          "trusted:metrics->>verified_avg_monthly_revenue_trusted," +
+          "anomalous:metrics->>anomalous_month_count," +
+          "reportable:metrics->>verified_revenue_reportable",
+        )
         .eq("deal_id", dealId)
         .eq("docs_hash", docsHash)
         .order("version", { ascending: false })
@@ -4358,8 +4541,21 @@ Deno.serve(async (req) => {
       if (priorErr) {
         revenueFloorBasis = `UNREADABLE (${priorErr.message}) — using this run's figure only`;
       } else {
-        const priors = (priorRuns ?? [])
-          .map((r) => num((r as Any).rev))
+        const priorRows = (priorRuns ?? []) as Any[];
+        const totalPriors = priorRows.length;
+        // Drop any run that flagged an anomalous month or declared its own revenue
+        // unreportable. `== null` keeps PRE-FEATURE rows (the fields did not exist
+        // yet) — absence of a flag is not a failed check, and silently discarding
+        // every older run would empty the pool and disable the floor.
+        const usablePriors = priorRows.filter((r) => {
+          const anomalous = num(r.anomalous);
+          if (anomalous != null && anomalous > 0) return false;
+          if (String(r.reportable) === "false") return false;
+          return true;
+        });
+        const poisonedCount = totalPriors - usablePriors.length;
+        const priors = usablePriors
+          .map((r) => num(r.trusted) ?? num(r.rev))
           .filter((v): v is number => v != null && v > 0);
         if (priors.length === 0) {
           revenueFloorBasis = "no prior run on these same documents";
@@ -4367,9 +4563,12 @@ Deno.serve(async (req) => {
           const lowest = Math.min(trueAvgMonthlyRevenue, ...priors);
           revenueBandLow = lowest;
           revenueFloorBasis =
-            `lowest of ${priors.length + 1} run(s) on the identical document set ` +
+            `lowest of ${priors.length + 1} usable run(s) on the identical document set ` +
             `(spread ${money(Math.min(...priors, trueAvgMonthlyRevenue))}–` +
-            `${money(Math.max(...priors, trueAvgMonthlyRevenue))})`;
+            `${money(Math.max(...priors, trueAvgMonthlyRevenue))})` +
+            (poisonedCount > 0
+              ? `; ${poisonedCount} prior run(s) excluded for a failed anomaly check`
+              : "");
         }
       }
     } catch (e) {
@@ -4396,20 +4595,30 @@ Deno.serve(async (req) => {
       //
       // The low end is the CONSERVATIVE case where one exists (owner-payroll income
       // excluded), else the base figure; then floored to the nearest $1,000.
-      verified_avg_monthly_revenue_approx: floorTo1k(
-        Math.min(
-          trueAvgMonthlyRevenue,
-          conservativeAvgMonthlyRevenue > 0 ? conservativeAvgMonthlyRevenue : trueAvgMonthlyRevenue,
-          // ...and the floor of everything we have previously concluded about these
-          // same documents, so our own instability cannot overstate the merchant.
-          revenueBandLow,
+      // ...and NULL, not a smaller number, when the months behind it were proven
+      // misclassified (padding > deposits). `verifiedAvgMonthlyRevenueForFunder`
+      // averages trusted months only and is null when no month survived — in that
+      // case we state no revenue at all rather than an average over months we have
+      // just disproved. floorTo1kOrNull, never floorTo1k: the latter would publish
+      // a suppressed figure as "$0".
+      verified_avg_monthly_revenue_approx: verifiedAvgMonthlyRevenueForFunder == null
+        ? null
+        : floorTo1k(
+          Math.min(
+            verifiedAvgMonthlyRevenueForFunder,
+            conservativeAvgMonthlyRevenue > 0 ? conservativeAvgMonthlyRevenue : verifiedAvgMonthlyRevenueForFunder,
+            // ...and the floor of everything we have previously concluded about these
+            // same documents, so our own instability cannot overstate the merchant.
+            revenueBandLow,
+          ),
         ),
-      ),
       revenue_floor_basis: revenueFloorBasis,
-      normal_season_avg_monthly_revenue_approx: floorTo1k(normalSeasonAvgMonthlyRevenue),
-      worst_month_revenue_approx: floorTo1k(worstMonthRevenue),
+      normal_season_avg_monthly_revenue_approx: floorTo1kOrNull(normalSeasonAvgMonthlyRevenueForFunder),
+      worst_month_revenue_approx: floorTo1kOrNull(worstMonthRevenueForFunder),
       revenue_figures_are_approximate: true,
-      revenue_trend: revenueTrend,
+      // A DIRECTION is a claim and needs enough months to be one — null below 6
+      // months or when any month is anomalous. See revenueTrendForFunder.
+      revenue_trend: revenueTrendForFunder,
       months_of_statements: monthsCovered,
       // ── POSITION COUNT DELIBERATELY ABSENT ──────────────────────────────────
       // Removed 2026-10-01 on the owner's instruction, and it must not come back
@@ -4445,9 +4654,12 @@ Deno.serve(async (req) => {
       // Also judged, not observed: these rest on ESTIMATED outstanding balances, so
       // they are rounded too and must be spoken of as approximate.
       consolidation_viable: refi.feasible,
-      consolidation_amount_approx: refi.feasible ? floorTo1k(refi.est_outstanding_mid) : null,
+      // floorTo1kOrNull on both: these are suppressible (no viable refi, no balance),
+      // and floorTo1k would publish a withheld figure to a funder as "$0" — an
+      // "approximately $0 consolidation" is worse than saying nothing.
+      consolidation_amount_approx: refi.feasible ? floorTo1kOrNull(refi.est_outstanding_mid) : null,
       consolidation_term_months: bestRefi?.months ?? null,
-      consolidation_monthly_payment_approx: bestRefi ? floorTo1k(bestRefi.monthly_payment) : null,
+      consolidation_monthly_payment_approx: floorTo1kOrNull(bestRefi?.monthly_payment),
       // COVERAGE — so a silence can never be sold as a clean bill of health.
       months_read: monthsCovered,
       documents_unreadable: unreadableDocs,
