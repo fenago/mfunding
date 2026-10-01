@@ -35,10 +35,16 @@
 //    authority on "is there a statement" is the edge function's own 422, which
 //    already separates "we searched everywhere and found none" from "the search
 //    did not complete".
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { SparklesIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import AIUnderwritingPanel from "./AIUnderwritingPanel";
 import type { UWVerdict } from "@/hooks/useUnderwritingSummaries";
+
+// LAZY, not static. The launcher now sits on every row of the processor board and
+// the chase queue; a static import would make all of them fetch the panel's
+// ~17KB gzip (plus Recharts) on page load, for a modal most rows never open.
+// Same principle as the run itself: opening costs something, not opening costs
+// nothing. It is still the ONE panel — this is a code-split, not a fork.
+const AIUnderwritingPanel = lazy(() => import("./AIUnderwritingPanel"));
 
 /**
  * What the CALLING surface knows about this merchant's bank statements. It
@@ -235,7 +241,15 @@ export default function UnderwritingLauncher({
             </div>
             <div className="p-4">
               {/* THE one panel. Not a fork, not a compact twin. */}
-              <AIUnderwritingPanel dealId={dealId} />
+              <Suspense
+                fallback={
+                  <div className="flex items-center justify-center py-16">
+                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-mint-green" />
+                  </div>
+                }
+              >
+                <AIUnderwritingPanel dealId={dealId} />
+              </Suspense>
             </div>
           </div>
         </div>

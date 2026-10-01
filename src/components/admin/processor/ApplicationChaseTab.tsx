@@ -87,6 +87,8 @@ import LeadActionsDrawer from "@/components/admin/shared/LeadActionsDrawer";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import MerchantLinks from "@/components/admin/MerchantLinksMenu";
 import { signatureFromQueueRow, type SignatureState } from "@/lib/applicationSignature";
+import UnderwritingLauncher from "@/components/shared/UnderwritingLauncher";
+import useUnderwritingSummaries, { type UWVerdict } from "@/hooks/useUnderwritingSummaries";
 import {
   chaseVerdict,
   chaseInstruction,
@@ -235,6 +237,13 @@ export default function ApplicationChaseTab({
       };
     });
   }, [queue, history]);
+
+  // THE AI UNDERWRITER ON THE DEFAULT VIEW. This tab is what a processor lands
+  // on, so an underwriter she cannot reach from here is an underwriter she does
+  // not have. One lean batched read of prior runs (no jsonb, nothing invoked) so
+  // a row offers "View underwriting" on work already paid for.
+  const uwDealIds = useMemo(() => scored.map((s) => s.r.deal_id), [scored]);
+  const { verdictFor: uwVerdictFor, reload: reloadUnderwriting } = useUnderwritingSummaries(uwDealIds);
 
   /** Parked deals are noise on a chase board — nothing to chase on a funded or
    *  nurtured merchant — but they are hidden behind a toggle, never dropped
@@ -575,6 +584,8 @@ export default function ApplicationChaseTab({
                     nurtureArmed={nurtureArmed === s.r.deal_id}
                     onNurture={() => armOrFireNurture(s.r.deal_id)}
                     busy={rowBusy === s.r.deal_id}
+                    uwVerdict={uwVerdictFor(s.r.deal_id)}
+                    onUwClosed={reloadUnderwriting}
                   />
                 ))}
               </div>
@@ -664,6 +675,8 @@ function ChaseRowCard({
   nurtureArmed,
   onNurture,
   busy,
+  uwVerdict,
+  onUwClosed,
 }: {
   s: ScoredRow;
   now: number;
@@ -675,6 +688,10 @@ function ChaseRowCard({
   nurtureArmed: boolean;
   onNurture: () => void;
   busy: boolean;
+  /** Resolved ONCE for the whole queue and handed down, so no row fires its own
+   *  read and no two rows can disagree about whether a run exists. */
+  uwVerdict: UWVerdict;
+  onUwClosed: () => void;
 }) {
   const { r, v, signature, hist } = s;
   const meta = CHASE_BUCKETS[v.bucket];
@@ -930,6 +947,17 @@ function ChaseRowCard({
         >
           Playbook <ArrowTopRightOnSquareIcon className="w-3 h-3" />
         </Link>
+        {/* The underwriter, in the action strip. `statements` stays at its
+            default `unknown`: the application-queue row carries no document
+            count, and guessing from one store is the lie that hides the button
+            on every merchant who uploaded through the VibeReach form. */}
+        <UnderwritingLauncher
+          dealId={r.deal_id}
+          verdict={uwVerdict}
+          merchantName={merchantLabel(r)}
+          size="xs"
+          onRan={onUwClosed}
+        />
         {/* Nurture — inline two-step arm/confirm, no browser popup. */}
         <button
           type="button"
