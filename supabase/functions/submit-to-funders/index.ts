@@ -673,7 +673,15 @@ Deno.serve(async (req) => {
     .maybeSingle();
   const uwMetrics = (uwRow?.metrics ?? null) as Record<string, unknown> | null;
   const verifiedRevRaw = uwMetrics?.true_avg_monthly_revenue;
-  const verifiedRev = Number.isFinite(Number(verifiedRevRaw)) ? Number(verifiedRevRaw) : null;
+  // ⚠ `Number.isFinite(Number(x))` ACCEPTS null, because Number(null) === 0.
+  // So an explicit JSON null in metrics — "we could not determine this" — became
+  // a bank-VERIFIED revenue of $0 in a paragraph sent to a funder. (undefined is
+  // safe only by accident: Number(undefined) is NaN.) buildTokens already has the
+  // honest branch for null — "(merchant-stated, not yet bank-verified)" — it was
+  // simply unreachable. Accept a real number and nothing else.
+  const verifiedRev = typeof verifiedRevRaw === "number" && Number.isFinite(verifiedRevRaw)
+    ? verifiedRevRaw
+    : null;
 
   // IS THE NARRATIVE STILL TRUE? The Deal Overview is prose we wrote once and
   // never revisited. On MF-2026-0418 it said "no negative days" — correct
