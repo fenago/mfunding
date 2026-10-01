@@ -822,6 +822,131 @@ function Fold({
   );
 }
 
+// ── The fact set behind the submission paragraph ─────────────────────────────
+// `submission_facts` is the code-computed ground truth the writer was allowed to
+// use — the migration's words: "so a human can verify the paragraph invented
+// nothing. Code computes ground truth; the model only phrases it." It was being
+// stored and never shown, which leaves the check un-runnable: a closer is about
+// to paste model-written prose to a funder with no way to confirm a figure in it.
+//
+// TWO RULES THIS RENDERER KEEPS.
+//
+// ① UNKNOWN KEYS STILL RENDER. The labels below are a presentation nicety, not a
+//    whitelist: anything not in the map prints humanised with its raw value. A
+//    renderer that showed only the keys it recognised would silently drop a new
+//    fact the model HAD been given, and the one thing this panel exists to do is
+//    make the paragraph checkable. New facts appear unstyled rather than not at all.
+//
+// ② `documents_unreadable` IS NOT A ROW IN A TABLE. It is the field that stops a
+//    silence being sold as a clean bill of health, so when it is non-zero it is
+//    lifted out and rendered red ABOVE the fold — the paragraph was written from
+//    an incomplete read, and whoever is about to send it needs to know before they
+//    send it, not after they expand an accordion.
+const FACT_LABEL: Record<string, string> = {
+  business_name: "Business",
+  industry: "Industry",
+  state: "State",
+  time_in_business: "Time in business",
+  amount_requested: "Amount requested",
+  verified_avg_monthly_revenue: "Verified avg monthly revenue",
+  normal_season_avg_monthly_revenue: "Normal-season avg revenue",
+  worst_month_revenue: "Worst month",
+  revenue_trend: "Revenue trend",
+  months_of_statements: "Months of statements",
+  open_position_count: "Open positions",
+  existing_daily_remittance: "Existing daily remittance",
+  debt_service_pct_of_verified_revenue: "Debt service (% of verified revenue)",
+  avg_daily_balance: "Avg daily balance",
+  negative_days: "Negative days",
+  nsf_total: "NSF total",
+  settlement_servicers: "Settlement servicers",
+  collection_activity_detected: "Collection activity",
+  collection_activity_confidence: "Collection-activity confidence",
+  collection_activity_types: "Collection-activity types",
+  consolidation_viable: "Consolidation viable",
+  consolidation_amount: "Consolidation amount",
+  consolidation_term_months: "Consolidation term (months)",
+  consolidation_monthly_payment: "Consolidation monthly payment",
+  months_read: "Months read",
+  documents_unreadable: "Documents unreadable",
+};
+// Keys whose values are dollars. Everything else prints as given, because
+// inventing a unit is its own small lie.
+const MONEY_FACTS = new Set([
+  "amount_requested", "verified_avg_monthly_revenue", "normal_season_avg_monthly_revenue",
+  "worst_month_revenue", "existing_daily_remittance", "avg_daily_balance",
+  "consolidation_amount", "consolidation_monthly_payment",
+]);
+
+function factValue(key: string, v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return MONEY_FACTS.has(key) ? money(v) : num(v);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "none";
+    return v
+      .map((it) =>
+        it != null && typeof it === "object"
+          ? // A settlement servicer is an object; show the name and the amount,
+            // which is what a human checks it against on the statement.
+            [
+              (it as { servicer?: string }).servicer,
+              (it as { monthly_amount?: number }).monthly_amount != null
+                ? money((it as { monthly_amount?: number }).monthly_amount)
+                : null,
+            ].filter(Boolean).join(" · ")
+          : String(it),
+      )
+      .join("; ");
+  }
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function SubmissionFacts({ facts }: { facts: Record<string, unknown> }) {
+  const unreadable = Number(facts.documents_unreadable) || 0;
+  const entries = Object.entries(facts).filter(([k]) => k !== "documents_unreadable");
+  return (
+    <>
+      {/* Lifted out, not a row. See rule ② above. */}
+      {unreadable > 0 && (
+        <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-3">
+          <p className="text-sm font-bold text-red-800 dark:text-red-200">
+            ⚠ This paragraph was written from an incomplete read — {num(unreadable)} document
+            {unreadable === 1 ? "" : "s"} could not be parsed.
+          </p>
+          <p className="text-xs text-red-700 dark:text-red-300 mt-1">
+            Anything it does not mention may simply be in a month nobody read.{" "}
+            <span className="font-semibold">
+              Fix the documents and re-run before sending this to a funder.
+            </span>
+          </p>
+        </div>
+      )}
+      <Fold
+        title={`The facts it was written from (${entries.length})`}
+        note="Code-computed ground truth — the model only phrased it. Check any figure in the paragraph against this."
+      >
+        <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
+          {entries.map(([k, v]) => (
+            <div key={k} className="flex items-baseline justify-between gap-3 border-b border-gray-100 dark:border-gray-700/60 py-1">
+              <dt className="text-xs text-gray-500 dark:text-gray-400">{FACT_LABEL[k] ?? humanize(k)}</dt>
+              <dd className="text-xs font-semibold text-gray-900 dark:text-white text-right tabular-nums">
+                {factValue(k, v)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
+          Revenue here is <span className="font-semibold">verified</span> (bank-derived). The stated figure is
+          deliberately absent from this set — quoting a number a funder cannot reproduce from the statements is
+          how a package loses credibility.
+        </p>
+      </Fold>
+    </>
+  );
+}
+
 /** Shown when a tab has nothing in it. Says WHY it is empty — a run stored before
  *  a detector shipped is not the same as a clean file, and this panel must never
  *  let those two read alike. */
@@ -1229,6 +1354,10 @@ function ResultView({
               why="Either the run predates the feature, or the writer failed, or its output was rejected by the funder-facing compliance check. Re-run to generate one — do not read the absence as 'nothing worth saying'."
             />
           )}
+
+          {/* The checkable half. The paragraph above is model-written prose about to
+              go to a funder; this is the ground truth it was given. */}
+          {r.submission_facts && <SubmissionFacts facts={r.submission_facts} />}
 
           {/* How it lands on their desk. Internal: tells the closer what is coming. */}
           {lenses?.funder_view && (
@@ -1661,13 +1790,22 @@ const SIZE_BUCKET_LABEL: Record<string, string> = {
 // text in the narrowest place it appears.
 //
 // It changes NO visible text today, which is the part worth knowing. Measured
-// 2026-10-01 against `deal_underwriting`: 153 stored runs, of which 79 carry any
-// product_signals at all, and only three distinct values have ever appeared —
-// `mca` (79), `invoice_factoring` (37), `equipment_financing` (10). The short
-// map renders those as "MCA", "Factoring" and "Equipment", exactly what the
-// local copy produced. The other six values gain correct labels for the first
-// time. (The earlier figure of 142 counted runs, not runs with signals, and was
-// stale besides — re-measure rather than citing this number in a year.)
+// 2026-10-01 against `deal_underwriting`: 153 stored runs, 79 of which carry any
+// product_signals, and only three distinct values have ever appeared — `mca`,
+// `invoice_factoring` and `equipment_financing`. The short map renders those as
+// "MCA", "Factoring" and "Equipment", exactly what the local copy produced; the
+// other six values gain correct labels for the first time.
+//
+// READ THOSE COUNTS CAREFULLY. `mca` appears on 79 of 79, and that is not an
+// observation — `underwrite-deal:3481` seeds the set with "mca" unconditionally
+// before the model's values are merged in, so its count is just "runs that
+// produced a profile" wearing a product label. The two real signals are
+// `invoice_factoring` on 37 of 79 and `equipment_financing` on 10 of 79. Anyone
+// comparing 79 against 37 and concluding MCA is twice as common has been misled
+// by a constant.
+//
+// The table is also hot: 8 runs landed between two measurements an hour apart
+// this session. Re-measure rather than citing these numbers in a year.
 //
 // `product_signals` is `string[]` off the model, so the lookup must still tolerate
 // a value outside the union. The guard keeps the fallback explicit instead of
