@@ -5267,8 +5267,64 @@ Deno.serve(async (req) => {
       } catch (e2) {
         console.error("[underwrite-deal] attempt-ledger resolve from outer catch threw:", e2 instanceof Error ? e2.message : e2);
       }
+      // Closed here, so the net below must not rewrite it. (resolveAttempt() does
+      // the same thing at its own success path; this is the one close that lived
+      // outside it.)
+      openAttemptId = null;
     }
     return json({ error: msg }, 500);
+  } finally {
+    // ── NET: ENFORCE THE INVARIANT INSTEAD OF REMEMBERING IT ─────────────────
+    // Every exit path above pairs itself with a resolver, and as of this commit
+    // all of them do — five returns, five resolvers, no gap. This changes nothing
+    // about those paths. It exists because `catch` DOES NOT FIRE ON `return`, and
+    // this function returns in five places after the attempt row opens, so the
+    // pairing is a DISCIPLINE maintained by whoever edits next. The sixth `return`
+    // someone adds is invisible to review precisely because nothing goes red.
+    //
+    // What a leak would cost is the reason this is worth a net at all: the stuck
+    // -attempt detector keys on `finished_at IS NULL`, so an unresolved row reads
+    // as a 504 THAT NEVER HAPPENED. A ledger that invents failures is worse than
+    // one that misses them — the first response to a false alert is to hunt a
+    // timeout that isn't there, and the second is to stop trusting the alert.
+    //
+    // ⚠ IT DELIBERATELY LEAVES `outcome` NULL. The CHECK constraint allows only
+    // 'ok' | 'refused' | 'error', and this net cannot know which applied — an
+    // un-instrumented path is exactly the case where we have no idea. Picking one
+    // would be inventing a verdict to satisfy a column, which is the defect this
+    // whole table exists to prevent. So `finished_at` is set (the run DID return,
+    // so it was not killed — the 504 signal stays clean) and `outcome` stays NULL.
+    // That makes a third state queryable in its own right:
+    //
+    //   finished_at IS NULL                        → the process was killed (504)
+    //   finished_at IS NOT NULL, outcome IS NULL    → an exit path we never instrumented
+    //   finished_at IS NOT NULL, outcome IS NOT NULL → a recorded result
+    //
+    // The middle one is a CODE defect to go and fix, never a fact about a merchant.
+    //
+    // Best-effort, and it must stay that way: this block returns nothing and
+    // throws nothing, so whatever the handler was already returning or throwing
+    // propagates untouched. Failing a merchant's underwrite because its own audit
+    // row would not update would be a worse bug than the blind spot it closes.
+    if (openAttemptId) {
+      const leaked = openAttemptId;
+      openAttemptId = null;
+      try {
+        const { error: netErr } = await db.from("deal_underwriting_attempts")
+          .update({
+            finished_at: new Date().toISOString(),
+            detail:
+              "Closed by the catch-all net in `finally`: this run returned without recording an outcome, " +
+              "so `outcome` is deliberately NULL rather than guessed. The run was NOT killed — a gateway " +
+              "timeout leaves `finished_at` null. Treat this row as a bug in underwrite-deal's exit paths.",
+          })
+          .eq("id", leaked);
+        if (netErr) console.error(`[underwrite-deal] attempt-ledger net-resolve failed: ${netErr.message}`);
+        else console.warn(`[underwrite-deal] attempt ${leaked} was closed by the net — an exit path did not resolve it`);
+      } catch (e3) {
+        console.error("[underwrite-deal] attempt-ledger net-resolve threw:", e3 instanceof Error ? e3.message : e3);
+      }
+    }
   }
 });
 
