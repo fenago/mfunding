@@ -4569,6 +4569,22 @@ Deno.serve(async (req) => {
     // recompute revenue themselves and a stated number they cannot reproduce costs us
     // credibility. Coverage rides along so "nothing adverse found" can never be
     // phrased as "nothing adverse exists": an unreadable document is not a clean month.
+    // ── WAS ANYTHING READ? ─────────────────────────────────────────────────────
+    // Asked locally, and asked as "was anything READ" rather than "did anything
+    // FAIL". Those differ exactly where it matters: a run whose document ledger is
+    // EMPTY has zero errors and zero reads, so any gate of the form `errors > 0`
+    // treats "we read nothing" as "nothing went wrong". Two stored runs are that
+    // shape (MF-2026-0016 v1 has no ledger at all), and a failure-count gate sails
+    // straight past them.
+    //
+    // FAILED-RUN GUARD #1 already makes this unreachable for new runs — it refuses to
+    // persist when nothing extracted. This is deliberate belt-and-braces anyway: the
+    // claim downstream is funder-facing, the failure mode is telling a funder an
+    // UNREAD file is clean, and a paragraph that is honest only because of a guard
+    // 3,000 lines earlier is one refactor away from lying. Cheap invariant, stated
+    // where the risk actually is.
+    const nothingWasRead = monthsCovered === 0 || analyzed.length === 0;
+
     let submissionParagraph: string | null = null;
     // WHY a paragraph is absent, so the UI never has to guess. A NULL paragraph has
     // three very different causes and they call for different words on screen:
@@ -4577,7 +4593,8 @@ Deno.serve(async (req) => {
     // (it produced copy that asserted something we will not send a funder). The last
     // one is NOT a system error — it is the gate working — and must not be shown as
     // a crash. Absence is reported, never inferred from a blank string.
-    let submissionWriterStatus: "ok" | "failed" | "too_short" | "rejected_compliance" = "failed";
+    let submissionWriterStatus:
+      | "ok" | "failed" | "too_short" | "rejected_compliance" | "nothing_was_read" = "failed";
     let submissionRejectedFor: string[] | null = null;
     // Response-only (never persisted, never rendered to a closer): the copy that was
     // refused. A bare NULL plus a rule name is not enough to tell a real violation
@@ -4783,6 +4800,12 @@ Deno.serve(async (req) => {
       writer_rejected_for: null as string[] | null,
     };
     try {
+      if (nothingWasRead) {
+        // No paragraph at all. There is nothing to say about a file we did not read,
+        // and the one thing we must never do is say it looks fine.
+        submissionWriterStatus = "nothing_was_read";
+        throw new Error("nothing was read — refusing to write a funder-facing paragraph");
+      }
       const subSystem =
         "You are an experienced MCA broker writing the cover note that goes out WITH a funding " +
         "submission to a funder's underwriting desk. An MCA is a PURCHASE OF FUTURE RECEIVABLES, " +
@@ -4824,9 +4847,11 @@ Deno.serve(async (req) => {
         "and do not note that it is missing. Never name any funder or lender. Never mention " +
         "declines, disqualifications, other submissions, missing documents, credit scores, or our " +
         "internal analysis, scoring or process. Never promise an approval.\n" +
-        "If documents_unreadable is above 0, you may describe the months you DO have, but never " +
-        "state or imply that the full picture is clean — absence of a finding in the months read is " +
-        "not evidence about months not read.\n\n" +
+        "COVERAGE. Reason from months_read, never from documents_unreadable alone: a file where " +
+        "nothing could be read has zero failures and zero reads, so \"no failures\" is not evidence " +
+        "of anything. You may describe the months you DO have, but never state or imply that the " +
+        "full picture is clean — absence of a finding in the months read is not evidence about " +
+        "months not read, and absence of a read is not absence of a problem.\n\n" +
         'Return STRICT JSON only: {"submission_paragraph": string}';
       const subText = await callLLM(db, {
         system: subSystem,
