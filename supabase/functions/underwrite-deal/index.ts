@@ -4606,12 +4606,23 @@ Deno.serve(async (req) => {
         : floorTo1k(
           Math.min(
             verifiedAvgMonthlyRevenueForFunder,
-            conservativeAvgMonthlyRevenue > 0 ? conservativeAvgMonthlyRevenue : verifiedAvgMonthlyRevenueForFunder,
             // ...and the floor of everything we have previously concluded about these
             // same documents, so our own instability cannot overstate the merchant.
             revenueBandLow,
           ),
         ),
+      // conservativeAvgMonthlyRevenue is deliberately NOT in that floor. It is
+      // conservative along a DIFFERENT AXIS: it is revenue with owner-payroll income
+      // removed, answering "what if this income is personal W-2 rather than the
+      // business's?" — not "how much does our own classifier wobble?". Mixing the two
+      // produces a figure that is not conservative, it is a different claim: on Brideau
+      // it floored a merchant with a ~$15,000 normal season and a ~$9,000 worst month
+      // to approximately $3,000, an ~80% understatement that would decline a fundable
+      // file. Understating costs approval size, which is cheap — but not 5x cheap.
+      //
+      // The owner-payroll downside is not lost: it stays in the internal narrative and
+      // the assumptions sensitivity, where a human can weigh it, which is the right
+      // home for a question only the merchant can settle.
       revenue_floor_basis: revenueFloorBasis,
       normal_season_avg_monthly_revenue_approx: floorTo1kOrNull(normalSeasonAvgMonthlyRevenueForFunder),
       worst_month_revenue_approx: floorTo1kOrNull(worstMonthRevenueForFunder),
