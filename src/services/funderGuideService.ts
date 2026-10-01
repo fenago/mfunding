@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { productsOf, PRODUCT_LABEL_SHORT } from "../lib/lenderProducts";
 
 // Broker-facing funder reference: who funds what + how to submit. Pulled live from
 // the lenders table so it stays current with /admin/lenders.
@@ -9,7 +10,7 @@ export interface FunderGuideRow {
   status: string;
   website: string | null;
   lender_types: string[] | null;
-  funding_products: string[] | null;
+  category: { products?: unknown } | null;
   submission_email: string | null;
   submission_portal_url: string | null;
   submission_notes: string | null;
@@ -31,7 +32,7 @@ export async function getFunderGuide(): Promise<FunderGuideRow[]> {
   const { data, error } = await supabase
     .from("lenders")
     .select(`
-      id, company_name, status, website, lender_types, funding_products,
+      id, company_name, status, website, lender_types, category,
       submission_email, submission_portal_url, submission_notes,
       commission_rate, commission_structure, commission_type,
       min_credit_score, min_monthly_revenue, min_time_in_business,
@@ -52,6 +53,7 @@ export interface ProspectRow {
   company_name: string;
   website: string | null;
   lender_types: string[] | null;
+  category: { products?: unknown } | null;
   notes: string | null;
 }
 
@@ -59,7 +61,7 @@ export interface ProspectRow {
 export async function getProspects(): Promise<ProspectRow[]> {
   const { data, error } = await supabase
     .from("lenders")
-    .select("id, company_name, website, lender_types, notes")
+    .select("id, company_name, website, lender_types, category, notes")
     .eq("status", "potential")
     .order("company_name", { ascending: true });
   if (error) throw error;
@@ -73,12 +75,18 @@ export function commissionLabel(r: FunderGuideRow): string {
   return "—";
 }
 
-export function productLabels(r: FunderGuideRow): string {
-  const set = new Set([...(r.lender_types ?? []), ...(r.funding_products ?? [])]);
-  const MAP: Record<string, string> = {
-    mca: "MCA", line_of_credit: "LOC", term_loan: "Term", sba: "SBA",
-    equipment: "Equipment", equipment_financing: "Equipment", revenue_based: "RBF",
-    startup: "Startup", real_estate: "Real Estate", vcf: "Debt Relief",
-  };
-  return [...set].map((t) => MAP[t] ?? t).join(", ") || "—";
+/**
+ * Products a funder does, via the ONE shared union in lib/lenderProducts.
+ *
+ * This used to union `lender_types` with `funding_products` and carry its own
+ * label map — a third union with a fourth vocabulary. `funding_products` was
+ * the wrong second column: 116 of 125 lenders sit at its never-written 2024
+ * default, 8 of the 9 populated rows say only ['mca'], and where it IS
+ * populated it contradicts the curated column (Swoop Funding read ['mca']
+ * against six products in `category`). The caller already knew: FunderGuidePage
+ * passed `funding_products: null` inline to suppress it, working around the
+ * column locally instead of fixing it.
+ */
+export function productLabels(r: Pick<FunderGuideRow, "lender_types" | "category">): string {
+  return productsOf(r).map((p) => PRODUCT_LABEL_SHORT[p]).join(", ") || "—";
 }

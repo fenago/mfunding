@@ -46,7 +46,14 @@ interface ExtractedLenderData {
   email?: string;
   contact_name?: string;
   description?: string;
+  // `funding_products` is what the MODEL returns — the extraction schema still
+  // asks for products and this type describes its response. `detected_products`
+  // is what WE emit, for human review only. Nothing writes
+  // lenders.funding_products any more: that column sat at its 2024 default on
+  // 116 of 125 lenders and contradicted category->'products' where populated,
+  // so a scanner feeding it only widened the disagreement.
   funding_products?: string[];
+  detected_products?: string[];
   min_funding_amount?: number;
   max_funding_amount?: number;
   min_time_in_business?: number;
@@ -139,7 +146,11 @@ function parseAgentOutput(output: unknown): ExtractedLenderData {
       products.push(key);
     }
   });
-  if (products.length > 0) result.funding_products = products;
+  // NOT written to lenders.funding_products: that column is retired. It sat at
+  // its 2024 default on 116 of 125 lenders and contradicted the curated
+  // category->'products' where populated, so a scanner feeding it made the
+  // disagreement worse. Keyword hits stay available to the caller for review.
+  if (products.length > 0) result.detected_products = products;
 
   // Extract funding amounts
   const minFundingMatch = text.match(/(?:minimum|min).*?(?:funding|loan|amount)[:\s]*\$?([0-9,]+)/i);
@@ -459,8 +470,10 @@ Extract EXACT numbers for funding amounts, requirements, and terms.`;
       primary_contact_email: cleanString(extracted.email),
       primary_contact_phone: cleanString(extracted.phone),
 
-      // Funding products
-      funding_products: mappedProducts,
+      // Detected products, for human review only — deliberately NOT written to
+      // lenders.funding_products (retired; see the note above). Product tagging
+      // belongs in lender_types and category->'products'.
+      detected_products: mappedProducts,
 
       // Funding range
       min_funding_amount: parseAmount(extracted.min_funding_amount),

@@ -20,7 +20,6 @@ interface LenderFormData {
   lender_types: string[];
   paper_types: PaperType[];
   partnership_types: string[];
-  funding_products: string[];
   primary_contact_name: string;
   primary_contact_email: string;
   primary_contact_phone: string;
@@ -60,7 +59,6 @@ interface Lender {
   lender_types: string[];
   paper_types: PaperType[];
   partnership_types: string[] | null;
-  funding_products: string[] | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
@@ -93,16 +91,13 @@ interface LenderEditModalProps {
   lender?: Lender | null;
 }
 
-const FUNDING_PRODUCTS = [
-  { value: "mca", label: "MCA" },
-  { value: "term_loan", label: "Term Loan" },
-  { value: "line_of_credit", label: "Line of Credit" },
-  { value: "equipment_financing", label: "Equipment Financing" },
-  { value: "invoice_factoring", label: "Invoice Factoring" },
-  { value: "sba_loan", label: "SBA Loan" },
-  { value: "revenue_based", label: "Revenue Based" },
-  { value: "real_estate", label: "Real Estate" },
-];
+// The "Funding Products" picker that used to live here is retired: it wrote a
+// column nothing trusts. 116 of 125 lenders sit at its never-written 2024
+// default, and where it WAS populated it contradicted category->'products'
+// (Swoop Funding: one product against six). Product tagging is "Lender Types"
+// (below) plus category->'products', unioned by productsOf() in
+// lib/lenderProducts. A fifth picker writing a sixth vocabulary is what made
+// that column untrustworthy in the first place.
 
 const PAPER_TYPES: { value: PaperType; label: string; description: string; color: string }[] = [
   { value: "a_paper", label: "A Paper", description: "700+ credit, clean", color: "bg-green-100 text-green-800 border-green-300" },
@@ -138,7 +133,6 @@ const initialFormData: LenderFormData = {
   lender_types: [],
   paper_types: [],
   partnership_types: [],
-  funding_products: [],
   primary_contact_name: "",
   primary_contact_email: "",
   primary_contact_phone: "",
@@ -186,7 +180,6 @@ export default function LenderEditModal({
         lender_types: lender.lender_types || [],
         paper_types: lender.paper_types || [],
         partnership_types: lender.partnership_types || [],
-        funding_products: lender.funding_products || [],
         primary_contact_name: lender.primary_contact_name || "",
         primary_contact_email: lender.primary_contact_email || "",
         primary_contact_phone: lender.primary_contact_phone || "",
@@ -246,7 +239,6 @@ export default function LenderEditModal({
           primary_contact_name: extracted.primary_contact_name || prev.primary_contact_name,
           primary_contact_email: extracted.primary_contact_email || prev.primary_contact_email,
           primary_contact_phone: extracted.primary_contact_phone || prev.primary_contact_phone,
-          funding_products: extracted.funding_products?.length > 0 ? extracted.funding_products : prev.funding_products,
           min_funding_amount: extracted.min_funding_amount?.toString() || prev.min_funding_amount,
           max_funding_amount: extracted.max_funding_amount?.toString() || prev.max_funding_amount,
           min_time_in_business: extracted.min_time_in_business?.toString() || prev.min_time_in_business,
@@ -278,15 +270,6 @@ export default function LenderEditModal({
     } finally {
       setIsScanning(false);
     }
-  };
-
-  const handleProductToggle = (product: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      funding_products: prev.funding_products.includes(product)
-        ? prev.funding_products.filter((p) => p !== product)
-        : [...prev.funding_products, product],
-    }));
   };
 
   const handlePartnershipToggle = (t: string) => {
@@ -321,7 +304,6 @@ export default function LenderEditModal({
         lender_types: formData.lender_types,
         paper_types: formData.paper_types,
         partnership_types: formData.partnership_types,
-        funding_products: formData.funding_products,
         primary_contact_name: formData.primary_contact_name || null,
         primary_contact_email: formData.primary_contact_email || null,
         primary_contact_phone: formData.primary_contact_phone || null,
@@ -514,27 +496,6 @@ export default function LenderEditModal({
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Funding Products
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {FUNDING_PRODUCTS.map((product) => (
-                      <button
-                        key={product.value}
-                        type="button"
-                        onClick={() => handleProductToggle(product.value)}
-                        className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
-                          formData.funding_products.includes(product.value)
-                            ? "bg-ocean-blue text-white border-ocean-blue"
-                            : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-ocean-blue"
-                        }`}
-                      >
-                        {product.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">

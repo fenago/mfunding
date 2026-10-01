@@ -53,6 +53,22 @@ export const PRODUCT_LABEL: Record<ProductId, string> = {
   startup_robs_401k: "Startup / ROBS 401k",
 };
 
+// Compact labels for dense table cells (the Funder Guide products column). Same
+// keys, same single definition — a caller that wants short text must not write
+// its own map, which is how `productLabels` in funderGuideService ended up a
+// third union with a fourth label vocabulary.
+export const PRODUCT_LABEL_SHORT: Record<ProductId, string> = {
+  mca: "MCA",
+  term_loan: "Term",
+  line_of_credit: "LOC",
+  sba_loan: "SBA",
+  equipment_financing: "Equipment",
+  invoice_factoring: "Factoring",
+  real_estate_cre: "CRE",
+  consumer: "Consumer",
+  startup_robs_401k: "Startup/ROBS",
+};
+
 // `lender_types` enum value → canonical product. MCA absorbs revenue_based and
 // working_capital: all three are purchases of future receivables and none of
 // them is ever called a loan. `other` maps to nothing on purpose.

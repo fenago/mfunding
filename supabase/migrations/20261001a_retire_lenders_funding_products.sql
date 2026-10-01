@@ -1,0 +1,43 @@
+-- Retire lenders.funding_products — the column is not dead, it is HALF-ALIVE,
+-- which is worse. It had a writable picker, an AI writer and four readers over
+-- data that answers almost nothing and actively contradicts the curated column.
+--
+-- Measured 2026-10-01 across 125 lenders:
+--   116  sit at the '{}' default from 20240202 — never written
+--     9  populated, and EIGHT of those nine say only ['mca']
+--     1  of the nine is a live_vendor (Value Capital Funding, ['mca'])
+--
+-- So it answered for 1 of 27 live funders. Worse than empty: where it IS
+-- populated it disagrees with lenders.category->'products' on three of the nine
+-- — Swoop Funding read ['mca'] against six curated products, Pro Funding
+-- Options one against five, Ivy Lender one against six. Handing that to a model
+-- or a human is worse than handing them nothing.
+--
+-- It was also an eighth product vocabulary. Its 20240202 comment specified
+-- "mca, term_loan, line_of_credit, equipment_financing, sba_loan,
+-- invoice_factoring, revenue_based" — and `revenue_based` exists nowhere else
+-- in the schema as a product.
+--
+-- One surface had already worked around it without fixing it:
+-- funderGuideService.productLabels() unioned lender_types with
+-- funding_products, and FunderGuidePage passed `funding_products: null` inline
+-- at the call site to suppress the result. A local workaround for a global
+-- defect — the column stayed broken and every other reader kept trusting it.
+--
+-- Readers and writers removed (nothing reads or writes it after this):
+--   recommend-lenders LENDER_FIELDS          3ba7890 (prompt payload)
+--   funderGuideService + FunderGuidePage     this change (-> productsOf())
+--   LenderEditModal "Funding Products"       this change (picker deleted)
+--   scan-lender-website                      this change (emits detected_products)
+--
+-- NOT DROPPED. The nine populated rows are evidence of how the drift happened,
+-- the column is cheap to keep, and a DROP is the one step that cannot be undone
+-- if some surface we did not find still selects it. Dropping is a separate
+-- decision for the owner once this has sat unread for a while.
+--
+-- The question "which products does this funder do" has ONE answer:
+-- productsOf() in src/lib/lenderProducts.ts, the union of lenders.lender_types
+-- and lenders.category->'products' in canonical spelling.
+
+comment on column public.lenders.funding_products is
+  'RETIRED 2026-10-01 — do not read, do not write, do not populate. 116/125 rows are the never-written 20240202 default and it contradicted category->''products'' on 3 of the 9 rows that had anything. Superseded by productsOf() in src/lib/lenderProducts.ts, which unions lender_types with category->''products''. Kept rather than dropped so the drift stays visible; see migration 20261001a.';

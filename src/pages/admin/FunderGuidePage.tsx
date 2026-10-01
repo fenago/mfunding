@@ -35,8 +35,12 @@ export default function FunderGuidePage() {
   useEffect(() => { getFunderGuide().then(setRows).catch(() => setRows([])).finally(() => setLoading(false)); }, []);
   useEffect(() => { getProspects().then(setProspects).catch(() => setProspects([])); }, []);
 
-  const prospectProducts = (p: ProspectRow) =>
-    productLabels({ lender_types: p.lender_types, funding_products: null } as FunderGuideRow);
+  // Prospects now carry `category` too, so they get the same union as live
+  // funders instead of the lender_types-only view the old inline
+  // `funding_products: null` left them with. Several prospects are tagged with
+  // far more products in `category` than in the enum — Swoop Funding has six
+  // against one — and none of that was reaching this table.
+  const prospectProducts = (p: ProspectRow) => productLabels(p);
   const hostname = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return url ?? ""; } };
 
   const live = rows.filter((r) => r.status === "live_vendor");
