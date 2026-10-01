@@ -48,11 +48,11 @@
 // See also: the memory `readers-must-distinguish-unreadable`, and the ESLint
 // rule `no-absence-from-failed-read` which flags the coalesce this type replaces.
 
-// ── THE THREE THINGS THIS TYPE DOES NOT COVER ───────────────────────────────
+// ── THE FOUR THINGS THIS TYPE DOES NOT COVER ────────────────────────────────
 //
 // `Readable` separates UNREADABLE from EMPTY, and the ESLint rule
 // `no-absence-from-failed-read` finds the places that conflate them. Between
-// them they catch ONE shape: a read that FAILED. Three siblings get through,
+// them they catch ONE shape: a read that FAILED. Four siblings get through,
 // and in every one of them nothing fails, nothing throws, and no guard fires.
 // Know these before you reach for `Readable<T>` and assume you are done.
 //
@@ -114,6 +114,42 @@
 // coalesce is doing exactly what it was written to do. **Before coalescing any
 // key in `deal_money_keys()`, establish whether the caller is money-walled** —
 // a masked null must render as "hidden", never as 0, $0, or an ungraded lead.
+//
+// ⚠ And `Number()` is the trap that carries it. `Number(null) === 0`, so
+// `Number.isFinite(Number(x)) ? Number(x) : null` ACCEPTS null and yields 0.
+// That is not hypothetical: it is how an underwriting null became a
+// "bank-verified revenue of $0" in a paragraph emailed to a funder
+// (submit-to-funders, fixed 2026-10-01). `undefined` escapes only by accident,
+// because `Number(undefined)` is NaN. Test `typeof x === "number"`, never
+// `Number(x)`, when the difference between unknown and zero matters.
+//
+// ── (4) A DERIVED VALUE COMPUTED FROM ZERO INPUTS IS NOT A MEASUREMENT ──────
+//
+// The first three are about reading. This one is about WRITING, which is why
+// neither the type nor the rule can reach it: there is no read to wrap and no
+// coalesce to flag. A pipeline sums an empty set, gets 0, and PERSISTS it into
+// a numeric column where 0 is a legitimate value — and from then on it is
+// indistinguishable from a measurement, to every later reader, long after the
+// request that produced it is gone.
+//
+// `deal_underwriting` v6 of MF-2026-0138 (2026-07-25): all five bank statements
+// failed to extract — five identical Anthropic 400s, `temperature` deprecated
+// for that model — and the run stored `reported_avg_monthly_revenue: 0`,
+// `true_avg_monthly_revenue: 0`, `statements_analyzed: 0`, AND a full adverse
+// verdict on top: `revenue_quality_pct: 100` (perfect quality, zero
+// statements), `revenue_trend: "flat"` (a trend over zero months), zero
+// negative days, zero NSFs, `risk_rating: high`, and "the $100,000 ask is
+// unreachable in every scenario". Its neighbours on the same statements read
+// $58,824 and $51,352.
+//
+// Note what the stored row cost beyond the false numbers: a model-config break
+// was hidden behind a plausible underwriting verdict. A refused run would have
+// surfaced it in seconds.
+//
+// **The rule: before persisting a derived number, assert that the input set was
+// non-empty.** An aggregate over zero rows is not zero — it does not exist, and
+// a numeric column cannot say so. Refuse the write, or write an explicit
+// unreadable marker; never let an empty denominator become a stored fact.
 
 /**
  * The result of a read that might not have happened.
