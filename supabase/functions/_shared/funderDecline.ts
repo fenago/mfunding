@@ -138,6 +138,47 @@ export async function captureFunderReply(
     .select("id");
   if (error) return { id: null, captured: false, error: error.message };
   const id = (data?.[0] as { id?: string } | undefined)?.id ?? null;
+
+  // STANDING-INSTRUCTION DETECTION HANGS OFF CAPTURE, ON PURPOSE.
+  //
+  // Five code paths mirror a funder email and every one of them already calls
+  // this function, so hooking here means the poller, the live webhook, the
+  // vendor sweep and the decline-intel backfill all get directive detection
+  // without any of them remembering to ask for it. The alternative — a call at
+  // each of the five sites — is one forgotten site away from being exactly the
+  // bug this fixes: a reply that was received, understood, and never acted on.
+  //
+  // Only on a FRESH capture (`id` non-null). A duplicate was detected on the
+  // first pass, and funder-directive-scan is the retry for a pass that failed.
+  //
+  // The dynamic import is deliberate: funderDirective.ts imports coreBody()
+  // from this file, and loading it statically here would make the two modules
+  // a cycle. Resolving it at call time keeps the dependency one-directional in
+  // the module graph and costs nothing in a bundled function.
+  if (id) {
+    try {
+      const { recordDirectives } = await import("./funderDirective.ts");
+      const r = await recordDirectives(db, {
+        lenderId: o.lenderId,
+        funderReplyId: id,
+        fullBody: body,
+        dealId: o.dealId ?? null,
+        dealSubmissionId: o.dealSubmissionId ?? null,
+        subject: o.subject ?? null,
+        fromEmail: o.fromEmail ?? null,
+        receivedAt: o.receivedAt ?? null,
+      });
+      if (r.kinds.length) {
+        console.log(`[funderDirective] ${o.lenderId}: ${r.kinds.join(", ")} (wrote ${r.written})`);
+      }
+    } catch (e) {
+      // recordDirectives already reports its own write failures to
+      // activity_log. This catch is only for a load/throw it could not, and it
+      // must not break the capture — but it does NOT go quiet either.
+      console.error("[funderDirective] detection threw:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return { id, captured: Boolean(id), error: null };
 }
 
@@ -158,6 +199,18 @@ export async function attachReplyDeal(
 }
 
 // ── Parse ────────────────────────────────────────────────────────────────────
+
+/**
+ * The quoted-original header: "On Tue, Aug 11, 2026 at 10:52 AM <sender> wrote:".
+ *
+ * Anchored on a weekday / month / numeric date immediately after "On " so a
+ * lowercase "on" in the funder's own prose can never open the match, and capped
+ * at 240 rather than 80 so a long "via <list name> <address>" sender survives.
+ * Lazy on the tail so the FIRST " wrote:" closes it. See the long note in
+ * coreBody() for what the old 80-char cap did to 7 real replies.
+ */
+export const QUOTED_ORIGINAL_HEADER =
+  /\bOn\s(?:(?:Mon|Tues?|Wed(?:nes)?|Thu(?:rs)?|Fri|Sat(?:ur)?|Sun)(?:day)?|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|\d{1,2}[\s./-])[^\n]{2,240}?\swrote:/i;
 
 // Strip the parts of an email that are never underwriting signal — quoted history,
 // signature blocks, confidentiality boilerplate — so both the model and the
@@ -192,7 +245,36 @@ export function coreBody(raw: string): string {
   // starting with the quote marker. Fixed as a latent defect, not an observed
   // one, because a decline nobody can explain in six weeks is a worse way to
   // find out.
-  const quote = t.search(/\bOn\s.{4,80}\swrote:/i);
+  //
+  // ⚠️ AND THEN THE LENGTH CAP DID THE SAME THING ANYWAY (found 2026-10-01).
+  //
+  // The old marker was /\bOn\s.{4,80}\swrote:/i. That 80-char cap is a quiet
+  // assumption about how long a quoted-original header is, and 1 West breaks
+  // it: their thread header reads
+  //
+  //   "On Tue, Aug 11, 2026 at 10:52 AM Momentum Funding via Partner
+  //    Submissions partnersubs@1westfinance.com wrote:"
+  //
+  // — 99 characters between "On " and " wrote:". Over the cap, no match, so
+  // NOTHING was stripped and OUR OWN ENTIRE SUBMISSION EMAIL survived as "what
+  // the funder wrote": the merchant's name, revenue, phone, personal email and
+  // every signed-URL document link, all handed to the decline parser as the
+  // funder's words. 7 of 156 funder_replies were in that state. The funder had
+  // actually written "Received, thank you." and "Application is missing, please
+  // provide the same to proceed." — one sentence each, buried under 6KB of us.
+  //
+  // Exactly the failure the block above describes, reached by a different road,
+  // which is the point: the no-match branch and the nothing-to-strip branch are
+  // indistinguishable in the output, so neither the code nor a reader can tell
+  // "clean body" from "we failed to find the boundary".
+  //
+  // The cap is now 240 and the header must START like a real date line
+  // (weekday, month, or a numeric date). Anchoring it that way matters more
+  // than the length: a bare lazy `.{4,240}?` happily starts at the lowercase
+  // "on" in "CC me on the deals… On Fri, Jul 3, 2026 … wrote:" and eats the
+  // funder's actual instruction. Measured over all 156 captured replies:
+  // 148 byte-identical, 7 newly (and correctly) stripped, 1 improved, 0 losses.
+  const quote = t.search(QUOTED_ORIGINAL_HEADER);
   if (quote >= 0) t = t.slice(0, quote).trim();
   // Legal / confidentiality boilerplate that dwarfs the one real sentence.
   // SAME BUG, five lines down, and nobody had flagged it: a funder whose

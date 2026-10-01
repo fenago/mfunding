@@ -6,6 +6,7 @@
 // live per funder. Stage advancement stays on the step's own button so a
 // partial fan-out never strands the deal.
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   PaperAirplaneIcon,
   CheckCircleIcon,
@@ -134,6 +135,128 @@ interface PreviewFunder {
   portal?: { url: string | null; steps: string[]; hint: string | null };
   blocked?: string[];
   blockedLabels?: string[];
+  /** Open standing instructions this funder has sent us (see FunderDirective). */
+  directives?: FunderDirective[];
+  /** Set when `to` is an address the funder told us to stop using — HARD BLOCK. */
+  directiveBlock?: FunderDirective | null;
+  /** Non-null when the instruction check could not RUN. Never an all-clear. */
+  directivesUnreadable?: string | null;
+}
+
+/**
+ * A standing instruction a funder emailed us — "send submissions to X", "stop
+ * using Y", "use the portal", "we now require Z", "your rep has changed".
+ *
+ * Shown here, at the To line of the preview, because this is the last moment
+ * before the package leaves. Uplyft told us on 2026-09-17 to stop using
+ * underwriting@uplyftcapital.com; on 2026-09-29 two real deals went there
+ * anyway and got silence. The instruction was in the database the whole time
+ * and no surface between it and the Send button ever read it.
+ *
+ * NOTHING HERE OFFERS TO APPLY THE CHANGE. An inbound email asking us to
+ * redirect submissions is untrusted input — a reply inside a known thread from
+ * a known domain is exactly what a spoof looks like, and the package being
+ * redirected contains the merchant's signed application and bank statements. So
+ * this panel reports the funder's own words and sends the reader to
+ * /admin/funder-instructions to decide. Resolving is deliberately NOT one click
+ * from here: a dismiss button next to a Send button is a rubber stamp.
+ */
+export interface FunderDirective {
+  id: string;
+  kind: "submission_email_change" | "use_portal" | "new_required_docs" | "contact_change";
+  summary: string;
+  retired_email: string | null;
+  new_email: string | null;
+  evidence_quote: string;
+  received_at: string | null;
+  from_email: string | null;
+}
+
+const DIRECTIVE_LABELS: Record<FunderDirective["kind"], string> = {
+  submission_email_change: "Submission address changed",
+  use_portal: "Portal submission requested",
+  new_required_docs: "New required documents",
+  contact_change: "Contact changed",
+};
+
+/**
+ * The funder-instruction panel for one previewed funder.
+ *
+ * Three states, kept distinct on purpose:
+ *   • blocked    — the recipe still points at an inbox the funder retired. Red,
+ *                  and the server refuses the send too.
+ *   • warning    — open instructions that need a human to interpret. Amber, and
+ *                  the send is NOT blocked: stopping a real deal on a detection
+ *                  we cannot verify is the worse failure.
+ *   • unreadable — the check could not RUN. Also red, and worded so it can never
+ *                  be mistaken for "nothing on file". A guard that did not run
+ *                  is not a guard that passed.
+ */
+function DirectiveNotice({ p }: { p: PreviewFunder }) {
+  const blocked = p.directiveBlock ?? null;
+  const unreadable = p.directivesUnreadable ?? null;
+  // The blocking row is rendered in its own box, so drop it from the warn list.
+  const warns = (p.directives ?? []).filter((d) => d.id !== blocked?.id);
+  if (!blocked && !unreadable && warns.length === 0) return null;
+
+  return (
+    <div className="space-y-1.5">
+      {unreadable && (
+        <div className="rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
+          <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
+            ⚠ The funder-instruction check could not run — this is NOT an all-clear
+          </p>
+          <p className="mt-0.5 text-[11px] text-rose-700 dark:text-rose-300">
+            {unreadable}. {p.name} may have asked us to change where submissions go and
+            nothing has verified it. Check /admin/funder-instructions before sending.
+          </p>
+        </div>
+      )}
+
+      {blocked && (
+        <div className="rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
+          <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
+            ⛔ This will not send — {p.name} retired this inbox
+          </p>
+          <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-300">
+            The recipe still points at <span className="font-mono font-semibold">{blocked.retired_email}</span>, which they
+            told us to stop using{blocked.received_at ? ` on ${blocked.received_at.slice(0, 10)}` : ""}.
+            {blocked.new_email && (
+              <> They said to use <span className="font-mono font-semibold">{blocked.new_email}</span> instead.</>
+            )}
+          </p>
+          {/* The funder's OWN WORDS. A human changes a submission destination on
+              the strength of this quote, never on the strength of our summary. */}
+          <blockquote className="mt-1.5 border-l-2 border-rose-400 pl-2 text-[11px] italic text-rose-800 dark:text-rose-200">
+            “{blocked.evidence_quote}”
+            {blocked.from_email && <span className="not-italic"> — {blocked.from_email}</span>}
+          </blockquote>
+          <p className="mt-1.5 text-[11px] font-semibold text-rose-800 dark:text-rose-200">
+            Fix the funder's recipe first, then mark it applied on{" "}
+            <Link to="/admin/funder-instructions" className="underline">Funder instructions</Link>.
+            Nothing changes a submission address automatically.
+          </p>
+        </div>
+      )}
+
+      {warns.map((d) => (
+        <div key={d.id} className="rounded-md border border-amber-400 bg-amber-50 dark:bg-amber-900/25 px-2.5 py-2">
+          <p className="text-[12px] font-semibold text-amber-800 dark:text-amber-200">
+            ⚠ {DIRECTIVE_LABELS[d.kind] ?? "Standing instruction"} — not yet applied
+          </p>
+          <p className="mt-0.5 text-[11px] text-amber-800 dark:text-amber-200">{d.summary}</p>
+          <blockquote className="mt-1.5 border-l-2 border-amber-400 pl-2 text-[11px] italic text-amber-900 dark:text-amber-200">
+            “{d.evidence_quote.slice(0, 300)}”
+            {d.from_email && <span className="not-italic"> — {d.from_email}</span>}
+          </blockquote>
+          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+            This does not block the send. Decide on{" "}
+            <Link to="/admin/funder-instructions" className="underline">Funder instructions</Link>.
+          </p>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 const DOC_LABELS: Record<string, string> = {
@@ -1742,6 +1865,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                       </span>
                       {edited && <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">edited</span>}
                     </div>
+
+                    {/* Standing instructions from this funder, ABOVE the three-way
+                        branch so they render whatever else is going on — a funder
+                        short a stip AND pointing at a retired inbox has two
+                        independent reasons not to send, and the first must not
+                        hide the second. */}
+                    <div className="px-3 pt-2.5"><DirectiveNotice p={p} /></div>
 
                     {/* Blocked funder — no email, show the reason instead. */}
                     {p.blocked ? (

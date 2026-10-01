@@ -36,6 +36,7 @@ import {
   ChatBubbleLeftRightIcon,
   ChatBubbleBottomCenterTextIcon,
   EnvelopeIcon,
+  EnvelopeOpenIcon,
   TableCellsIcon,
   RocketLaunchIcon,
   ArrowUpTrayIcon,
@@ -226,6 +227,9 @@ const navGroups: NavGroup[] = [
       { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
+      // Funder instructions — OPS (closers included) because the person who
+      // sends submissions is a closer, and this queue has to be in front of her.
+      { name: "Funder Instructions", path: "/admin/funder-instructions", icon: EnvelopeOpenIcon, roles: OPS },
       { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       // Closer Documents — OPS + lens: a closer opens this to read/e-sign their OWN

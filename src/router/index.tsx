@@ -122,6 +122,7 @@ const LeadSourcesPage = lazyWithReload(() => import("../pages/admin/LeadSourcesP
 const LeadImportPage = lazyWithReload(() => import("../pages/admin/LeadImportPage.tsx"));
 const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/ReferralPartnersPage.tsx"));
 const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
+const FunderInstructionsPage = lazyWithReload(() => import("../pages/admin/FunderInstructionsPage.tsx"));
 const SystemHealthPage = lazyWithReload(() => import("../pages/admin/SystemHealthPage.tsx"));
 const PlaidPage = lazyWithReload(() => import("../pages/admin/PlaidPage.tsx"));
 const FunderContactsPage = lazyWithReload(() => import("../pages/admin/FunderContactsPage.tsx"));
@@ -872,6 +873,18 @@ export const routes: RouteObject[] = [
                 path: "renewals",
                 element: <RenewalsProtectedRoute />,
                 children: [{ index: true, element: <RenewalsPage /> }],
+              },
+              // Funder instructions — replies where a funder told us to change HOW
+              // WE SUBMIT (a new submissions inbox, a retired one, portal-only,
+              // new required docs). Under AdminProtectedRoute, i.e. all staff
+              // INCLUDING closers, deliberately: the person who sends
+              // submissions is a `closer` (Kristine), there are no `admin`
+              // profiles in this project, and a queue the submitter cannot open
+              // is the same blind spot one layer out. Resolving is still gated —
+              // the RLS write policy is ops-staff only.
+              {
+                path: "funder-instructions",
+                element: <FunderInstructionsPage />,
               },
               // Document review (admin + super_admin)
               {

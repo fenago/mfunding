@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowPathIcon, DocumentMagnifyingGlassIcon, ArrowRightIcon, EnvelopeOpenIcon } from "@heroicons/react/24/outline";
+import { ArrowPathIcon, DocumentMagnifyingGlassIcon, ArrowRightIcon, EnvelopeOpenIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { readCount, type Readable } from "@/lib/readable";
 
@@ -8,7 +8,7 @@ import { readCount, type Readable } from "@/lib/readable";
 // renewal/doc-review pages are discoverable from the dashboard. Fetches its own
 // counts (does not touch the dashboard's stats loader).
 export default function NeedsAttention() {
-  // ⚠ Readable, not number. These three tiles ARE the processor's work queue.
+  // ⚠ Readable, not number. These four tiles ARE the processor's work queue.
   // `count || 0` rendered a failed read as a calm grey "0 documents to review /
   // 0 funder responses to review" — the same shape as the stage audit that
   // reported "2 backward moves, clean" when the real answer was 28. A queue
@@ -16,6 +16,12 @@ export default function NeedsAttention() {
   const [renewals, setRenewals] = useState<Readable<number>>({ kind: "loading" });
   const [pendingDocs, setPendingDocs] = useState<Readable<number>>({ kind: "loading" });
   const [funderReplies, setFunderReplies] = useState<Readable<number>>({ kind: "loading" });
+  // Funders who told us in writing to change HOW WE SUBMIT — a new submissions
+  // inbox, a retired one, portal-only, newly required docs. Uplyft's
+  // 2026-09-17 "stop using underwriting@" sat unread for twelve days and cost
+  // two submissions; this tile is one of the three places that now has to say
+  // so before the next one goes out.
+  const [directives, setDirectives] = useState<Readable<number>>({ kind: "loading" });
 
   useEffect(() => {
     (async () => {
@@ -31,6 +37,9 @@ export default function NeedsAttention() {
         .from("deal_submissions").select("id", { count: "exact", head: true })
         .not("response_at", "is", null)
         .eq("status", "submitted")));
+      setDirectives(readCount(await supabase
+        .from("funder_directives").select("id", { count: "exact", head: true })
+        .eq("status", "open")));
     })();
   }, []);
 
@@ -38,6 +47,7 @@ export default function NeedsAttention() {
     { label: "Renewal-eligible deals", value: renewals, to: "/admin/renewals", icon: ArrowPathIcon },
     { label: "Documents to review", value: pendingDocs, to: "/admin/documents", icon: DocumentMagnifyingGlassIcon },
     { label: "Funder responses to review", value: funderReplies, to: "/admin/deals", icon: EnvelopeOpenIcon },
+    { label: "Funder instructions to apply", value: directives, to: "/admin/funder-instructions", icon: ExclamationTriangleIcon },
   ];
 
   // A count we could not read must not colour itself "nothing to do".
@@ -45,7 +55,7 @@ export default function NeedsAttention() {
   const broken = (v: Readable<number>) => v.kind === "unreadable";
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
       {cards.map((c) => {
         const Icon = c.icon;
         return (
