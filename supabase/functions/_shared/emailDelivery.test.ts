@@ -15,7 +15,12 @@ import { isEmailStatsPayload, parseEmailStats } from "./emailStats.ts";
 // ── A recording stub standing in for the database ────────────────────────────
 interface Write { table: string; op: "insert" | "update"; row: Record<string, unknown>; match?: unknown }
 
-function stubDb(subs: Record<string, unknown>[], lender: { id: string } | null = null) {
+function stubDb(
+  subs: Record<string, unknown>[],
+  lender: { id: string } | null = null,
+  /** An already-open address_undeliverable row, to exercise the dedupe. */
+  openDirective: { id: string } | null = null,
+) {
   const writes: Write[] = [];
   const builder = (table: string) => {
     const filters: Record<string, unknown> = {};
@@ -36,9 +41,16 @@ function stubDb(subs: Record<string, unknown>[], lender: { id: string } | null =
     const chain = {
       select: () => chain,
       eq: (k: string, v: unknown) => { filters[k] = v; return chain; },
+      ilike: (k: string, v: unknown) => { filters[k] = v; return chain; },
+      is: () => chain, in: () => chain,
       gte: () => chain, lte: () => chain, order: () => Promise.resolve({ data: rows(), error: null }),
       limit: () => chain,
       maybeSingle: () => {
+        // The directive dedupe read. Null = no open row for this address yet.
+        if (table === "funder_directives") return Promise.resolve({ data: openDirective, error: null });
+        // lenderForAddress fallbacks — deliberately empty so an unplaced bounce
+        // with no candidates has no funder to name.
+        if (table === "funder_submission_profiles") return Promise.resolve({ data: null, error: null });
         if (table === "lenders") return Promise.resolve({ data: lender, error: null });
         const r = rows();
         return Promise.resolve({ data: r[0] ?? null, error: null });
@@ -275,4 +287,98 @@ Deno.test("timestamps are seconds, and an unproven failure stays unproven", () =
   assertEquals(p.severity, null, "no code and no severity means UNKNOWN, not permanent");
   const d = parseEmailStats(lcEvent({ event: "delivered", timestamp: 1790801282 }))!;
   assertEquals(d.occurredAt.slice(0, 4), "2026", "a seconds timestamp read as ms lands in 1970");
+});
+
+// ── 9. The dead address becomes a block on the next send ───────────────────
+Deno.test("a placed permanent 5.1.x writes an address_undeliverable directive that retires the address", async () => {
+  const { db, writes } = stubDb([SUB]);
+  const evt = lcEvent({ event: "failed" }, { code: 550, message: "550 5.1.10 RESOLVER.ADR.RecipientNotFound", "enhanced-code": "5.1.10" });
+  const r = await handleEmailDeliveryEvent(db, evt);
+  assertEquals(r.result.directive, "written");
+
+  const dir = find(writes, "funder_directives", "insert")[0];
+  assert(dir, "a directive must be written");
+  assertEquals(dir.row.lender_id, "lender-1");
+  assertEquals(dir.row.kind, "address_undeliverable");
+  assertEquals(dir.row.detected_by, "observed");
+  // THE field submit-to-funders keys its hard block on.
+  assertEquals(dir.row.retired_email, "submissions@highlandhillcap.com");
+  // evidence_quote is NOT NULL and must be the server's own words.
+  assert(String(dir.row.evidence_quote).includes("RESOLVER.ADR.RecipientNotFound"));
+  // The summary is printed verbatim when a send is refused, so it must not put
+  // the bounce in the funder's mouth.
+  const sum = String(dir.row.summary).toLowerCase();
+  assert(sum.includes("their server refused"), sum);
+  // Affirmative attribution only — "nobody there told us anything" is the
+  // opposite claim and must pass. The real live incident was a refusal printing
+  // "Amerifi Capital asked us to stop using… Their words: 550 5.1.10", which
+  // put a mail server's bounce in a funder's mouth.
+  assert(!/(asked|told|requested|instructed) us/.test(sum.replace(/nobody there told us anything/g, "")),
+    `summary attributes speech to the funder: ${sum}`);
+});
+
+// ── 10. Funder-scoped, so deal ambiguity does not stop it ──────────────────
+Deno.test("an ambiguous permanent failure still writes the directive, with no deal", async () => {
+  const { db, writes } = stubDb([SUB, SUB2]);
+  const r = await handleEmailDeliveryEvent(db, lcEvent({ event: "failed" }, { code: 550, message: "550 5.1.1 unknown", "enhanced-code": "5.1.1" }));
+  assertEquals(r.result.directive, "written");
+  const dir = find(writes, "funder_directives", "insert")[0];
+  assertEquals(dir.row.lender_id, "lender-1");
+  assertEquals(dir.row.deal_id, null);
+  assertEquals(dir.row.deal_submission_id, null);
+  assertEquals(dir.row.retired_email, "submissions@highlandhillcap.com");
+  // Which funder's inbox is broken was never ambiguous — only which deal.
+  assert(String(dir.row.summary).includes("2 submissions"));
+});
+
+// ── 11. The two refusals, at the directive level ───────────────────────────
+Deno.test("a 4xx deferral writes NO directive", async () => {
+  const { db, writes } = stubDb([SUB]);
+  await handleEmailDeliveryEvent(db, lcEvent({ event: "failed", severity: "temporary" }, { code: 451, message: "451 4.7.1 greylisted" }));
+  assertEquals(find(writes, "funder_directives", "insert").length, 0);
+});
+
+Deno.test("a bounce of OUR cc copy writes NO directive", async () => {
+  const { db, writes } = stubDb([SUB]);
+  await handleEmailDeliveryEvent(db, lcEvent(
+    { event: "failed", recipient: "socrates73@gmail.com" },
+    { code: 550, message: "550 mailbox unavailable", "enhanced-code": "5.1.1" },
+  ));
+  // Our own audit copy failing says nothing about the funder's inbox, so a
+  // funder-scoped directive would be a false claim about them.
+  assertEquals(find(writes, "funder_directives", "insert").length, 0);
+});
+
+// ── 12. The carve-out: a full mailbox is not a dead address ────────────────
+// TWO independent guards keep a full mailbox from retiring an address, and each
+// is exercised ALONE. A single 5.2.2-plus-"mailbox full" case would pass with
+// either one deleted, which is a test that cannot tell you which half works.
+Deno.test("a 5.2.x enhanced code alone does NOT retire the address", async () => {
+  const { db, writes } = stubDb([SUB]);
+  // Deliberately no quota wording — only the enhanced code can save this one.
+  await handleEmailDeliveryEvent(db, lcEvent({ event: "failed" }, { code: 552, message: "552 delivery refused", "enhanced-code": "5.2.2" }));
+  const dir = find(writes, "funder_directives", "insert")[0];
+  assert(dir, "it is still visible to a human");
+  // Retiring it would block every submission to a funder whose inbox is merely
+  // full — the mailbox EXISTS.
+  assertEquals(dir.row.retired_email, null);
+  assert(String(dir.row.summary).includes("NOT blocked"));
+});
+
+Deno.test("over-quota WORDING alone does NOT retire the address", async () => {
+  const { db, writes } = stubDb([SUB]);
+  // A server that states the quota problem but sends no enhanced code at all.
+  await handleEmailDeliveryEvent(db, lcEvent({ event: "failed" }, { code: 552, message: "552 Requested mail action aborted: mailbox full" }));
+  assertEquals(find(writes, "funder_directives", "insert")[0].row.retired_email, null);
+});
+
+// ── 13. One open row per dead address, not one per bounced message ─────────
+Deno.test("a second bounce to the same address does not mint a second directive", async () => {
+  const { db, writes } = stubDb([SUB], null, { id: "existing-directive" });
+  const r = await handleEmailDeliveryEvent(db, lcEvent({ event: "failed" }, { code: 550, message: "550 5.1.10 nope", "enhanced-code": "5.1.10" }));
+  assertEquals(r.result.directive, "duplicate");
+  assertEquals(find(writes, "funder_directives", "insert").length, 0);
+  // The submission is still marked undelivered — dedupe is about the QUEUE, not
+  // about whether this particular message failed.
+  assert(find(writes, "deal_submissions", "update").some((u) => u.row.delivery_failed_at !== undefined));
 });

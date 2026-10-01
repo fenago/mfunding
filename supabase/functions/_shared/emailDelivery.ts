@@ -138,6 +138,107 @@ export async function placeDeliveryEvent(db: DB, p: ParsedStats): Promise<Placem
   return { rung: "unplaced_none", sub: null, candidates: [] };
 }
 
+// ── A dead address becomes a directive that REFUSES the next send ───────────
+//
+// funder_directives is funder-scoped: `lender_id` is the only required key, and
+// `deal_id` is nullable. That is why the ambiguous case belongs there and not on
+// /admin/sync-log — WHICH FUNDER'S INBOX IS BROKEN is never ambiguous, only
+// which deal the bounced message was for. A row naming the funder and the dead
+// address is complete and actionable without ever resolving the deal.
+//
+// The payoff is a hard, server-side block: submit-to-funders refuses any send
+// whose `to:` equals an open directive's `retired_email`, quoting the row's own
+// summary. So this is not a notification — it is the thing that stops the next
+// submission going to an inbox we can prove mail does not reach.
+//
+// WHAT MAY NOT WRITE ONE:
+//   * A transient 4.x.x. Blocking real deals on a condition the provider is
+//     still retrying would be worse than the bounce.
+//   * A CC bounce. Our own audit copy failing says nothing whatsoever about the
+//     funder's inbox, and a funder-scoped directive would be a false claim
+//     about them.
+//
+// AND ONE CARVE-OUT OF OUR OWN, stricter than asked for: enhanced code 5.2.x is
+// "mailbox status" — the mailbox EXISTS and is temporarily unable to accept
+// (classically 5.2.2, over quota). Permanent by SMTP class, but not a dead
+// address, and retiring it would block every submission to a funder whose inbox
+// is merely full. Those still get a row so a human sees them; they just do not
+// set `retired_email` and so they do not block.
+function retiresTheAddress(p: ParsedStats): boolean {
+  const enh = (p.smtpEnhancedCode ?? "").trim();
+  if (enh.startsWith("5.2")) return false;
+  if (/over quota|quota exceeded|mailbox full|insufficient system storage/i.test(p.smtpMessage ?? "")) return false;
+  return true;
+}
+
+/** The funder behind an address we could not tie to a submission. lender_id is
+ *  funder_directives' one required key, so this is what lets a bounce to a
+ *  funder we have not submitted to lately still become an actionable row. */
+async function lenderForAddress(db: DB, addr: string): Promise<string | null> {
+  if (!addr.includes("@")) return null;
+  const prof = await db.from("funder_submission_profiles")
+    .select("lender_id").ilike("to_email", addr).limit(1).maybeSingle();
+  if (prof.data?.lender_id) return prof.data.lender_id as string;
+  const len = await db.from("lenders")
+    .select("id").ilike("submission_email", addr).limit(1).maybeSingle();
+  return (len.data?.id as string | undefined) ?? null;
+}
+
+async function recordUndeliverableDirective(db: DB, a: {
+  lenderId: string; p: ParsedStats; line: string;
+  dealId: string | null; dealSubmissionId: string | null;
+  candidates: string[]; lenderName: string | null;
+}): Promise<"written" | "duplicate" | "unreadable" | "failed"> {
+  const addr = a.p.recipient.toLowerCase();
+  const retire = retiresTheAddress(a.p);
+
+  // An UNREADABLE dedupe check is not an empty one. Writing on a failed read
+  // duplicates; skipping silently drops a real directive. Same discipline as
+  // recordDirectives.
+  const { data: already, error: readErr } = await db.from("funder_directives")
+    .select("id").eq("lender_id", a.lenderId).eq("kind", "address_undeliverable")
+    .eq("status", "open").ilike("retired_email", addr).limit(1).maybeSingle();
+  if (readErr) return "unreadable";
+  if (already) return "duplicate";
+
+  // `summary` is read VERBATIM at the moment a send is refused, so it is written
+  // for that moment. It must not attribute the bounce to the funder as speech:
+  // "they asked us to stop" and "their server rejected it" lead a processor to
+  // different next actions, and only the second one is true here.
+  const where = a.candidates.length > 1
+    ? ` Seen on a message that could belong to ${a.candidates.length} submissions: ${a.candidates.join(" · ")}.`
+    : a.dealId ? "" : "";
+  const summary = retire
+    ? `Mail to ${addr} is bouncing permanently — their server refused it, nobody there told us anything. ` +
+      `This address is dead; get a working one from ${a.lenderName ?? "the funder"} before sending.${where}`
+    : `${addr} rejected our message but the mailbox exists (${a.p.smtpEnhancedCode || "5.2.x"} — likely full). ` +
+      `Not retired, so sends are NOT blocked; if it keeps bouncing, treat the address as dead.${where}`;
+
+  const { error } = await db.from("funder_directives").insert({
+    lender_id: a.lenderId,
+    funder_reply_id: null,
+    deal_submission_id: a.dealSubmissionId,
+    deal_id: a.dealId,
+    kind: "address_undeliverable",
+    status: "open",
+    detected_by: "observed",
+    // The field that makes submit-to-funders refuse the next send.
+    retired_email: retire ? addr : null,
+    new_email: null,
+    matched_phrases: [a.p.eventRaw, a.p.smtpEnhancedCode || String(a.p.smtpCode ?? "")].filter(Boolean),
+    summary,
+    // NOT NULL, and the raw SMTP reply is exactly the right thing in it: the
+    // human judges the server's own words, not our paraphrase.
+    evidence_quote: a.line,
+    from_email: null,
+    received_at: a.p.occurredAt,
+  });
+  // 23505 = the one-open-row-per-(lender,address) index — a concurrent writer
+  // got there first, which is the dedupe working, not a failure.
+  if (error) return error.code === "23505" ? "duplicate" : "failed";
+  return "written";
+}
+
 const candidateLabel = (r: SubMatchRow) =>
   `${r.deal?.deal_number ?? r.deal_id} (${r.lender?.company_name ?? r.lender_id}, sent ${r.submitted_at ?? "?"})`;
 
@@ -243,6 +344,11 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
           `This funder did NOT receive the package — resend to a working address.`,
       });
 
+      const dir = await recordUndeliverableDirective(db, {
+        lenderId: sub.lender_id, p, line, dealId: sub.deal_id,
+        dealSubmissionId: sub.id, candidates: [], lenderName,
+      });
+
       await alertOwnerDeliveryFailure(db, {
         lenderName, dealNumber, recipient: p.recipient, line,
         candidates: [], submissionId: sub.id,
@@ -250,8 +356,8 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
 
       return {
         outcome: "processed",
-        detail: `email-stats: PERMANENT FAILURE to ${p.recipient} — ${dealNumber ?? sub.deal_id} (${lenderName ?? "?"}) marked undelivered`,
-        result: { event: p.event, submissionId: sub.id, permanent: true, rung: place.rung },
+        detail: `email-stats: PERMANENT FAILURE to ${p.recipient} — ${dealNumber ?? sub.deal_id} (${lenderName ?? "?"}) marked undelivered; directive ${dir}`,
+        result: { event: p.event, submissionId: sub.id, permanent: true, rung: place.rung, directive: dir },
       };
     }
 
@@ -278,6 +384,27 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
     // submission undelivered that may well have arrived. So: park it where a
     // human looks, name every candidate, and touch no submission.
     const names = place.candidates.map(candidateLabel);
+
+    // FUNDER-SCOPED, so the deal ambiguity does not block it. Every candidate
+    // matched on the same `to:` address, so they normally share one lender —
+    // when they genuinely don't (a submission address two funders share), we
+    // have no single funder to name and fall back to the park alone rather than
+    // picking one. With no candidates at all we can still resolve the funder
+    // from the address itself.
+    const lenderIds = new Set(place.candidates.map((r) => r.lender_id).filter(Boolean));
+    const dirLenderId = lenderIds.size === 1
+      ? [...lenderIds][0]
+      : lenderIds.size === 0
+      ? await lenderForAddress(db, p.recipient)
+      : null;
+    let dir: string = lenderIds.size > 1 ? "skipped: candidates span several funders" : "skipped: no funder for this address";
+    if (dirLenderId) {
+      dir = await recordUndeliverableDirective(db, {
+        lenderId: dirLenderId, p, line, dealId: null, dealSubmissionId: null,
+        candidates: names, lenderName: place.candidates[0]?.lender?.company_name ?? null,
+      });
+    }
+
     await db.from("ghl_webhook_events").insert({
       event_type: "EmailDeliveryFailedUnplaced", ghl_contact_id: p.contactId,
       outcome: "error",
@@ -285,7 +412,7 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
         (names.length
           ? `Could belong to ${names.length} submissions — ${names.join(" · ")}. Nothing was marked undelivered; verify which.`
           : `No submission matched this address within ${DELIVERY_MATCH_WINDOW_DAYS} days — it may be a merchant or marketing email.`),
-      payload: { source: "ghl-webhook/email-stats", rung: place.rung, line, recipient: p.recipient, candidates: ledger.candidates },
+      payload: { source: "ghl-webhook/email-stats", rung: place.rung, line, recipient: p.recipient, candidates: ledger.candidates, directive: dir },
     });
     if (names.length) {
       // Say it on each candidate's own deal too — the park alone is a page
@@ -306,8 +433,8 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
     }
     return {
       outcome: "error",
-      detail: `email-stats: PERMANENT FAILURE to ${p.recipient} could not be placed (${place.rung}) — parked, ${names.length} candidate(s)`,
-      result: { event: p.event, permanent: true, rung: place.rung, candidates: names },
+      detail: `email-stats: PERMANENT FAILURE to ${p.recipient} could not be placed (${place.rung}) — parked, ${names.length} candidate(s); directive ${dir}`,
+      result: { event: p.event, permanent: true, rung: place.rung, candidates: names, directive: dir },
     };
   }
 
