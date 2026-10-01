@@ -239,12 +239,14 @@ export default function FunderMatrixPage() {
             </span>
           ),
         )}
+        {/* The label used to hardcode "MCA" — harmless while MCA was the only
+            active tab, wrong the moment the credit products went live. */}
         <span className="ml-auto text-sm text-gray-500">
           {loading
             ? "Loading…"
-            : `${filtered.length}${filtered.length !== rows.length ? ` / ${rows.length}` : ""} live MCA program${
-                rows.length === 1 ? "" : "s"
-              }`}
+            : `${filtered.length}${filtered.length !== rows.length ? ` / ${rows.length}` : ""} live ${
+                PRODUCT_TYPES.find((p) => p.value === productType)?.label ?? productType
+              } program${rows.length === 1 ? "" : "s"}`}
         </span>
       </div>
 
@@ -298,8 +300,18 @@ export default function FunderMatrixPage() {
           Loading approval matrix…
         </div>
       ) : rows.length === 0 ? (
+        /* An empty product tab must never read as "this product has no
+           requirements". It means we have not recorded anyone's criteria for it.
+           Same rule the cheat sheet follows: absence of a record is not a fact
+           about the funder. */
         <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-10 text-center text-gray-500 dark:text-gray-400">
-          No live funder programs yet. When a lender is set to <b>Live</b>, its MCA program appears here.
+          <p className="font-medium text-gray-700 dark:text-gray-200">
+            No {PRODUCT_TYPES.find((p) => p.value === productType)?.label ?? productType} criteria recorded yet.
+          </p>
+          <p className="mt-1 text-sm">
+            This means we have not recorded any funder&rsquo;s requirements for this product &mdash; not that the
+            product has no requirements. Ask the funder and record what they say.
+          </p>
         </div>
       ) : filtered.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-10 text-center text-gray-500 dark:text-gray-400">

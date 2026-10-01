@@ -9,13 +9,27 @@ export interface ProductType {
   active: boolean;
 }
 
+// These values are constrained in the DB by lender_programs_product_type_check
+// (20260930e) and match lenders.category->'products' exactly, so the funder-side
+// vocabularies agree. Do not add a value here without adding it to that CHECK.
+//
+// Renamed 2026-09-30 to match: equipment → equipment_financing, sba_7a →
+// sba_loan. `personal_startup` was dropped — it was inactive, had no equivalent
+// in category->'products', and was not in the CHECK, so enabling it would have
+// failed on the first insert.
+//
+// The four credit products went active the day real rows landed for them (UCS
+// and GoKapital, loaded from their signed ISO packets). A funder with no row for
+// the selected product has criteria we have NOT recorded — that is not the same
+// as no requirement, and the matrix must never render it as a blank cell.
 export const PRODUCT_TYPES: ProductType[] = [
   { value: "mca", label: "Revenue-Based / MCA", active: true },
-  { value: "equipment", label: "Equipment Financing", active: false },
-  { value: "personal_startup", label: "Personal & Start-up Loan", active: false },
-  { value: "sba_7a", label: "SBA 7(a) Loan", active: false },
-  { value: "term_loan", label: "Business Term Loan", active: false },
-  { value: "line_of_credit", label: "Business Line of Credit", active: false },
+  { value: "term_loan", label: "Business Term Loan", active: true },
+  { value: "line_of_credit", label: "Business Line of Credit", active: true },
+  { value: "sba_loan", label: "SBA Loan", active: true },
+  { value: "equipment_financing", label: "Equipment Financing", active: true },
+  { value: "invoice_factoring", label: "Invoice Factoring", active: false },
+  { value: "real_estate_cre", label: "Commercial Real Estate", active: false },
 ];
 
 export interface LenderProgram {
@@ -53,6 +67,13 @@ export interface LenderProgram {
   doc_tax_financials: DocTriState;
   doc_conditions: string | null;
   doc_other: string | null;
+  // ── Credit-product doc requirements (20260930e) ──
+  // The MCA-shaped columns above cannot express these. doc_tax_financials is a
+  // tri-state and cannot say "2 years business AND 2 years personal"; nothing
+  // could express "YTD P&L + balance sheet over $100K" at all.
+  doc_tax_returns: { business_years?: number; personal_years?: number } | null;
+  doc_financials_threshold: number | null;
+  doc_extras: string[] | null;
 }
 
 // The 3-state doc columns share the same shape: a "no" default plus two "yes"
@@ -122,6 +143,8 @@ export const PROGRAM_FIELDS: ProgramField[] = [
   { key: "doc_ar_aging", label: "A/R aging report", short: "A/R aging", type: "tri", doc: true, options: CC_AR_OPTIONS },
   { key: "doc_tax_financials", label: "Tax return / financials", short: "Tax / financials", type: "tri", doc: true, options: TAX_OPTIONS },
   { key: "doc_conditions", label: "Conditional doc rules", short: "Conditions", type: "text", doc: true },
+  { key: "doc_financials_threshold", label: "P&L + balance sheet required over", short: "Financials over", type: "money", doc: true, help: "Funded amount at or above which YTD P&L + balance sheet become required. Blank = no threshold recorded." },
+  { key: "doc_extras", label: "Additional documents", short: "Extra docs", type: "list", doc: true, help: "One per line: debt_schedule, personal_financial_statement, equipment_invoice, reo_schedule, business_plan, purchase_agreement, rent_roll, appraisal, credit_report, customer_list" },
   { key: "doc_other", label: "Other documents", short: "Docs — other", type: "text", doc: true },
   { key: "required_documents", label: "Documents summary (readable)", short: "Documents summary", type: "list", doc: true, help: "Readable summary of the requirement. The split-out columns are the source of truth; this is the at-a-glance version." },
 ];
@@ -130,8 +153,20 @@ export const PROGRAM_FIELDS: ProgramField[] = [
 export const DOC_FIELD_KEYS = PROGRAM_FIELDS.filter((f) => f.doc).map((f) => f.key);
 
 // Columns to SELECT for a program (lender_programs.*), plus the joined lender name/status.
+//
+// ⚠️ LOCKSTEP WITH PROGRAM_FIELDS. LenderDetailPage's persistMca() writes every
+// PROGRAM_FIELDS key on every save, reading values off a row fetched with this
+// list. A key in PROGRAM_FIELDS but missing here reads as undefined and the next
+// "Save Changes" silently NULLs that column. Nothing enforces this — no test, no
+// type. Change both lists in the same commit.
+//
+// The reverse (here but not in PROGRAM_FIELDS) is safe and deliberate: the
+// column is readable and displayable but never written, so it cannot be
+// clobbered. That is how the 20260725 box-criteria columns survive, and it is
+// why doc_tax_returns sits below without a PROGRAM_FIELDS entry — it is jsonb
+// and no ProgramFieldType renders it yet. It is SQL-only until one exists.
 export const PROGRAM_SELECT =
-  "id, lender_id, product_type, is_active, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, points_min, points_max, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents, notes, doc_bank_statement_months, doc_application, doc_photo_id, doc_voided_check, doc_cc_processing, doc_mtd_statement, doc_proof_of_ownership, doc_ar_aging, doc_tax_financials, doc_conditions, doc_other";
+  "id, lender_id, product_type, is_active, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, points_min, points_max, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents, notes, doc_bank_statement_months, doc_application, doc_photo_id, doc_voided_check, doc_cc_processing, doc_mtd_statement, doc_proof_of_ownership, doc_ar_aging, doc_tax_financials, doc_conditions, doc_other, doc_tax_returns, doc_financials_threshold, doc_extras";
 
 export function money(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
