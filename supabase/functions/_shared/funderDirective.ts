@@ -149,9 +149,15 @@ const GENERIC_PLURAL_OBJECT: Array<[string, RegExp]> = [
 
 /** A directive to route somewhere. */
 const SEND_VERB: Array<[string, RegExp]> = [
-  ["send", /\bsend(?:ing)?\b/i],
-  ["submit", /\bsubmit(?:ting)?\b/i],
-  ["forward", /\bforward(?:ing)?\b/i],
+  // Past participles included: "files should be SENT to X" and "deals are
+  // SUBMITTED to X" are routing instructions, and the first version matched
+  // only the bare stems. Caught by the test asserting a real portal move still
+  // fires — Lendini's genuine "all submissions will need to be SENT either API
+  // or Portal" only passed because the real body left it unsplit next to a
+  // sentence that happened to contain "email".
+  ["send", /\bsen[dt](?:ing)?\b/i],
+  ["submit", /\bsubmit(?:ting|ted)?\b/i],
+  ["forward", /\bforward(?:ing|ed)?\b/i],
   ["email-to", /\be-?mail(?:ing)?\b/i],
   ["use", /\buse\b/i],
   ["direct", /\bdirect\b/i],
@@ -191,7 +197,13 @@ const RETIRE_CUE: Array<[string, RegExp]> = [
 
 const PORTAL_CUE: Array<[string, RegExp]> = [
   ["portal", /\bportal\b/i],
-  ["our system", /\b(?:our|the) (?:system|platform|site|website|dashboard)\b/i],
+  // "our system" is GONE, and it was a false positive on a real row. Instagreen
+  // wrote "let me know which members of your team we will be working with so we
+  // can add them to our system and ensure they are properly set up" — that is
+  // "add your staff to our CRM", not "stop emailing and use our portal", and it
+  // sat in the actionable queue telling a processor to change how we submit.
+  // A portal instruction says portal. The looser phrasing bought nothing and
+  // cost a row in the queue that matters.
 ];
 
 const DOC_NOUN: Array<[string, RegExp]> = [
@@ -225,10 +237,17 @@ const CONTACT_ROLE: Array<[string, RegExp]> = [
 const CONTACT_CHANGE_CUE: Array<[string, RegExp]> = [
   ["going forward", /\b(?:going|moving) forward\b/i],
   ["from now on", /\bfrom now on\b/i],
-  ["please contact", /\bplease (?:contact|reach out to|send .{0,20}to|direct)\b/i],
+  // `send .{0,20}to` is GONE from this list. It is a ROUTING phrase, and
+  // putting it in a CONTACT-CHANGE cue made every "please send all deals to X
+  // and cc your Account Manager" read as the contact having changed. Lendini's
+  // onboarding email said exactly that — it names who the account manager IS,
+  // on day one; nothing changed — and it sat in the actionable queue.
+  // A contact CHANGE needs language about a change.
+  ["please contact", /\bplease (?:contact|reach out to|direct your)\b/i],
   ["has left", /\b(?:has|have) (?:left|departed|moved on|been replaced)\b/i],
   ["no longer with", /\bno longer (?:with|here|at)\b/i],
   ["replacing", /\b(?:replacing|taking over|took over)\b/i],
+  ["new rep", /\b(?:new|different|another)\s+(?:iso\s+)?(?:rep(?:resentative)?|manager|contact)\b/i],
 ];
 
 /**
@@ -357,6 +376,30 @@ export function detectDirectives(body: string): DetectedDirective[] {
    * front of the address, so the address is a byline, not a destination.
    */
   const DESTINATION_PREP = /(?:\b(?:to|at)\b|:)\s*(?:this\s+|our\s+|the\s+|new\s+|updated\s+|e-?mail\s+|address\s+|inbox\s+)*$/i;
+  /**
+   * A CONTACT LABEL in a signature block — "E:", "Email:", "Direct:" — which
+   * satisfies DESTINATION_PREP through its colon and means the opposite of a
+   * routing instruction: here is a person's address, not where to send deals.
+   *
+   * BOTH of the false positives the team lead caught were this, and both would
+   * have moved submissions off a working inbox:
+   *
+   *   True Advance — "P: 551-341-1453 E: submissions@trueadvance.biz" is the
+   *   Submissions Team's signature. We already send to
+   *   submissions@trueadvancefunding.com, which has replied to us by name.
+   *
+   *   Velocity — "Your ISO Representative is Jesse Guzman Email:
+   *   jesse@velocitycg.com". The SAME email says "To Subs@velocitycg.com" and
+   *   "Deal Submissions: Subs@velocitycg.com". jesse@ is a salesperson's
+   *   mailbox; subs@ is the inbox, named twice, and is what we already use.
+   *   Acting on that row would have routed a merchant's file to a rep.
+   *
+   * The discriminator is what sits in front of the label: a routing noun
+   * ("Submissions Email:", "Deal Submissions:") makes it a designation; a name
+   * or a phone number makes it a signature.
+   */
+  const CONTACT_LABEL = /\b(e|e-?mail|direct|phone|tel|cell|mobile|fax|office|web|website|contact)\s*:\s*$/i;
+  const ROUTING_NOUN_BEFORE_LABEL = /\b(submissions?|deals?|files?|packages?|applications?|underwriting|new\s+business|paperwork)\b[^:]{0,12}$/i;
   const newEmails: string[] = [];
   const retiredEmails: string[] = [];
   const routingSentences: string[] = [];
@@ -373,7 +416,15 @@ export function detectDirectives(body: string): DetectedDirective[] {
     if (isOwnTemplate(win)) continue;
     // Nor is their mail gateway's anti-phishing banner.
     if (isSecurityBanner(win)) continue;
-    if (!DESTINATION_PREP.test(text.slice(Math.max(0, at - 60), at))) continue;
+    const before = text.slice(Math.max(0, at - 60), at);
+    if (!DESTINATION_PREP.test(before)) continue;
+    // A bare contact label is a signature, not a destination — unless a routing
+    // noun sits in front of it ("Submissions Email:" vs "Jesse Guzman Email:").
+    const label = before.match(CONTACT_LABEL);
+    if (label) {
+      const beforeLabel = before.slice(0, before.length - label[0].length);
+      if (!ROUTING_NOUN_BEFORE_LABEL.test(beforeLabel)) continue;
+    }
     const verbs = hits(win, SEND_VERB);
     const subjects = hits(win, SUBJECT_OF_SUBMISSION);
     if (verbs.length === 0 || subjects.length === 0) continue;

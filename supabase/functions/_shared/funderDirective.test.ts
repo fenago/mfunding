@@ -211,3 +211,76 @@ Deno.test("a one-off singular file request still does not fire", () => {
     [],
   );
 });
+
+// ── The four false positives the team lead caught, kept dead ────────────────
+//
+// All five rows in the first actionable queue were reviewed by hand. FOUR were
+// wrong, and two of those would have moved submissions off a working address.
+// A queue that cries wolf four times out of five teaches a processor to dismiss
+// the fifth, which is the Scott reply all over again — so each one gets a test.
+
+Deno.test("True Advance: a signature block is not a second submissions inbox", () => {
+  // funder_replies 977d5e41, 2026-08-10. We send to
+  // submissions@trueadvancefunding.com, which has replied to us by name. The
+  // detected address came out of the Submissions Team's own sign-off.
+  assertEquals(
+    kinds(
+      `Received, we will review. -- Highest regards, Submissions Team True Advance P: 551-341-1453 E: submissions@trueadvance.biz www.trueadvance.biz`,
+    ),
+    [],
+  );
+});
+
+Deno.test("Velocity: the rep's address loses to the inbox named in the same email", () => {
+  // funder_replies 92c2ea0e, 2026-07-07. "Email: jesse@velocitycg.com" is the
+  // ISO rep; the same message says "To Subs@velocitycg.com" and "Deal
+  // Submissions: Subs@velocitycg.com". Acting on jesse@ would have routed a
+  // merchant's file to a salesperson's mailbox, off the funder's stated inbox.
+  const d = detect(
+    `Your ISO Representative is Jesse Guzman Email: jesse@velocitycg.com Phone: 516-202-2202 To submit your file please send One-page Funding Application To Subs@velocitycg.com Contact us General Email: Info@velocitycg.com Deal Submissions: Subs@velocitycg.com`,
+  ).find((x) => x.kind === "submission_email_change");
+  assert(d, "the inbox IS named here, so this should still detect something");
+  assertEquals(d!.new_email, "subs@velocitycg.com");
+});
+
+Deno.test("'Submissions Email:' is still a designation, not a signature", () => {
+  // The guard keys on what precedes the label, so this must survive it.
+  // funder_replies 33b93a92 — Capital Express.
+  const d = detect(
+    `Underwriting Guidelines Submission Requirements Submissions Email: underwriting@capitalexpressllc.com .`,
+  ).find((x) => x.kind === "submission_email_change");
+  assert(d);
+  assertEquals(d!.new_email, "underwriting@capitalexpressllc.com");
+});
+
+Deno.test("Instagreen: 'add them to our system' is not a portal instruction", () => {
+  // funder_replies b9ead23a. "let me know which members of your team we will be
+  // working with so we can add them to our system" is "add your staff to our
+  // CRM". It sat in the actionable queue as a submission-method change.
+  assert(
+    !kinds(
+      `Please send all submissions to: Isabel@instagreencapital.com Cc submit@instagreencapital.com Additionally, please let me know which members of your team we will be working with so we can add them to our system and ensure they are properly set up on our end.`,
+    ).includes("use_portal"),
+  );
+});
+
+Deno.test("Lendini: naming the account manager on day one is not a contact change", () => {
+  // funder_replies 9ae239cc. `send .{0,20}to` was in the CONTACT-CHANGE cue
+  // list, so every "please send all deals to X and cc your Account Manager"
+  // read as the contact having changed. Nothing had changed; it was onboarding.
+  assert(
+    !kinds(
+      `Please send all deals to submissions@lendini.com and cc your Account Manager, Mia Stephenson using the email mia.stephenson@lendini.com`,
+    ).includes("contact_change"),
+  );
+});
+
+Deno.test("a real portal move and a real contact change still fire", () => {
+  // Tightening both cue lists must not have switched the kinds off entirely.
+  assert(kinds(
+    `Please note that all submissions will need to be sent either API or Portal in the very near future. You should receive credentials to the Funding Metrics Portal via email.`,
+  ).includes("use_portal"));
+  assert(kinds(
+    `Jesse has left the company. Going forward your new ISO representative is Dana Ruiz, please contact her at dana@example-funder.com for anything on your files.`,
+  ).includes("contact_change"));
+});

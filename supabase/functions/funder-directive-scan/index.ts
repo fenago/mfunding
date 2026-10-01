@@ -110,6 +110,8 @@ Deno.serve(async (req) => {
   /** Replies whose rows were written but could not be counted back. */
   let uncounted = 0;
   const failures: Array<{ replyId: string; error: string }> = [];
+  /** Rows the current rules no longer produce, deleted rather than left to rot. */
+  const pruned: Array<{ replyId: string; kind: string }> = [];
   const found: Array<{ replyId: string; lenderId: string; kinds: string[]; subject: string | null }> = [];
 
   for (const r of replies) {
@@ -125,6 +127,55 @@ Deno.serve(async (req) => {
       receivedAt: (r.received_at as string | null) ?? null,
     });
     if (res.error) failures.push({ replyId: r.id as string, error: res.error });
+
+    // ── RETRACT WHAT THE DETECTOR NO LONGER FINDS ────────────────────────────
+    //
+    // A detector fix does not undo the rows the old detector wrote, and that
+    // asymmetry nearly cost more than the original bug. Of the first five rows
+    // the queue called actionable, FOUR were false positives — a signature
+    // block read as a second submissions inbox, an ISO rep's personal address
+    // read as an inbox, "add them to our system" read as a portal move, and an
+    // onboarding email naming the account manager read as the contact having
+    // changed. Each was fixed in the rules. Each row stayed in the queue.
+    //
+    // A queue that cries wolf four times in five teaches a processor to dismiss
+    // the fifth, which is the Scott reply all over again. So the nightly scan
+    // is self-correcting: a row whose own reply no longer produces its kind is
+    // deleted, not dismissed — DISMISSED would assert a human judged it, and
+    // nobody did.
+    //
+    // Deliberately narrow. Only rows that are still open, were written by the
+    // RULE (never a human's manual entry), carry no sign of anyone having
+    // touched them, and belong to a reply we just read SUCCESSFULLY. A failed
+    // read must never delete anything: that is how "we could not check" turns
+    // into "there was nothing there", which is the defect this whole feature
+    // exists to end.
+    if (!res.error) {
+      const { data: stale, error: staleErr } = await db
+        .from("funder_directives")
+        .select("id, kind")
+        .eq("funder_reply_id", r.id as string)
+        .eq("status", "open")
+        .eq("detected_by", "rule")
+        .is("resolved_by", null)
+        .is("resolution_note", null);
+      if (staleErr) {
+        failures.push({ replyId: r.id as string, error: `prune check failed: ${staleErr.message}` });
+      } else {
+        const current = new Set(res.kinds as string[]);
+        const gone = (stale ?? []).filter((d) => !current.has(d.kind as string));
+        for (const d of gone) {
+          const { error: delErr } = await db
+            .from("funder_directives").delete().eq("id", d.id as string);
+          if (delErr) {
+            failures.push({ replyId: r.id as string, error: `prune failed for ${d.kind}: ${delErr.message}` });
+          } else {
+            pruned.push({ replyId: r.id as string, kind: d.kind as string });
+          }
+        }
+      }
+    }
+
     if (res.kinds.length) {
       flagged++;
       // null = the read-back failed. Adding 0 would quietly understate the
@@ -153,6 +204,10 @@ Deno.serve(async (req) => {
     // which made the first backfill report 0 while writing 7.
     rowsOnFile: written,
     repliesWhoseRowsCouldNotBeCounted: uncounted,
+    // Rows retracted because the current rules no longer find them. A
+    // non-zero number here after a rule change is the scan correcting itself.
+    prunedCount: pruned.length,
+    pruned,
     // null, not 0 — "we could not count" is a different fact from "none open".
     openDirectives: countErr ? null : (openCount ?? 0),
     openDirectivesError: countErr?.message ?? null,
