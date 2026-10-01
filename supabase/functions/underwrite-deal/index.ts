@@ -1312,6 +1312,42 @@ Deno.serve(async (req) => {
         `[underwrite-deal] refusing to persist an empty run for deal ${dealId} — ` +
         (stErrors.join(" | ") || "no statements extracted"),
       );
+      // REFUSING TO WRITE A VERDICT IS NOT THE SAME AS LEAVING NO TRACE.
+      // The guard above is right to persist nothing — a run where no document
+      // produced metrics would otherwise store a zero revenue AND a full adverse
+      // verdict (MF-2026-0138 v6, 2026-07-25: revenue_quality_pct 100 from zero
+      // statements, risk_rating high, "unreachable in every scenario"), all of it
+      // derived from five identical `temperature is deprecated` 400s.
+      //
+      // But the ledger only ever went back in the HTTP response, and nobody is
+      // watching an edge-function response at 2am. "Why was this deal never
+      // underwritten?" then has no answer at all — the fix for a silent wrong
+      // answer must not become a silent absence. So the per-document failure
+      // detail lands on the deal's activity_log where a human can find it later.
+      //
+      // Best-effort on purpose: a logging failure must NEVER block the refusal,
+      // or we would be back to persisting a verdict because the audit note broke.
+      // interaction_type must be 'note' — the check constraint rejects other
+      // values silently (same reason as _shared/docClassify.ts).
+      try {
+        const ledgerLines = documentLedger
+          .map((d) => `• ${d.filename ?? "(unnamed)"} — ${d.status}${d.detail ? `: ${String(d.detail).slice(0, 300)}` : ""}`)
+          .join("\n");
+        const { error: logErr } = await db.from("activity_log").insert({
+          entity_type: "deal",
+          entity_id: dealId,
+          interaction_type: "note",
+          subject: "underwriting:refused-empty-run",
+          content:
+            `No underwriting version was saved — not one of ${perStatement.length} document(s) produced usable metrics, ` +
+            `so every figure would have been a zero that is not a fact. The previous version remains the latest.\n` +
+            (providerErr ? `AI provider error: ${providerErr}\n` : "") +
+            (ledgerLines ? `\nPer-document result:\n${ledgerLines}` : "\nNo documents were submitted."),
+        });
+        if (logErr) console.warn(`[underwrite-deal] refusal activity_log insert failed: ${logErr.message}`);
+      } catch (e) {
+        console.warn(`[underwrite-deal] refusal activity_log threw: ${e instanceof Error ? e.message : e}`);
+      }
       return json({
         error: providerErr
           ? providerErrorMessage(providerErr)
