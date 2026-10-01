@@ -482,9 +482,16 @@ export default function FunderChaseTab() {
     // — a two-column view over `lenders` gated by funder_lookup_allowed(). This
     // used to be a `lender:lenders!lender_id (...)` embed, which required every
     // reader of this board to be able to read the whole `lenders` row. That row
-    // carries submission recipes, commission structures and free-text notes —
-    // one of which holds a live uid:/pw: pair — so the board gets the two
-    // columns it renders and nothing else.
+    // carries submission recipes, commission structures and free-text
+    // operational notes a human pastes into, so the board gets the two columns
+    // it renders and nothing else.
+    //
+    // The reason is the SHAPE, not any particular column's current contents. An
+    // earlier version of this comment said one of those notes held a live
+    // uid:/pw: pair; that was true when written and was scrubbed hours later,
+    // which would have read as the justification having evaporated. It hasn't:
+    // a surface that renders a name should not be handed a row, whatever today
+    // happens to be in it.
     //
     // UNREADABLE vs ABSENT, without a second probe query: lender_id is a FOREIGN
     // KEY to lenders(id) (deal_submissions_lender_id_fkey), so every id here is
