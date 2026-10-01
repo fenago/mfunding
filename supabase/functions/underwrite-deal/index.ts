@@ -4862,7 +4862,18 @@ Deno.serve(async (req) => {
         [/\blend\w*\b/i, "lending language"],
         [/\binterest rate\b|\bAPR\b/i, "interest-rate language"],
         [/\brepay\w*\b/i, "repayment language"],
-        [/\bdeclin\w*\b/i, "mentions a decline"],
+        // ── "DECLINE" IN THE FUNDING SENSE ONLY ────────────────────────────────
+        // A bare /declin\w*/ ban is wrong, and this is the THIRD time a word-ban has
+        // rejected a good paragraph. The live rejection was "that month sits well below
+        // the others... so it reads as a dip rather than a DECLINE" — ordinary English
+        // about a revenue dip, and a sentence doing real advocacy work. What must never
+        // appear is a funder having turned the file down, which needs an agent or a
+        // passive construction. Note the model is never SHOWN decline information, so
+        // the only things this can catch are the innocent sense and a hallucination.
+        [/\b(?:was|were|been|previously|already)\s+declin(?:e|ed)\b/i, "says the file was declined"],
+        [/\bdeclin\w*\b[^.]{0,30}\b(?:by|from)\s+(?:a\s+|another\s+)?(?:funder|lender|underwriter|desk|bank)/i,
+          "says a funder declined it"],
+        [/\b(?:funder|lender|underwriter|desk)s?\b[^.]{0,40}?\bdeclin\w*/i, "says a funder declined it"],
         [/\bdisqualif\w*\b/i, "mentions a disqualification"],
         [/\bpaper (?:tier|grade)\b/i, "leaks the internal paper tier"],
         [/\bcredit score\b/i, "mentions a credit score"],
@@ -4885,8 +4896,14 @@ Deno.serve(async (req) => {
           "asserts a numeric position count"],
         [/\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b[^.]{0,20}?\bposition count\b/i,
           "asserts a numeric position count"],
-        [/\bdebt service\b/i, "states a debt-service burden"],
-        [/\bholdback\b/i, "states a holdback percentage"],
+        // Also assertion-scoped, for the same reason: "there is no holdback on this
+        // file" is a legitimate thing to say, and a bare word-ban would reject it. What
+        // we withhold is a NUMBER attributed to the burden, since it is summed from the
+        // unverified position array.
+        [/\bdebt service\b[^.]{0,30}?(?:\d|\$)/i, "states a debt-service burden"],
+        [/(?:\d|\$)[^.]{0,30}?\bdebt service\b/i, "states a debt-service burden"],
+        [/\bholdback\b[^.]{0,30}?(?:\d|\$)/i, "states a holdback figure"],
+        [/(?:\d|\$)[^.]{0,30}?\bholdback\b/i, "states a holdback figure"],
         [/\b\d{1,3}(?:\.\d+)?\s?%\s*(?:of|against)\s+(?:the\s+)?(?:verified\s+|monthly\s+|average\s+)*revenue/i,
           "states a remittance burden as a % of revenue"],
         // Cents on a REVENUE figure only. Figures read straight off a statement (an
