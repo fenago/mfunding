@@ -101,7 +101,7 @@ for slug in "$@"; do
       rm -f "$BODY"; die "$slug's running bundle contains the UNGENERATED SENTINEL. The marker did not reach it."
     fi
     grep -aq "$HEAD_SHA" "$BODY" \
-      || { rm -f "$BODY"; die "$slug's running bundle does NOT contain $HEAD_SHA. It may not import _shared/ghl.ts (4 of 100 do not) — verify that function by content instead."; }
+      || { rm -f "$BODY"; die "$slug's running bundle does NOT contain $HEAD_SHA. It may not import _shared/ghl.ts — admin-users, bulk-lead-import, instantly, scan-lender-website and scan-vendor-website (5 of 100) do not, and are expected to fail here. Verify those by content instead."; }
     rm -f "$BODY"
     echo "verified: running bundle carries ${HEAD_SHA:0:12}"
   else

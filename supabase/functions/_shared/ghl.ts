@@ -1,6 +1,6 @@
 // Shared GoHighLevel (LeadConnector API v2) client for Supabase edge functions.
 //
-// ⚠ The buildInfo re-export below is deliberate and load-bearing. 96 of 100 edge
+// ⚠ The buildInfo re-export below is deliberate and load-bearing. 95 of 100 edge
 // functions import this module, so re-exporting the deploy marker here puts it in
 // nearly every bundle from ONE line, instead of editing a hundred entrypoints. It
 // is re-exported rather than merely imported because a bundler may drop an unused
