@@ -206,12 +206,28 @@ function FunderLine({
           ⚠ no typed text — open it
         </span>
       )}
-      {s.openedAt ? (
+      {/* ⚠ NO `not opened` BRANCH, ON PURPOSE.
+          `deal_submissions.opened_at` has NEVER been written: 38 submissions
+          since 2026-07-03, 0 with an open recorded — while 25 of them REPLIED.
+          Nothing in supabase/functions writes the column. So "not opened" was
+          printed on every row of every deal, always, and was never once a
+          measurement: 1 West read the file, declined it in writing, and still
+          showed "not opened" beside the decline.
+
+          This is not a missing feature either — open tracking WORKS here, just
+          not on this path: email_open_events holds 286 merchant opens across 76
+          customers (migration 20260720). It was simply never wired to funder
+          submissions, which is a real gap worth closing, and until it is the
+          honest render is SILENCE. An absent signal is not a negative one.
+
+          The 👀 chip stays so the moment anything does write opened_at it shows
+          up — but a null now says nothing rather than accusing the funder of
+          ignoring us. Owner asked why a funder who replied read "not opened",
+          2026-10-01. */}
+      {s.openedAt && (
         <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[10px] font-semibold">
           👀 opened{s.openCount > 1 ? ` ${s.openCount}×` : ""}
         </span>
-      ) : (
-        <span className="text-[10px] text-gray-400">not opened</span>
       )}
       {breached && quoted != null && (
         <span className="text-[10px] font-bold text-red-700 dark:text-red-300">
