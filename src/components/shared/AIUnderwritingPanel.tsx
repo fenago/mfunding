@@ -947,6 +947,188 @@ function SubmissionFacts({ facts }: { facts: Record<string, unknown> }) {
   );
 }
 
+// ── Consolidation: a trade with two halves, and neither may be shown alone ────
+//
+// `metrics.consolidation_analysis` is NOT the same question as `metrics.refi`.
+// refi answers "does a consolidated payment fit"; this answers "is it a good
+// idea", which refi never did. The whole reason the dimension exists is that
+// consolidation is BETTER MONTHLY AND WORSE OVERALL — on Spirit Drilling
+// (MF-2026-0442) $4,577/mo freed, bought with $9,082 of additional total cost at
+// a 45% premium.
+//
+// So the relief and the premium are rendered in the same block, at the same
+// weight, side by side. A panel that showed "$4,577/mo freed" in large green text
+// with the premium in grey underneath would mislead in exactly the way this
+// analysis was built to prevent, and would do it while appearing to disclose.
+//
+// `applicable: false` is an EARNED answer (no positions, no estimable balance),
+// not missing data, so it renders as a stated finding with its reason rather than
+// as nothing at all.
+const CONSOLIDATION_VERDICT: Record<string, { label: string; tone: Tone }> = {
+  better_monthly_costlier_overall: { label: "Better monthly, costlier overall", tone: "warn" },
+  better_both: { label: "Better monthly AND cheaper overall", tone: "good" },
+  worse_both: { label: "Worse monthly and costlier overall", tone: "critical" },
+  not_viable: { label: "Not viable", tone: "critical" },
+};
+
+function ConsolidationSection({
+  c, read,
+}: {
+  c: NonNullable<Partial<UWMetrics>["consolidation_analysis"]>;
+  read?: string | null;
+}) {
+  // An earned "no", with the reason. Never silence.
+  if (c.applicable === false) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+        <h4 className="font-semibold text-gray-900 dark:text-white mb-1">Consolidation</h4>
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          <span className="font-semibold">Not applicable to this file.</span>{" "}
+          {c.reason ?? "No open positions with an estimable balance, so there is nothing to consolidate."}
+        </p>
+        <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+          This is a computed answer, not a gap in the data.
+        </p>
+      </div>
+    );
+  }
+
+  const v = c.verdict ? CONSOLIDATION_VERDICT[c.verdict] : undefined;
+  const relief = c.monthly_relief ?? null;
+  const premium = c.premium_vs_paying_as_is ?? null;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Consolidation</h4>
+        {v && (
+          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+            v.tone === "good"
+              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+              : v.tone === "critical"
+                ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+          }`}>
+            {v.label}
+          </span>
+        )}
+      </div>
+
+      {/* THE TWO HALVES, equal weight, same row. */}
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-900/15 p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+            What it frees up
+          </div>
+          <div className="text-2xl font-bold text-emerald-800 dark:text-emerald-200 leading-tight mt-0.5">
+            {relief != null ? `${money(relief)}/mo` : "—"}
+          </div>
+          <div className="text-[11px] text-emerald-800/80 dark:text-emerald-200/80 mt-1">
+            {money(c.current_monthly_remittance)} → {money(c.consolidated_monthly_payment)}
+            {c.monthly_relief_pct_of_revenue != null && (
+              <> · {pct(c.monthly_relief_pct_of_revenue)} of revenue</>
+            )}
+          </div>
+        </div>
+        <div className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50/60 dark:bg-red-900/15 p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+            What it costs
+          </div>
+          <div className="text-2xl font-bold text-red-800 dark:text-red-200 leading-tight mt-0.5">
+            {premium != null ? `+${money(premium)}` : "—"}
+            {c.premium_pct != null && (
+              <span className="text-sm font-bold"> ({Math.round(c.premium_pct)}%)</span>
+            )}
+          </div>
+          <div className="text-[11px] text-red-800/80 dark:text-red-200/80 mt-1">
+            {money(c.est_outstanding_mid)} owed now → {money(c.total_payback)} total payback
+            {c.consolidated_term_months != null && <> over {num(c.consolidated_term_months)} mo</>}
+          </div>
+        </div>
+      </div>
+
+      {c.tradeoff && (
+        <p className="mt-3 text-sm text-gray-700 dark:text-gray-200">
+          <span className="font-semibold">The trade:</span> {c.tradeoff}
+        </p>
+      )}
+      {/* The distinction that gets merchants into trouble — true consolidation
+          retires the positions, reverse consolidation does not. */}
+      {c.mechanism_note && (
+        <p className="mt-2 text-[11px] text-gray-600 dark:text-gray-300 border-t border-gray-200 dark:border-gray-700 pt-2">
+          {c.mechanism_note}
+        </p>
+      )}
+      {c.caveat && (
+        <p className="mt-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">⚠ {c.caveat}</p>
+      )}
+      {read && (
+        <div className="mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
+          <NarrativeText text={read} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Do we even have desks for this? ──────────────────────────────────────────
+// Counts of LIVE funders by product, never names. It makes the consolidation and
+// term-loan reads actionable: "2 true-consolidation desks" is a different
+// conversation from "0", and until now nothing rendered this at all even though
+// every run carries it.
+//
+// `status !== "read_ok"` means the lenders table could not be read. The counts
+// then MUST NOT print — "we have no SBA desks" and "we could not check" send a
+// closer to opposite conclusions, and this is the panel where that mistake is
+// least affordable.
+function NetworkCapability({ n }: { n: NonNullable<Partial<UWMetrics>["network_capability"]> }) {
+  if (n.status !== "read_ok") {
+    return (
+      <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
+        <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          ⚠ Couldn&apos;t read the funder network for this run{n.status ? ` (${n.status})` : ""}.
+        </p>
+        <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-0.5">
+          This is <span className="font-bold">not</span> &ldquo;no desks available&rdquo;. Check the funder
+          catalogue before telling anyone a product is unplaceable.
+        </p>
+      </div>
+    );
+  }
+  const rows: { label: string; v: number | undefined }[] = [
+    { label: "All live funders", v: n.live_funders_total },
+    { label: "Term loan", v: n.live_term_loan_desks },
+    { label: "Line of credit", v: n.live_loc_desks },
+    { label: "SBA", v: n.live_sba_desks },
+    { label: "Factoring", v: n.live_factoring_desks },
+    { label: "True consolidation", v: n.live_true_consolidation_desks },
+    { label: "Reverse consolidation", v: n.live_reverse_consolidation_desks },
+  ].filter((r) => r.v != null);
+  if (rows.length === 0) return null;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
+        Live desks by product
+      </h4>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {rows.map((r) => (
+          <span key={r.label} className="inline-flex items-baseline gap-1.5 text-[11px]">
+            <span className={`font-bold tabular-nums ${
+              (r.v ?? 0) === 0 ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white"
+            }`}>
+              {num(r.v)}
+            </span>
+            <span className="text-gray-500 dark:text-gray-400">{r.label}</span>
+          </span>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+        Counts only — which desk is the shortlist&apos;s job. A zero is a real zero: that product has nowhere
+        to go today.
+      </p>
+    </div>
+  );
+}
+
 /** Shown when a tab has nothing in it. Says WHY it is empty — a run stored before
  *  a detector shipped is not the same as a clean file, and this panel must never
  *  let those two read alike. */
@@ -1189,6 +1371,35 @@ function ResultView({
             />
           )}
 
+          {/* ── Consolidation — its own region, per underwriter-dimensions 10/1 ──
+              Deliberately NOT folded into RemainingRefiSection above. `refi`
+              answers "does a consolidated payment fit"; this answers "is it a
+              good idea", and only this one carries the factor premium. Reading
+              the relief without the premium is the specific error the dimension
+              exists to prevent, so the component renders both halves at equal
+              weight and neither can be shown alone.
+
+              Sourced from `metrics.consolidation_analysis`, NOT from
+              `submission_facts.consolidation_*` — that fact set is a deliberately
+              narrowed funder-safe subset handed to the paragraph writer, and
+              `metrics` is authoritative if the two ever disagree. */}
+          {consolidation && (
+            <ConsolidationSection c={consolidation} read={lenses?.consolidation_read} />
+          )}
+
+          {/* Term loan — a product-capacity read, so it belongs beside capacity.
+              NOT gated on `product_signals` containing term_loan: it answers the
+              question even when the answer is "not placeable", and gating it would
+              hide exactly that answer. A term loan IS a loan, so lending language
+              here is correct — the MCA receivables rule governs the MCA copy, not
+              this. */}
+          {lenses?.term_loan_read && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">As a term loan</h4>
+              <NarrativeText text={lenses.term_loan_read} />
+            </div>
+          )}
+
           {/* The metric grid. Kept whole — every card the old layout had — but it
               sits under the decision it supports rather than above the positions. */}
           <div className={`grid gap-3 ${embedded ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"}`}>
@@ -1299,6 +1510,39 @@ function ResultView({
       {/* ③ FUNDERS — where does it go */}
       {tab === "funders" && (
         <div className="space-y-4 pt-1">
+          {/* ── How the funder's desk will read this file ──────────────────────
+              Moved here from Submission at underwriter-dimensions' request, and
+              they were right: "how a funder reads this file" and "which funder"
+              are the same decision.
+
+              ⚠ IT IS INTERNAL AND IT READS LIKE SOMETHING A FUNDER WAS NEVER
+              MEANT TO SEE. Sitting next to the shortlist — a surface a closer is
+              actively copying out of — the risk of it being pasted goes UP, not
+              down. So the warning is a red banner inside the block rather than a
+              grey line under the heading, and it is the first thing in the
+              region. */}
+          {lenses?.funder_view && (
+            <div className="bg-amber-50/60 dark:bg-amber-900/10 rounded-xl p-5 border border-amber-200 dark:border-amber-900/40">
+              <div className="flex items-start gap-2 mb-2 rounded-lg bg-red-100 dark:bg-red-900/40 px-2.5 py-1.5">
+                <ExclamationTriangleIcon className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                <p className="text-[11px] font-bold text-red-800 dark:text-red-200">
+                  INTERNAL — DO NOT SEND THIS TO A FUNDER. It is written bluntly about how they will
+                  receive the file. The pasteable copy is the submission paragraph, under Submission.
+                </p>
+              </div>
+              <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-1">
+                <SparklesIcon className="w-4 h-4 text-amber-600" /> How the funder will read it
+              </h4>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
+                What they see first, stop on, and ask for.
+              </p>
+              <NarrativeText text={lenses.funder_view} />
+            </div>
+          )}
+
+          {/* Do we even have desks for the products in play? */}
+          {m.network_capability && <NetworkCapability n={m.network_capability} />}
+
           {m.profile ? (
             <>
               <MerchantProfileSection p={m.profile} />
@@ -1358,44 +1602,6 @@ function ResultView({
           {/* The checkable half. The paragraph above is model-written prose about to
               go to a funder; this is the ground truth it was given. */}
           {r.submission_facts && <SubmissionFacts facts={r.submission_facts} />}
-
-          {/* How it lands on their desk. Internal: tells the closer what is coming. */}
-          {lenses?.funder_view && (
-            <div className="bg-amber-50/60 dark:bg-amber-900/10 rounded-xl p-5 border border-amber-200 dark:border-amber-900/40">
-              <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-1">
-                <SparklesIcon className="w-4 h-4 text-amber-600" /> How the funder will read it
-              </h4>
-              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
-                Internal — what they see first, stop on, and ask for. Do not send this.
-              </p>
-              <NarrativeText text={lenses.funder_view} />
-            </div>
-          )}
-
-          {/* Consolidation: the AI read sits on top of the code-computed trade, and
-              the numbers are shown beside it so the prose can be checked against
-              them rather than taken on trust. */}
-          {(lenses?.consolidation_read || consolidation?.applicable) && (
-            <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
-              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">Consolidation</h4>
-              {lenses?.consolidation_read && <NarrativeText text={lenses.consolidation_read} />}
-              {consolidation?.applicable && consolidation.tradeoff && (
-                <p className="mt-3 text-xs text-gray-600 dark:text-gray-300 border-t border-gray-200 dark:border-gray-700 pt-3">
-                  <span className="font-semibold">Computed:</span> {consolidation.tradeoff}
-                  {consolidation.caveat ? ` ${consolidation.caveat}` : ""}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Term loan. A term loan IS a loan, so lending language here is correct —
-              the MCA receivables rule applies to the MCA copy, not to this. */}
-          {lenses?.term_loan_read && (
-            <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
-              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">As a term loan</h4>
-              <NarrativeText text={lenses.term_loan_read} />
-            </div>
-          )}
 
           {r.ai_narrative ? (
             <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-xl p-5 border border-blue-100 dark:border-blue-900/40">

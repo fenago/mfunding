@@ -425,11 +425,20 @@ export interface UWMetrics {
   /** Live desk COUNTS by product (never names). `status: "unreadable"` means the
    *  lenders table could not be read — never render that as zero desks. */
   network_capability?: {
+    /** "read_ok" = the counts below are real. ANYTHING ELSE means the lenders
+     *  table could not be read, and the counts must NOT render as zero desks —
+     *  "we have no SBA desks" and "we could not check" send a closer to opposite
+     *  conclusions. */
     status?: string;
     live_funders_total?: number;
     live_term_loan_desks?: number;
     live_true_consolidation_desks?: number;
     live_reverse_consolidation_desks?: number;
+    // Present in the stored payload and missing from this type until 2026-10-01,
+    // so the UI could not show them even though every run carries them.
+    live_loc_desks?: number;
+    live_sba_desks?: number;
+    live_factoring_desks?: number;
   };
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
