@@ -16,6 +16,7 @@ export { BUILD_COMMIT, BUILD_AT } from "./buildInfo.ts";
 // Targets the MFunding sub-account (location set in the vault as GHL_LOCATION_ID).
 
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { repairMojibake } from "./filenames.ts";
 
 export const GHL_API_BASE = "https://services.leadconnectorhq.com";
 export const GHL_API_VERSION = "2021-07-28";
@@ -390,7 +391,21 @@ export async function ensureContactEmail(
 
 // ---- FILE_UPLOAD custom fields (merchant-uploaded docs live GHL-side) ---------
 
-export interface GhlUploadedFile { name: string; url: string | null }
+export interface GhlUploadedFile {
+  name: string;
+  url: string | null;
+  /** The GHL file's own uuid — the KEY of the FILE_UPLOAD custom-field value
+   * object. This is the same value `ghlDocs.ingestGhlDocuments` stores as
+   * `customer_documents.external_ref`, so it is the provable identity link
+   * between a live GHL upload and the Supabase copy we already hold. Without it
+   * the two paths to one document are indistinguishable and the document gets
+   * attached twice (MF-2026-0366: three statements, six attachments). */
+  ref: string;
+  /** GHL's own `meta.size` in bytes, when it reported one. Lets a caller size an
+   * attachment without a HEAD probe, and lets it rule out a duplicate outright
+   * (different byte length ⇒ definitely a different file). */
+  size: number | null;
+}
 export interface GhlUploadField { field: string; files: GhlUploadedFile[] }
 
 /**
@@ -443,11 +458,19 @@ export async function listContactFileUploadsResult(
   const out: GhlUploadField[] = [];
   for (const f of cf) {
     if (!fileFieldNames.has(f.id) || !f.value || typeof f.value !== "object") continue;
-    const files = Object.values(f.value as Record<string, Record<string, unknown>>).map((v) => {
+    const files = Object.entries(f.value as Record<string, Record<string, unknown>>).map(([ref, v]) => {
       const meta = (v?.meta ?? {}) as Record<string, unknown>;
+      const size = Number(meta.size);
       return {
-        name: String(meta.originalname ?? "file"),
+        // GHL stores the merchant's own filename, and it stores it MOJIBAKE'd when
+        // the merchant used emoji (verified: customer_documents.filename holds
+        // C3 83 C2 B0 … = two rounds of UTF-8-read-as-Latin-1). Repair it here, at
+        // the one place GHL's name enters our code, so every reader downstream
+        // sees the merchant's real name rather than each inventing its own guess.
+        name: repairMojibake(String(meta.originalname ?? "file")),
         url: typeof v?.url === "string" ? (v.url as string) : null,
+        ref,
+        size: Number.isFinite(size) && size > 0 ? size : null,
       };
     });
     if (files.length) out.push({ field: fileFieldNames.get(f.id)!, files });

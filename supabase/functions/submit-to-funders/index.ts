@@ -24,6 +24,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
   listContactFileUploads, sendMarker, ghlFetch,
 } from "../_shared/ghl.ts";
+import { repairMojibake, safeAttachmentName, sha256Hex } from "../_shared/filenames.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -159,7 +160,14 @@ function render(tpl: string, tokens: Record<string, string>): string {
   return tpl.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_m, k) => tokens[k] ?? "");
 }
 
-interface DocRow { id: string; document_type: string; filename: string | null; storage_path: string; status: string; file_size?: number | null }
+interface DocRow {
+  id: string; document_type: string; filename: string | null; storage_path: string;
+  status: string; file_size?: number | null; mime_type?: string | null;
+  /** The GHL file uuid this row was ingested from (ghlDocs.ingestGhlDocuments),
+   * or null for a portal/manual upload. THE dedupe key against a live GHL
+   * upload — the same document reachable through both paths. */
+  external_ref?: string | null;
+}
 
 // Email attachment ceiling. GHL fails the whole email at 25MB ("Maximum file
 // size allowed is 25 MB." — async, AFTER accepting the POST), and email
@@ -195,6 +203,53 @@ async function resolveAttachmentSize(url: string, apiKey: string | null): Promis
     const h = await fetch(url, { method: "HEAD" });
     const len = Number(h.headers.get("content-length"));
     return Number.isFinite(len) && len > 0 ? len : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── BYTE IDENTITY ─────────────────────────────────────────────────────────────
+// Two files only collapse into one attachment when they are PROVABLY the same
+// bytes. A matching filename is not proof: "June statement 2026.pdf" appearing
+// twice could be two different months a merchant mis-named, and dropping one
+// would be choosing for the funder which document they get to read. So the only
+// two grounds for collapsing are
+//   (a) identity — the GHL file's own uuid equals the `external_ref` of a
+//       Supabase copy we are already attaching (free, exact, no download), or
+//   (b) a SHA-256 match on the actual bytes.
+// (b) costs a download, so it is only ever attempted between files whose byte
+// LENGTHS are already equal — a different length rules a duplicate out outright
+// — and it is hard-capped, because the underwriter has already shown what a
+// 25-document merchant does to an edge worker's memory ceiling (uncatchable
+// SIGKILL surfaced as HTTP 546). Over the cap, nothing is collapsed: a
+// submission carrying one file twice is a blemish, a submission missing a
+// statement is a declined deal.
+const HASH_MAX_FILES = 8;
+const HASH_MAX_BYTES = 20 * 1024 * 1024;
+
+interface HashBudget { files: number; bytes: number }
+
+/** Fetch and hash one attachment. null when the bytes could not be read or the
+ *  budget is spent — and null NEVER collapses anything (unreadable ≠ identical). */
+async function hashAttachment(
+  url: string,
+  apiKey: string | null,
+  budget: HashBudget,
+  expectedSize: number,
+): Promise<string | null> {
+  if (budget.files >= HASH_MAX_FILES) return null;
+  if (budget.bytes + expectedSize > HASH_MAX_BYTES) return null;
+  try {
+    const isGhlDoc = /^https:\/\/services\.leadconnectorhq\.com\/documents\/download\//.test(url);
+    const r = await fetch(url, isGhlDoc && apiKey
+      ? { headers: { Authorization: `Bearer ${apiKey}`, Version: "2021-07-28" } }
+      : {});
+    if (!r.ok) return null;
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    if (!bytes.length) return null;
+    budget.files += 1;
+    budget.bytes += bytes.length;
+    return `${bytes.length}:${await sha256Hex(bytes)}`;
   } catch {
     return null;
   }
@@ -501,17 +556,38 @@ Deno.serve(async (req) => {
     if (docIds.length) {
       const { data: docs } = await db
         .from("customer_documents")
-        .select("id, customer_id, filename, storage_path")
+        .select("id, customer_id, filename, storage_path, document_type, mime_type")
         .in("id", docIds);
-      const rows = (docs ?? []) as Array<{ id: string; customer_id: string; filename: string | null; storage_path: string }>;
+      const rows = (docs ?? []) as Array<{
+        id: string; customer_id: string; filename: string | null; storage_path: string;
+        document_type: string; mime_type: string | null;
+      }>;
       if (rows.length !== docIds.length || rows.some((d) => d.customer_id !== dealRow.customer_id)) {
         return json({ error: "One or more documents don't belong to this deal's merchant." }, 403);
       }
+      // Same hostile-reader rule as the submit engine: a funder's mail gateway
+      // gets a clean ASCII name describing the document, never the merchant's
+      // emoji/mojibake filename. `download=` is what sets the outbound
+      // Content-Disposition on a Supabase signed URL.
+      const usedNames = new Set<string>();
+      const perType = new Map<string, number>();
+      const typeTotal = new Map<string, number>();
+      for (const d of rows) typeTotal.set(d.document_type, (typeTotal.get(d.document_type) ?? 0) + 1);
       for (const d of rows) {
-        const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
+        const idx = (perType.get(d.document_type) ?? 0) + 1;
+        perType.set(d.document_type, idx);
+        const outName = safeAttachmentName({
+          dealNumber: dealRow.deal_number as string | null,
+          docType: d.document_type,
+          originalName: repairMojibake(d.filename ?? "") || `${d.document_type}.pdf`,
+          mime: d.mime_type,
+          index: (typeTotal.get(d.document_type) ?? 1) > 1 ? idx : 0,
+        }, usedNames);
+        const { data: signed } = await db.storage.from(DOC_BUCKET)
+          .createSignedUrl(d.storage_path, SIGNED_URL_TTL, { download: outName });
         if (!signed?.signedUrl) continue;
         attachmentUrls.push(signed.signedUrl);
-        attachedNames.push(d.filename || "document");
+        attachedNames.push(outName);
       }
     }
 
@@ -700,7 +776,7 @@ Deno.serve(async (req) => {
   // All docs on file for this deal's customer, grouped by type.
   const { data: docRows } = await db
     .from("customer_documents")
-    .select("id, document_type, filename, storage_path, status, file_size")
+    .select("id, document_type, filename, storage_path, status, file_size, mime_type, external_ref")
     .eq("customer_id", deal.customer_id);
   const docsByType = new Map<string, DocRow[]>();
   for (const d of (docRows ?? []) as DocRow[]) {
@@ -731,14 +807,20 @@ Deno.serve(async (req) => {
   // funder) and split into bank vs. other-stips. The leadconnectorhq download
   // URLs are public (307 → short-lived signed GCS link), so we hand them to the
   // funder directly — no server-side proxy needed. ---
-  const ghlBank: Array<{ name: string; url: string }> = [];
-  const ghlStips: Array<{ name: string; url: string }> = [];
+  interface GhlFile { name: string; url: string; ref: string; size: number | null }
+  const ghlBank: GhlFile[] = [];
+  const ghlStips: GhlFile[] = [];
   const ghlContactId = (deal.ghl_contact_id as string | null) ?? (c.ghl_contact_id as string | null) ?? null;
   if (ghlContactId && cfg) {
     try {
       for (const f of await listContactFileUploads(cfg, ghlContactId)) {
         const bucket = /bank/i.test(f.field) ? ghlBank : ghlStips;
-        for (const file of f.files) if (file.url) bucket.push({ name: file.name, url: file.url });
+        // `ref` is the GHL file's own uuid — the same value a Supabase copy carries
+        // as customer_documents.external_ref. Carrying it is what makes the
+        // double-attach detectable without downloading anything.
+        for (const file of f.files) {
+          if (file.url) bucket.push({ name: file.name, url: file.url, ref: file.ref, size: file.size });
+        }
       }
     } catch { /* best-effort — Supabase docs still attach if GHL peek fails */ }
   }
@@ -800,7 +882,18 @@ Deno.serve(async (req) => {
     // --- Gather docs. Every doc becomes a secure link; per the recipe's
     // attachment_mode we ALSO attach the actual files (GHL fetches the signed
     // URL at send time). Oversized sets fall back to link-only so a send never
-    // fails on the ~25MB email cap. ---
+    // fails on the ~25MB email cap.
+    //
+    // THE SAME DOCUMENT USED TO ARRIVE TWICE. A merchant's statements reach us by
+    // two routes: they upload them to the GHL contact, and `ingestGhlDocuments`
+    // mirrors those bytes into `customer_documents`. This loop walked both routes
+    // and attached both. MF-2026-0366 went to Highland Hill and to Uplyft with
+    // SIX bank-statement attachments covering THREE months — June/July/August
+    // twice each, verified byte-identical (sha256 of the Supabase copy equals the
+    // sha256 of the GHL copy for all three). The fix is in the GATHER, not a
+    // filter on the result: a GHL upload is dropped only when the very Supabase
+    // copy of it is already in this submission, proven by its own uuid.
+    // ---
     const attachSlugs = recipe?.attach_docs?.length ? recipe.attach_docs : ["application", "bank_statement"];
     const mode = recipe?.attachment_mode ?? "both";
     const wantAttach = mode === "attachments" || mode === "both";
@@ -813,6 +906,16 @@ Deno.serve(async (req) => {
     // the server decided, cap included).
     const docs: Array<{ label: string; filename: string; delivery: "attached" | "link" }> = [];
     let attachBytes = 0;
+    // Audit records for sent_payload. The funder gets clean names; WE keep the
+    // merchant's, plus the evidence behind every collapse and every near-miss we
+    // deliberately did NOT collapse.
+    const attachmentLedger: Array<Record<string, unknown>> = [];
+    const collapsedDuplicates: Array<Record<string, unknown>> = [];
+    const sameNameKept: Array<Record<string, unknown>> = [];
+    const unnormalizedNames: string[] = [];
+    const usedOutboundNames = new Set<string>();
+    const hashBudget: HashBudget = { files: 0, bytes: 0 };
+    const dealNo = (deal as Record<string, unknown>).deal_number as string | null;
     // Add a signed URL as an attachment if there's room; return whether attached.
     // The size is VERIFIED before it counts: a DB file_size when present, else a
     // HEAD probe. A size we cannot learn never attaches — link instead.
@@ -828,40 +931,186 @@ Deno.serve(async (req) => {
       attachBytes += sz;
       return true;
     };
-    let appLinkCount = 0; // app-side signed-application copies actually linked
+
+    // ---- STEP 1: the app-side candidates, in recipe order ----
+    interface AppCand { d: DocRow; slug: string; size: number; hash?: string | null }
+    const appCands: AppCand[] = [];
     for (const slug of attachSlugs) {
-      const list = docsByType.get(slug) ?? [];
-      for (const d of list) {
+      for (const d of (docsByType.get(slug) ?? [])) {
         // Pick-and-choose: when a selection was passed, skip anything not in it.
         if (selectedDocIds && !selectedDocIds.has(d.id)) continue;
-        const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
-        const url = signed?.signedUrl;
-        if (!url) continue;
-        const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
-        docLinkLines.push(`${label} — ${url}`);
-        docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
-        const attached = await tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
-        docs.push({ label: docLabel(slug), filename: d.filename || `${slug}.pdf`, delivery: attached ? "attached" : "link" });
-        if (slug === "application") appLinkCount++;
+        appCands.push({ d, slug, size: Number(d.file_size) || 0 });
       }
     }
 
-    // Merge in the GHL-side merchant uploads, grouped and labelled. Only include
-    // a group the recipe actually asked for: bank statements when the recipe
-    // wants bank_statement, the stips bundle when it wants any non-bank stip.
+    // ---- STEP 2: collapse app-side rows that hold the SAME BYTES ----
+    // Two `customer_documents` rows can be one document uploaded twice under
+    // different names (portal upload + GHL mirror of the same statement, a
+    // re-scan, a rename). Only a byte-length tie makes that possible, so only a
+    // byte-length tie is worth a download. Different length ⇒ different file ⇒
+    // both ride, whatever they are called.
+    const sizeGroups = new Map<number, AppCand[]>();
+    for (const cand of appCands) {
+      if (!cand.size) continue;
+      const g = sizeGroups.get(cand.size);
+      if (g) g.push(cand); else sizeGroups.set(cand.size, [cand]);
+    }
+    const hashOfApp = async (cand: AppCand): Promise<string | null> => {
+      if (cand.hash !== undefined) return cand.hash;
+      const { data: probe } = await db.storage.from(DOC_BUCKET)
+        .createSignedUrl(cand.d.storage_path, SIGNED_URL_TTL);
+      cand.hash = probe?.signedUrl
+        ? await hashAttachment(probe.signedUrl, cfg?.apiKey ?? null, hashBudget, cand.size)
+        : null;
+      return cand.hash;
+    };
+    const droppedAppIds = new Set<string>();
+    for (const group of sizeGroups.values()) {
+      if (group.length < 2) continue;
+      const byHash = new Map<string, AppCand>();
+      for (const cand of group) {
+        const h = await hashOfApp(cand);
+        // An unreadable file is NOT a duplicate. Leave it in and say so.
+        if (!h) continue;
+        const keeper = byHash.get(h);
+        if (!keeper) { byHash.set(h, cand); continue; }
+        droppedAppIds.add(cand.d.id);
+        collapsedDuplicates.push({
+          kept: keeper.d.filename ?? keeper.d.id,
+          dropped: cand.d.filename ?? cand.d.id,
+          proof: "sha256", hash: h, source: "customer_documents",
+        });
+      }
+      // Same byte length, different bytes — genuinely different documents that
+      // merely look alike. Recorded so the blemish is never mistaken for a bug.
+      const distinct = new Set(group.map((g) => g.hash).filter(Boolean));
+      if (distinct.size > 1) {
+        sameNameKept.push({
+          reason: "same byte length, different sha256 — both kept",
+          files: group.map((g) => g.d.filename ?? g.d.id),
+        });
+      }
+    }
+    const keptApp = appCands.filter((cand) => !droppedAppIds.has(cand.d.id));
+
+    // ---- STEP 3: the app-side attachments, under FUNDER-SAFE names ----
+    // The merchant's own filename never reaches the MIME header. On MF-2026-0385
+    // the merchant used emoji and GHL stored the name double-mojibake'd, so the
+    // funder's gateway was handed bytes like "Ã°ÂÂÂNEW Ã¢ÂÂCHASE SEPT 2026.pdf"
+    // in a Content-Disposition — an ordinary cause of quarantine or silent
+    // stripping, and a funder reported receiving nothing on 2026-10-01. Supabase
+    // storage honours `download=<name>`, which sets
+    // `Content-Disposition: attachment; filename=...; filename*=UTF-8''...`, so we
+    // name every attachment after what the document IS and keep the merchant's
+    // name in sent_payload where it belongs.
+    let appLinkCount = 0; // app-side signed-application copies actually linked
+    // A sequence suffix only earns its place when there is something to
+    // disambiguate — "MF-2026-0366_Signed_Application.pdf", not "..._01.pdf".
+    const perTypeTotal = new Map<string, number>();
+    for (const cand of keptApp) perTypeTotal.set(cand.slug, (perTypeTotal.get(cand.slug) ?? 0) + 1);
+    const perTypeIndex = new Map<string, number>();
+    for (const cand of keptApp) {
+      const { d, slug } = cand;
+      const rawName = d.filename ?? "";
+      const originalName = repairMojibake(rawName);
+      const idx = (perTypeIndex.get(slug) ?? 0) + 1;
+      perTypeIndex.set(slug, idx);
+      const outName = safeAttachmentName({
+        dealNumber: dealNo, docType: slug, originalName: originalName || `${slug}.pdf`,
+        mime: d.mime_type ?? null,
+        index: (perTypeTotal.get(slug) ?? 1) > 1 ? idx : 0,
+      }, usedOutboundNames);
+      const { data: signed } = await db.storage.from(DOC_BUCKET)
+        .createSignedUrl(d.storage_path, SIGNED_URL_TTL, { download: outName });
+      const url = signed?.signedUrl;
+      if (!url) continue;
+      const label = `${docLabel(slug)} (${outName})`;
+      docLinkLines.push(`${label} — ${url}`);
+      docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
+      const attached = await tryAttach(url, outName, cand.size);
+      docs.push({ label: docLabel(slug), filename: outName, delivery: attached ? "attached" : "link" });
+      attachmentLedger.push({
+        outbound: outName, original: originalName, type: slug, source: "customer_documents",
+        documentId: d.id, bytes: cand.size || null,
+        ...(rawName && rawName !== originalName ? { originalAsStored: rawName } : {}),
+      });
+      if (slug === "application") appLinkCount++;
+    }
+
+    // ---- STEP 4: the GHL-side uploads, minus the ones already above ----
+    // Only include a group the recipe actually asked for: bank statements when
+    // the recipe wants bank_statement, the stips bundle when it wants any
+    // non-bank stip.
     const wantsBank = attachSlugs.includes("bank_statement");
     const wantsStips = attachSlugs.some((s) => !["application", "signed_application", "bank_statement"].includes(s));
-    const pushGroup = async (heading: string, files: Array<{ name: string; url: string }>) => {
-      if (!files.length) return;
-      docLinkLines.push(`${heading} (${files.length}):`);
+    // Every GHL uuid we are ALREADY sending a Supabase copy of. Scoped to what is
+    // actually in this submission, never to the whole document inventory: a GHL
+    // file whose mirror the closer deselected, or whose mirror this recipe does
+    // not ask for, must still ride — dropping it would LOSE a document, which is
+    // the one outcome neither fix is allowed to produce.
+    const attachedRefs = new Set(
+      keptApp.map((cand) => cand.d.external_ref).filter((r): r is string => !!r),
+    );
+    const keptAppBySize = new Map<number, AppCand[]>();
+    for (const cand of keptApp) {
+      if (!cand.size) continue;
+      const g = keptAppBySize.get(cand.size);
+      if (g) g.push(cand); else keptAppBySize.set(cand.size, [cand]);
+    }
+    /** Is this live GHL upload the same document as something already attached? */
+    const ghlIsDuplicate = async (f: GhlFile): Promise<Record<string, unknown> | null> => {
+      // (a) IDENTITY — free and exact. This is the MF-2026-0366 case.
+      if (f.ref && attachedRefs.has(f.ref)) {
+        return { proof: "ghl_external_ref", ref: f.ref };
+      }
+      // (b) BYTES — only when a byte-length tie makes a duplicate possible.
+      const twins = f.size ? (keptAppBySize.get(f.size) ?? []) : [];
+      if (!twins.length) return null;
+      const mine = await hashAttachment(f.url, cfg?.apiKey ?? null, hashBudget, f.size ?? 0);
+      if (!mine) return null; // unreadable ≠ identical
+      for (const t of twins) {
+        const theirs = await hashOfApp(t);
+        if (theirs && theirs === mine) {
+          return { proof: "sha256", hash: mine, twin: t.d.filename ?? t.d.id };
+        }
+      }
+      sameNameKept.push({
+        reason: "GHL upload shares a byte length with an attached document but not its sha256 — both kept",
+        file: f.name,
+      });
+      return null;
+    };
+    const pushGroup = async (heading: string, files: GhlFile[]) => {
+      const fresh: GhlFile[] = [];
       for (const f of files) {
-        docLinkLines.push(`  ${f.name} — ${f.url}`);
-        const attached = await tryAttach(f.url, f.name);
-        docs.push({ label: heading, filename: f.name, delivery: attached ? "attached" : "link" });
+        const dup = await ghlIsDuplicate(f);
+        if (dup) {
+          collapsedDuplicates.push({
+            dropped: repairMojibake(f.name), source: "ghl_contact_upload", ...dup,
+          });
+          continue;
+        }
+        fresh.push(f);
+      }
+      if (!fresh.length) return;
+      docLinkLines.push(`${heading} (${fresh.length}):`);
+      for (const f of fresh) {
+        // A GHL-hosted file is served by GHL, so its Content-Disposition — and
+        // therefore the funder-facing filename — is GHL's to set, not ours. We
+        // cannot normalise this one; say so rather than imply we did.
+        const shown = repairMojibake(f.name);
+        docLinkLines.push(`  ${shown} — ${f.url}`);
+        const attached = await tryAttach(f.url, shown, f.size);
+        docs.push({ label: heading, filename: shown, delivery: attached ? "attached" : "link" });
+        if (attached) unnormalizedNames.push(shown);
+        attachmentLedger.push({
+          outbound: shown, original: shown, type: heading, source: "ghl_contact_upload",
+          ghlRef: f.ref, bytes: f.size, nameNormalized: false,
+        });
       }
       docLinkHtml.push(
-        `<li>${esc(heading)} (${files.length}):<ul style="margin:2px 0">` +
-        files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a></li>`).join("") + `</ul></li>`,
+        `<li>${esc(heading)} (${fresh.length}):<ul style="margin:2px 0">` +
+        fresh.map((f) => `<li><a href="${f.url}">${esc(repairMojibake(f.name))}</a></li>`).join("") + `</ul></li>`,
       );
     };
     if (wantsBank) await pushGroup("Bank statements", ghlBank);
@@ -875,6 +1124,17 @@ Deno.serve(async (req) => {
     // the same channel rather than inventing a second one nobody renders.
     if (narrativeIsStale && rawBizSummaryExists) {
       docsWarning = `Deal Overview omitted — ${narrativeStaleReason ?? "the narrative is out of date"}. Re-run the funder match to regenerate it.`;
+    }
+    // A GHL-hosted attachment keeps whatever name GHL stored for it, and GHL is
+    // exactly where the mojibake lives. Importing the merchant's uploads (Step 6
+    // → "Import GHL uploads") gives us a Supabase copy whose outbound name we
+    // control, so name the condition instead of leaving it invisible.
+    if (unnormalizedNames.length) {
+      const note = `${unnormalizedNames.length} attachment${unnormalizedNames.length === 1 ? "" : "s"} ` +
+        `still carr${unnormalizedNames.length === 1 ? "ies" : "y"} the merchant's own filename ` +
+        `(served by GHL, so we can't rename it): ${unnormalizedNames.join(", ")}. ` +
+        `Import the GHL uploads to give them clean funder-facing names.`;
+      docsWarning = docsWarning ? `${docsWarning} ${note}` : note;
     }
     const wantsApp = attachSlugs.some((s) => s === "application" || s === "signed_application");
     if (wantsApp && appLinkCount === 0) {
@@ -922,6 +1182,16 @@ Deno.serve(async (req) => {
       method, to, cc, subject, body: bodyText,
       docLinks: docLinkLines, attachSlugs, attachment_mode: mode,
       attachedFiles: attachedNames, attachedCount: attachmentUrls.length,
+      // OUR audit trail. `attachedFiles` is what the funder's gateway sees
+      // (clean ASCII); `attachmentLedger` keeps the merchant's own filename for
+      // every one of them, plus — when GHL had stored it mojibake'd — the exact
+      // corrupt string as it still sits in customer_documents.
+      attachmentLedger,
+      // Evidence for every document that did NOT ride, so a count that looks
+      // short can always be explained without re-deriving it.
+      ...(collapsedDuplicates.length ? { collapsedDuplicates } : {}),
+      ...(sameNameKept.length ? { sameNameKept } : {}),
+      ...(unnormalizedNames.length ? { unnormalizedAttachmentNames: unnormalizedNames } : {}),
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
       ...(waivedMissing.length ? { stipOverridden: waivedMissing } : {}),
     };

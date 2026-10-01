@@ -21,6 +21,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getGhlConfig, ghlFetch } from "./ghl.ts";
 import { reconcileDocumentType } from "./docClassify.ts";
+import { repairMojibake } from "./filenames.ts";
 
 export const DOC_BUCKET = "customer-documents";
 
@@ -123,7 +124,15 @@ export async function ingestGhlDocuments(
       const e = entry as Record<string, unknown>;
       const meta = (e.meta ?? {}) as Record<string, unknown>;
       const url = String(e.url ?? "");
-      const name = String(meta.originalname ?? meta.name ?? e.name ?? `${ref}.pdf`).trim();
+      // GHL stores the multipart filename as if its UTF-8 bytes were Latin-1 — and
+      // it did so TWICE for the emoji names a merchant used on MF-2026-0385, so
+      // `customer_documents.filename` has been holding "Ã°ÂÂÂNEW Ã¢ÂÂCHASE SEPT
+      // 2026.pdf" ever since. THIS is the origin: the row is written here, from
+      // this string, and every downstream reader (the submission payload, the doc
+      // checklist, the underwriter's ledger) has only ever shown what this line
+      // stored. Repair it once, here, rather than in each reader. The storage path
+      // below is unaffected — it is slugged to ASCII already.
+      const name = repairMojibake(String(meta.originalname ?? meta.name ?? e.name ?? `${ref}.pdf`)).trim();
       const mime = typeof meta.mimetype === "string" ? (meta.mimetype as string) : undefined;
       if (url.startsWith("http")) files.push({ ref, name, url, hint, mime });
     }
