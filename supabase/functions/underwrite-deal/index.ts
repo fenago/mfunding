@@ -727,6 +727,11 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Hoisted so the OUTER catch can close an attempt row that the inner scope opened —
+  // without it, anything that throws after the attempt opens leaves it unresolved and
+  // indistinguishable from a gateway kill, which would make the signal useless.
+  let openAttemptId: string | null = null;
+
   try {
     // --- Settings (fall back to coded defaults if the singleton is missing). ---
     const { data: sRow } = await db
@@ -1155,9 +1160,79 @@ Deno.serve(async (req) => {
       return emptyStatement(filename, lastErr, [filename]);
     };
 
+    // ── ATTEMPT LEDGER: opened BEFORE the expensive phase ──────────────────────
+    // A 504 IDLE_TIMEOUT (150s) kills this worker inside the extraction pool below,
+    // long before FAILED-RUN GUARD #1 can refuse, so until now the attempt left NO
+    // trace at all — 0 deal_underwriting rows and 0 activity_log rows (measured on
+    // MF-2026-0086, 21 unique byte-sets, against controls of 30 activity rows in the
+    // window and 44 ever mentioning underwriting). A processor watching a spinner end
+    // in silence could not tell "it failed" from "I never clicked it".
+    //
+    // Deliberately its OWN table, never deal_underwriting: nine consumers read that
+    // one and several take the newest row by version as the merchant's verdict
+    // (submit-to-funders, funderAvailability, score-lead, recommend-lenders, the
+    // panel), so a pending or failed attempt written there could reach a funder.
+    //
+    // Opened AFTER the docs_hash skip check, because a skipped run costs nothing and
+    // is not an attempt. Resolved on EVERY exit path below; an unresolved row past
+    // ~150s is the signature of a gateway kill.
+    let attemptId: string | null = null;
+    try {
+      const { data: att, error: attErr } = await db
+        .from("deal_underwriting_attempts")
+        .insert({
+          deal_id: dealId,
+          run_mode: mode,
+          docs_hash: docsHash,
+          bank_doc_count: bankDocs.length,
+          created_by: callerId,
+        })
+        .select("id")
+        .single();
+      if (attErr) console.error(`[underwrite-deal] attempt-ledger insert failed for deal ${dealId}: ${attErr.message}`);
+      else { attemptId = (att?.id as string) ?? null; openAttemptId = attemptId; }
+    } catch (e) {
+      // Best-effort ONLY. The ledger exists to observe runs, never to block one —
+      // failing the underwrite because its bookkeeping row would not write would be
+      // a worse outcome than the blind spot it closes.
+      console.error(`[underwrite-deal] attempt-ledger insert threw for deal ${dealId}:`, e instanceof Error ? e.message : e);
+    }
+
+    // Resolve the attempt. Never throws, never blocks, safe to call when the insert
+    // failed (attemptId null → no-op). `unique_byte_sets` is the real cost driver —
+    // one Claude call per unique byte-set, bounded by DOC_POOL — so it is recorded
+    // whenever known, which is what lets the timeout threshold be MEASURED rather
+    // than guessed at.
+    const resolveAttempt = async (
+      outcome: "ok" | "refused" | "error",
+      detail?: string | null,
+      extra?: { underwriting_id?: string | null; unique_byte_sets?: number | null },
+    ): Promise<void> => {
+      if (!attemptId) return;
+      try {
+        const { error } = await db
+          .from("deal_underwriting_attempts")
+          .update({
+            finished_at: new Date().toISOString(),
+            outcome,
+            detail: detail ? String(detail).slice(0, 2000) : null,
+            ...(extra?.underwriting_id !== undefined ? { underwriting_id: extra.underwriting_id } : {}),
+            ...(extra?.unique_byte_sets !== undefined ? { unique_byte_sets: extra.unique_byte_sets } : {}),
+          })
+          .eq("id", attemptId);
+        if (error) console.error(`[underwrite-deal] attempt-ledger resolve(${outcome}) failed: ${error.message}`);
+        else openAttemptId = null; // closed — the outer catch must not rewrite it
+      } catch (e) {
+        console.error(`[underwrite-deal] attempt-ledger resolve(${outcome}) threw:`, e instanceof Error ? e.message : e);
+      }
+    };
+
     profLog("before-extract");
     const loaded = await mapPool(bankDocs, DOC_POOL, loadOne);
     profLog("after-extract");
+    // Record the cost shape as soon as it is known, so even a run that dies LATER
+    // tells us how many extraction calls it took on.
+    const uniqueByteSets = extractions.size;
 
     // Collect one result per unique byte-set and stamp the duplicate tally now that
     // every copy is known — a byte-identical file uploaded twice yields the SAME
@@ -1407,6 +1482,11 @@ Deno.serve(async (req) => {
       } catch (e) {
         console.warn(`[underwrite-deal] refusal activity_log threw: ${e instanceof Error ? e.message : e}`);
       }
+      await resolveAttempt(
+        providerErr ? "error" : "refused",
+        providerErr ?? `none of ${perStatement.length} statement(s) could be read: ${stErrors[0] ?? "unknown extraction failure"}`,
+        { unique_byte_sets: uniqueByteSets },
+      );
       return json({
         error: providerErr
           ? providerErrorMessage(providerErr)
@@ -3828,6 +3908,7 @@ Deno.serve(async (req) => {
       console.error(
         `[underwrite-deal] refusing to persist a provider-degraded run for deal ${dealId} — ${judgeProviderError}`,
       );
+      await resolveAttempt("error", judgeProviderError, { unique_byte_sets: uniqueByteSets });
       return json({
         error: providerErrorMessage(judgeProviderError),
         code: "ai_provider_error",
@@ -5068,7 +5149,10 @@ Deno.serve(async (req) => {
       })
       .select("id, version, created_at")
       .maybeSingle();
-    if (insErr) return json({ error: `could not save underwriting run: ${insErr.message}` }, 502);
+    if (insErr) {
+      await resolveAttempt("error", `could not save underwriting run: ${insErr.message}`, { unique_byte_sets: uniqueByteSets });
+      return json({ error: `could not save underwriting run: ${insErr.message}` }, 502);
+    }
 
     // ── Verified existing-MCA positions → deal (ground-truth upgrade) ──
     // The run just persisted (every empty/degraded case returned above), so the
@@ -5118,6 +5202,11 @@ Deno.serve(async (req) => {
     // this is what demotes a stated-$19k/true-$10.9k merchant automatically.
     fireAndForgetScore(dealId, "underwriting");
 
+    await resolveAttempt("ok", null, {
+      underwriting_id: (inserted?.id as string) ?? null,
+      unique_byte_sets: uniqueByteSets,
+    });
+
     return json({
       ok: true,
       dealId,
@@ -5148,7 +5237,19 @@ Deno.serve(async (req) => {
       created_at: inserted?.created_at,
     });
   } catch (e) {
-    return json({ error: String(e instanceof Error ? e.message : e) }, 500);
+    const msg = String(e instanceof Error ? e.message : e);
+    // The resolver is scoped inside the try block, so close the row directly here.
+    // Best-effort: a failure to record the failure must not replace the real error.
+    if (openAttemptId) {
+      try {
+        await db.from("deal_underwriting_attempts")
+          .update({ finished_at: new Date().toISOString(), outcome: "error", detail: msg.slice(0, 2000) })
+          .eq("id", openAttemptId);
+      } catch (e2) {
+        console.error("[underwrite-deal] attempt-ledger resolve from outer catch threw:", e2 instanceof Error ? e2.message : e2);
+      }
+    }
+    return json({ error: msg }, 500);
   }
 });
 
