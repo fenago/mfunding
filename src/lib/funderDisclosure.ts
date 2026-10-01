@@ -74,16 +74,19 @@ export const clean = (s: string | null | undefined) => {
 // ── Never print a credential ─────────────────────────────────────────────────
 // The free-text columns this page quotes are NOT a safe place to read from
 // blind. `lenders.submission_notes` carries the live password for our own
-// mailbox on three funders (IOU Financial, Lendini, Uplyft: the literal string
-// "sales@send.mfunding.net / Descartes2!"), and this page is open to every
-// setter. A note that looks like it contains a credential is withheld WHOLE —
+// shared mailbox on three funders (IOU Financial, Lendini, Uplyft), stored as an
+// "<address> / <password>" pair, and this page is open to every setter. The
+// value is deliberately not reproduced here: a comment is an artifact that
+// outlives the conversation, and a credential quoted to explain a guard is one
+// more live copy of it. A note that looks like it contains a credential is withheld WHOLE —
 // not partially redacted, because a partial redaction that misses is worse than
 // no redaction at all, and a withheld note is recoverable by asking Ops.
 //
 // Two shapes catch it:
 //   1. the word — password / pwd / un/pw / credentials / login:
 //   2. an email followed by a separator and a token that is NOT a phone number,
-//      an email or a URL — which is what "x@y.com / Descartes2!" is, and what
+//      an email or a URL — which is what an "<address> / <password>" pair is,
+//      and what
 //      "team@mcashadvance.com / 855-433-8641" is not.
 // `pw:` and `uid:` are here because of a real row: Guidant's `lenders.notes`
 // holds a pasted partner-portal dump with "uid: <email>" and "pw: <secret>" on
