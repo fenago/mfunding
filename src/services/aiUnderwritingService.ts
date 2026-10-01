@@ -1,5 +1,6 @@
 import supabase from "../supabase";
 import { invokeThrow } from "../utils/invokeError";
+import { mustWrite } from "../supabase/writes";
 
 // AI "Internal Underwriter" (Phase 1). Reads a deal's bank-statement PDFs with
 // Claude and returns an affordability + risk read. The heavy lifting lives in
@@ -643,14 +644,30 @@ export async function getUnderwritingContext(dealId: string): Promise<string> {
   return ((data?.underwriting_context as string | null) ?? "");
 }
 
-// Save (or clear) the broker's context note for a deal. Empty string persists null.
+/**
+ * Save (or clear) the broker's context note for a deal. Empty string persists null.
+ *
+ * `mustWrite`, not a bare `.update()`. This was a bare update whose only check was
+ * `if (error) throw` — and an RLS-refused update is NOT an error: it returns no
+ * error and zero rows. ContextEditor then flipped to "Saved ✓" over a note that
+ * was never written, which is the owner's rule ("if it says an application is sent
+ * — that should be valid! and validated") applied to a different claim.
+ *
+ * It matters more now than when it was written: the panel is mounted on five more
+ * surfaces, and `canEdit` is true for processors. Processors are permitted
+ * (`processor_update_all_deals`), so the happy path is unchanged — but a caller
+ * who is not gets a thrown error instead of a false tick. `mustWrite` throws on
+ * zero rows, which is the whole point.
+ */
 export async function saveUnderwritingContext(dealId: string, text: string): Promise<void> {
   const trimmed = text.trim();
-  const { error } = await supabase
-    .from("deals")
-    .update({ underwriting_context: trimmed.length ? trimmed : null })
-    .eq("id", dealId);
-  if (error) throw error;
+  await mustWrite(
+    "save underwriting context",
+    supabase
+      .from("deals")
+      .update({ underwriting_context: trimmed.length ? trimmed : null })
+      .eq("id", dealId),
+  );
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -695,12 +712,18 @@ export async function saveUnderwritingSettings(
   patch: Partial<Omit<UnderwritingSettings, "id">>,
 ): Promise<UnderwritingSettings> {
   const { data: auth } = await supabase.auth.getUser();
-  const { data, error } = await supabase
-    .from("underwriting_settings")
-    .update({ ...patch, updated_at: new Date().toISOString(), updated_by: auth.user?.id ?? null })
-    .eq("id", id)
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data as UnderwritingSettings;
+  // `uw_settings_update` is super-admin only, so a refused write here is a real
+  // possibility rather than a theoretical one. mustWrite turns the zero-row case
+  // into a thrown error instead of letting the settings page redraw as though it
+  // had saved. (NB: this function writes `updated_at` itself — nothing else does,
+  // which is why the column is stale on the stored row. See the trap note above.)
+  const rows = await mustWrite<UnderwritingSettings>(
+    "save underwriting settings",
+    supabase
+      .from("underwriting_settings")
+      .update({ ...patch, updated_at: new Date().toISOString(), updated_by: auth.user?.id ?? null })
+      .eq("id", id)
+      .select("*"),
+  );
+  return rows[0];
 }
