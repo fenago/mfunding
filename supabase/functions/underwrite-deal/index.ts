@@ -1464,8 +1464,27 @@ Deno.serve(async (req) => {
       // interaction_type must be 'note' — the check constraint rejects other
       // values silently (same reason as _shared/docClassify.ts).
       try {
-        const ledgerLines = documentLedger
-          .map((d) => `• ${d.filename ?? "(unnamed)"} — ${d.status}${d.detail ? `: ${String(d.detail).slice(0, 300)}` : ""}`)
+        // COLLAPSE IDENTICAL ERRORS. One shared cause — a credit exhaustion, a
+        // model rejecting a parameter — repeats the same 300-character provider
+        // message once per document, so a 9-document failure produced a note
+        // nobody reads to the end and whose single actual cause was buried nine
+        // times over. The cause is stated ONCE and the files it hit are listed
+        // under it; a lone failure keeps the original one-line shape.
+        const groups = new Map<string, { status: string; detail: string; files: string[] }>();
+        for (const d of documentLedger) {
+          const detail = d.detail ? String(d.detail).slice(0, 300) : "";
+          const key = `${d.status}\u0000${detail}`;
+          const g = groups.get(key) ?? { status: d.status, detail, files: [] };
+          g.files.push(d.filename ?? "(unnamed)");
+          groups.set(key, g);
+        }
+        const ledgerLines = [...groups.values()]
+          .map((g) => {
+            const cause = `${g.status}${g.detail ? `: ${g.detail}` : ""}`;
+            return g.files.length === 1
+              ? `• ${g.files[0]} — ${cause}`
+              : `• ${g.files.length} documents — ${cause}\n${g.files.map((f) => `    – ${f}`).join("\n")}`;
+          })
           .join("\n");
         const { error: logErr } = await db.from("activity_log").insert({
           entity_type: "deal",
