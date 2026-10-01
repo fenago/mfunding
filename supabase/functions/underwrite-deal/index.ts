@@ -179,6 +179,30 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // that can overstate the merchant to a funder, and overstating engages the reliance
 // clause in the merchant authorization while understating only costs approval size.
 // Guards against a negative or non-finite input returning something nonsensical.
+//
+// ⚠️ THIS FLOOR IS LOAD-BEARING BEYOND ROUNDING. DO NOT REMOVE, LOWER OR BYPASS IT
+// WITHOUT REOPENING THE TWO FIXES LISTED BELOW.
+//
+// The padding classifier still carries run-to-run variance on identical documents:
+// ~$3,240 across a 4-month window (`internal_transfer` $41,800–$45,040 plus
+// `owner_deposit` $0–$600), which is ~$785/mo once divided into the monthly average
+// (~$810/mo from internal_transfer, ~$150/mo from owner_deposit, netting $785). Those
+// are the SAME wobble at two denominators — quote both together, because two people
+// quoting one of each is how a future reader concludes somebody is wrong.
+//
+// On 2026-10-01 two fixes were DELIBERATELY CLOSED on the explicit grounds that this
+// floor absorbs that residue and therefore it cannot reach a funder:
+//   · descriptor-keyed padding rules in code (moving the mechanical categories off
+//     the model — see _shared/paddingPolicy.ts, which is where they would go)
+//   · caching extraction by byte-set, for same-input-same-output by construction
+// Neither was closed because the variance is harmless. They were closed because it is
+// CONTAINED HERE. Remove, lower or bypass this floor and the classifier's variance
+// becomes funder-visible again, two submissions of one merchant can quote different
+// verified revenue, and both of those fixes need reopening in the same change.
+//
+// So "why are we flooring to $1,000 when we have the exact figure?" has an answer:
+// because the exact figure is not reproducible. See the
+// `padding-classifier-run-to-run-swing` note for the measured before/after.
 const floorTo1k = (n: number): number =>
   Number.isFinite(n) && n > 0 ? Math.floor(n / 1000) * 1000 : 0;
 // SUPPRESSION-SAFE sibling of floorTo1k, and the one to use for any figure that is
@@ -4658,6 +4682,11 @@ Deno.serve(async (req) => {
     //
     // UNREADABLE is not zero and not "no history": on a query failure we keep the
     // current run's own figure as the floor rather than inventing a lower one.
+    // ⚠️ LOAD-BEARING, same as floorTo1k (see its comment near the top of this file).
+    // Taking the lowest figure we have ever published for an identical document set is
+    // half of what keeps the padding classifier's ~$785/mo residual variance away from
+    // a funder. Two fixes were closed on 2026-10-01 because this and the $1,000 floor
+    // contain that residue; weaken either and both need reopening.
     let revenueFloorBasis = "current run only";
     let revenueBandLow = trueAvgMonthlyRevenue;
     try {
