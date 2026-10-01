@@ -1318,8 +1318,16 @@ Deno.serve(async (req) => {
     }
 
     // DISTINCT calendar months — a two-account merchant's pair of April statements
-    // is ONE month of coverage, not two. (statements_analyzed carries the file
-    // count.) Fall back to the statement count only when no month labels came back.
+    // is ONE month of coverage, not two. Fall back to the statement count only when
+    // no month labels came back.
+    //
+    // NOTE, corrected 2026-10-01: this comment used to say "statements_analyzed
+    // carries the file count". It does not, and never has — that key is assigned
+    // monthsCovered, so it is an ALIAS for months_covered and identical to it in all
+    // 201 stored runs. The file count lives in `documents_analyzed` (added below) and
+    // in `analyzed.length`. Leaving the old key's VALUE alone on purpose: changing
+    // what a persisted key means would make older rows and newer rows disagree under
+    // the same name, which is worse than a redundant field.
     const monthsCovered =
       new Set(analyzed.map((s) => String(s.month ?? "").trim().toLowerCase()).filter(Boolean)).size ||
       analyzed.length;
@@ -2862,8 +2870,17 @@ Deno.serve(async (req) => {
     })();
 
     const metrics = {
+      // ALIAS of months_covered, kept for the 201 rows already written against it.
+      // It is NOT a file count despite the name — see the note at monthsCovered.
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
+      // The actual number of statement FILES that extracted successfully, which
+      // differs from months_covered whenever a merchant banks across two accounts and
+      // two files cover one month. Added because nothing published it: the only two
+      // keys available described the same number under two names, so any check
+      // comparing them was comparing a value with itself and could never fail.
+      documents_analyzed: analyzed.length,
+      documents_submitted: perStatement.length,
       consolidation_analysis: consolidationAnalysis,
       reported_avg_monthly_revenue: reportedAvgMonthlyRevenue,
       true_avg_monthly_revenue: trueAvgMonthlyRevenue,
