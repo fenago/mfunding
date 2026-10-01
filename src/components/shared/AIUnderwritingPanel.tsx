@@ -1642,9 +1642,17 @@ const SIZE_BUCKET_LABEL: Record<string, string> = {
 // This file held its own `PRODUCT_LABEL`, typed `Record<string, string>` rather
 // than `Record<ProductId, string>` — so unlike the two consolidated maps it was
 // invisible to the type system. A new product breaks the build until
-// lenderProducts.ts is updated; this copy just fell through to `humanize()`, and
-// it was already missing `consumer` and `startup_robs_401k`. The second of those
-// rendered on screen as "startup robs 401k".
+// lenderProducts.ts is updated; this copy would just fall through to
+// `humanize()` and render the raw key with its underscores swapped for spaces.
+//
+// An earlier version of this note said the old map was "already missing
+// `consumer` and `startup_robs_401k`" and that one of them had rendered on
+// screen. Neither has, and neither can: `underwrite-deal` whitelists seven
+// product signals (KNOWN_PRODUCTS, the same seven as the
+// `lender_programs.product_type` CHECK) and drops anything else before it is
+// stored, so those two cannot reach this component. The map being invisible to
+// the type system is reason enough on its own; it did not need a symptom, and
+// the one it was given was never real.
 //
 // SHORT, not long, and that is a design decision rather than an accident of which
 // import was nearer. These are chips in a dense row ("Products in play"), and the
@@ -1652,11 +1660,14 @@ const SIZE_BUCKET_LABEL: Record<string, string> = {
 // "Equipment financing" and `invoice_factoring` to "Invoice factoring" — longer
 // text in the narrowest place it appears.
 //
-// It changes NO visible text today, which is the part worth knowing: across all
-// 142 stored runs only three product_signals have ever appeared — `mca`,
-// `invoice_factoring` and `equipment_financing` — and the short map renders those
-// as "MCA", "Factoring" and "Equipment", exactly what the local copy produced.
-// The other six values gain correct labels for the first time.
+// It changes NO visible text today, which is the part worth knowing. Measured
+// 2026-10-01 against `deal_underwriting`: 153 stored runs, of which 79 carry any
+// product_signals at all, and only three distinct values have ever appeared —
+// `mca` (79), `invoice_factoring` (37), `equipment_financing` (10). The short
+// map renders those as "MCA", "Factoring" and "Equipment", exactly what the
+// local copy produced. The other six values gain correct labels for the first
+// time. (The earlier figure of 142 counted runs, not runs with signals, and was
+// stale besides — re-measure rather than citing this number in a year.)
 //
 // `product_signals` is `string[]` off the model, so the lookup must still tolerate
 // a value outside the union. The guard keeps the fallback explicit instead of
