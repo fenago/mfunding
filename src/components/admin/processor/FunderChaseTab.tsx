@@ -88,6 +88,12 @@ interface SubSummary {
   responseAt: string | null;
   openedAt: string | null;
   openCount: number;
+  /** Their mail server accepted it (SMTP 250) — the one delivery fact the
+   *  remote side states and cannot fake. Not an open, not a read. */
+  deliveredAt: string | null;
+  /** Their mail server PERMANENTLY refused it — this funder received nothing. */
+  deliveryFailedAt: string | null;
+  deliveryError: string | null;
   /** response_data.parsed.method — "llm" | "heuristic" | "no_typed_text". */
   parseMethod: string | null;
   offerAmount: number | null;
@@ -140,7 +146,10 @@ const FILTERS: { key: Filter; label: string; hint: string }[] = [
  *  offer beats everyone having passed. */
 function bucketOfDeal(subs: SubSummary[]): Filter {
   const keys = subs.map((s) => stateOf(s).key);
-  if (keys.some((k) => k === "awaiting" || k === "replied")) return "outstanding";
+  // `undelivered` sits with "Awaiting" and NOT with "All passed": a funder whose
+  // server refused the package has not passed on the deal — nobody there has
+  // seen it. Filing it under "declined" would quietly close a live deal.
+  if (keys.some((k) => k === "awaiting" || k === "replied" || k === "undelivered")) return "outstanding";
   if (keys.some((k: StateKey) => k === "offer" || k === "accepted")) return "offers";
   return "declined";
 }
@@ -226,6 +235,26 @@ function FunderLine({
           up — but a null now says nothing rather than accusing the funder of
           ignoring us. Owner asked why a funder who replied read "not opened",
           2026-10-01. */}
+      {/* The receiving server's OWN WORDS, on the row she is chasing from. A
+          processor cannot act on "undeliverable"; she can act on
+          "550 5.1.10 RecipientNotFound" — that is a wrong address to fix, not a
+          funder to call. Shown in full rather than truncated for the same
+          reason: the enhanced code is the actionable part. */}
+      {s.deliveryFailedAt && (
+        <span className="inline-flex items-center gap-0.5 rounded bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-300 px-1.5 py-px text-[10px] font-mono">
+          {s.deliveryError ?? "permanently refused"}
+        </span>
+      )}
+      {/* What people actually wanted from "opened": did it get there. This one
+          is the remote mail server's 250, which it cannot fake — unlike the
+          open pixel below, which its security scanner fetches on its behalf.
+          Suppressed once a failure is on the row: a later bounce supersedes an
+          earlier accept, and showing both reads as a contradiction. */}
+      {s.deliveredAt && !s.deliveryFailedAt && (
+        <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[10px] font-semibold">
+          📬 their server took it
+        </span>
+      )}
       {s.openedAt && (
         <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[10px] font-semibold">
           👀 opened{s.openCount > 1 ? ` ${s.openCount}×` : ""}
@@ -406,7 +435,8 @@ export default function FunderChaseTab() {
     const { data: subData, error: subErr } = await supabase
       .from("deal_submissions")
       .select(
-        "id, deal_id, lender_id, status, submitted_at, response_at, opened_at, open_count, offer_amount, factor_rate, " +
+        "id, deal_id, lender_id, status, submitted_at, response_at, opened_at, open_count, " +
+          "delivered_at, delivery_failed_at, delivery_error, offer_amount, factor_rate, " +
           "daily_payment, weekly_payment, total_payback, response_data, " +
           "lender:lenders!lender_id ( company_name, funding_speed )",
       );
@@ -433,6 +463,9 @@ export default function FunderChaseTab() {
         responseAt: (r.response_at as string | null) ?? null,
         openedAt: (r.opened_at as string | null) ?? null,
         openCount: (r.open_count as number | null) ?? 0,
+        deliveredAt: (r.delivered_at as string | null) ?? null,
+        deliveryFailedAt: (r.delivery_failed_at as string | null) ?? null,
+        deliveryError: (r.delivery_error as string | null) ?? null,
         parseMethod:
           (r.response_data as { parsed?: { method?: string | null } } | null)?.parsed?.method ?? null,
         offerAmount: (r.offer_amount as number | null) ?? null,

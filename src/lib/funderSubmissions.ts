@@ -19,6 +19,7 @@ export const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly
 
 export type StateKey =
   | "awaiting"
+  | "undelivered"
   | "replied"
   | "offer"
   | "accepted"
@@ -41,6 +42,17 @@ export interface SubmissionLike {
   dailyPayment: number | null;
   weeklyPayment: number | null;
   totalPayback: number | null;
+  /** The recipient's mail server ACCEPTED the message (an SMTP 250 for the
+   *  submission's to: address). Not an open and not a read. Optional so rows
+   *  that don't select it still satisfy the shape — but then it reads as
+   *  "unknown", never as "not delivered". */
+  deliveredAt?: string | null;
+  /** The recipient's mail server PERMANENTLY refused it — the funder received
+   *  nothing. Set only on proven-permanent failures; a transient deferral the
+   *  provider is still retrying never sets it. */
+  deliveryFailedAt?: string | null;
+  /** The receiving server's own words, e.g. "550 5.1.10 RecipientNotFound". */
+  deliveryError?: string | null;
 }
 
 export const money = (n: number | null | undefined) =>
@@ -75,6 +87,15 @@ export function stateOf(s: SubmissionLike): { key: StateKey; emoji: string; labe
     return { key: "offer", emoji: "💰", label: "Offer", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" };
   if (s.responseAt)
     return { key: "replied", emoji: "✉", label: "Replied", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" };
+  // Checked AFTER every reply/offer state, because a funder who answered us
+  // obviously received the package — a stale failure must not overwrite their
+  // answer. Checked BEFORE "Awaiting", because waiting on someone who never got
+  // the file is the single most expensive thing this board can get wrong: the
+  // chase clock runs, the processor keeps waiting, and nobody is reading
+  // anything. This exists because funders told the owner they never received
+  // submissions that showed "⏳ Awaiting" here for days.
+  if (s.deliveryFailedAt)
+    return { key: "undelivered", emoji: "⛔", label: "Never arrived", cls: "bg-rose-200 text-rose-900 dark:bg-rose-900/60 dark:text-rose-200" };
   return { key: "awaiting", emoji: "⏳", label: "Awaiting", cls: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300" };
 }
 

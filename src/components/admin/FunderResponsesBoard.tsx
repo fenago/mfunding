@@ -113,6 +113,12 @@ interface SubRow {
   lenderName: string;
   status: string;
   submittedAt: string | null;
+  /** Their mail server accepted / permanently refused our submission. See
+   *  SubmissionLike in src/lib/funderSubmissions.ts for why these are the
+   *  trustworthy delivery signals and `opened` is not. */
+  deliveredAt: string | null;
+  deliveryFailedAt: string | null;
+  deliveryError: string | null;
   responseAt: string | null;
   offerAmount: number | null;
   factorRate: number | null;
@@ -627,7 +633,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     try {
       const { data, error: qErr } = await supabase
         .from("deal_submissions")
-        .select("id, lender_id, status, submitted_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, withdrawn_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
+        .select("id, lender_id, status, submitted_at, response_at, delivered_at, delivery_failed_at, delivery_error, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, withdrawn_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
         .eq("deal_id", deal.id);
       if (qErr) throw qErr;
       const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
@@ -642,6 +648,9 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           status: r.status as string,
           submittedAt: (r.submitted_at as string | null) ?? null,
           responseAt: (r.response_at as string | null) ?? null,
+          deliveredAt: (r.delivered_at as string | null) ?? null,
+          deliveryFailedAt: (r.delivery_failed_at as string | null) ?? null,
+          deliveryError: (r.delivery_error as string | null) ?? null,
           offerAmount: (r.offer_amount as number | null) ?? null,
           factorRate: (r.factor_rate as number | null) ?? null,
           termMonths: (r.term_months as number | null) ?? null,

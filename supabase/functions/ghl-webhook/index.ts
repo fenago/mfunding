@@ -29,6 +29,8 @@ import {
 import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
 import { captureFunderReply } from "../_shared/funderDecline.ts";
+import { isEmailStatsPayload } from "../_shared/emailStats.ts";
+import { handleEmailDeliveryEvent } from "../_shared/emailDelivery.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -234,14 +236,27 @@ Deno.serve(async (req) => {
     // a messageType but no InboundMessage type (guarded by direction so we never
     // pick up outbound). handleInboundMessage decides what to do per channel.
     (/(sms|text|call|voice)/i.test(messageType) && direction !== "outbound");
-  // Email OPEN: a GHL "Email Events → Opened" workflow posts a webhook with
-  // customData.type = "EmailOpened" (or a native LCEmailStats event=opened).
+  // ── Email DELIVERY events ──────────────────────────────────────────────────
+  // Checked BEFORE the open branch, because `LCEmailStats` used to be routed
+  // into handleEmailOpen and every event it carries — a `delivered`, a `550`
+  // bounce, a spam complaint — was recorded as "the funder opened our email".
+  // A delivered is not an open and a failure certainly isn't; the event kind
+  // lives in webhookPayload.event and was simply never read. See
+  // _shared/emailStats.ts for both payload shapes and what each can prove.
+  const isEmailStats = isEmailStatsPayload(evt);
+  // Email OPEN (legacy path): a GHL "Email Events → Opened" workflow posting
+  // customData.type = "EmailOpened". `LCEmailStats` is deliberately NOT in this
+  // condition any more — it is handled above, per event kind.
   const isEmailOpen =
-    type === "EmailOpened" || type === "LCEmailStats" ||
+    type === "EmailOpened" ||
     String(cd.type ?? "").toLowerCase() === "emailopened" ||
     String(evt.event ?? cd.event ?? cd.email_event ?? "").toLowerCase() === "opened";
   try {
-    if (isEmailOpen) {
+    if (isEmailStats) {
+      const r = await handleEmailDeliveryEvent(db, evt);
+      await logEvent(db, evt, type || "LCEmailStats", r.outcome, r.detail);
+      return json({ ok: true, type: type || "LCEmailStats", ...r.result });
+    } else if (isEmailOpen) {
       const r = await handleEmailOpen(db, evt);
       await logEvent(db, evt, type || "EmailOpened", r.outcome, r.detail);
       return json({ ok: true, type: type || "EmailOpened", ...r.result });
@@ -310,13 +325,29 @@ function emailMessageIdOf(evt: Record<string, unknown>): string | null {
 }
 
 interface LeadOpenRow { matched: boolean; is_new: boolean; customer_id: string | null }
-interface SubRow { id: string; opened_at: string | null; open_count: number | null }
 
-// ── Funder email OPEN → stamp submission.opened_at (time-to-open metric) ─────
-// The funder's GHL contactId maps to a lender (ghl_contact_id). We stamp that
-// funder's most recent still-unopened submission as opened (first open), and
-// bump open_count on repeats. Matching is by funder + recency (no message-id
-// plumbing needed) — enough for "how fast do they read our submissions".
+// ── Email OPEN (merchant side only) ──────────────────────────────────────────
+//
+// WHAT THIS NO LONGER DOES, ON PURPOSE. It used to also stamp
+// deal_submissions.opened_at for funders, choosing the submission by LENDER +
+// RECENCY ("that lender's most recent still-unopened submission"). Both halves
+// of that were wrong:
+//
+//   * The GUESS. Two submissions to one funder four minutes apart — the Highland
+//     Hill shape — are indistinguishable to a recency rule, so the open lands on
+//     whichever row sorted first. There is no correlation id in an open payload
+//     that could have made it right.
+//   * The SIGNAL. An open is a tracking-pixel load, and the pixel is routinely
+//     fetched by the recipient's security scanner, not a person. All five
+//     messages ever sent to one funder's submissions inbox read `opened`,
+//     including three plain-text follow-ups with no attachments, from a team
+//     that says it received nothing. They run Microsoft EOP. So even a perfectly
+//     correlated open would not mean a human read the submission.
+//
+// Funder-side truth now comes from handleEmailStats: `delivered` (the receiving
+// server's own 250) and a permanent failure (its 5xx) are statements the remote
+// server makes and cannot fake. Opens are recorded in email_delivery_events as
+// what they are and nothing is allowed to present one as a read.
 async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<InboundResult> {
   const cd = (evt.customData ?? {}) as Record<string, unknown>;
   const c = (evt.contact ?? {}) as Record<string, unknown>;
@@ -337,43 +368,25 @@ async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<In
     console.warn("[ghl-webhook] record_lead_email_open skipped:", e instanceof Error ? e.message : e);
   }
 
-  // (2) Funder submission stamp (existing behavior). A contact is a merchant XOR a
-  // funder; when it isn't a lender, we still return "processed" if we logged a lead open.
-  const { data: lender } = await db.from("lenders").select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
-  if (!lender) {
-    if (leadOpen?.matched) {
-      return {
-        outcome: "processed",
-        detail: `email-open: lead ${leadOpen.customer_id} (${leadOpen.is_new ? "new open" : "repeat"})`,
-        result: { customerId: leadOpen.customer_id, firstOpen: leadOpen.is_new },
-      };
-    }
-    return { outcome: "ignored", detail: `email-open: no lender/customer for contact ${contactId}`, result: {} };
+  // (2) A funder contact's open is NOT stamped onto a submission — see the
+  // header above. It is still acknowledged so GHL stops retrying.
+  if (leadOpen?.matched) {
+    return {
+      outcome: "processed",
+      detail: `email-open: lead ${leadOpen.customer_id} (${leadOpen.is_new ? "new open" : "repeat"})`,
+      result: { customerId: leadOpen.customer_id, firstOpen: leadOpen.is_new },
+    };
   }
-
-  // Prefer the most recent still-unopened sent submission; else the most recent sent one.
-  let sub: SubRow | null = null;
-  const un = await db.from("deal_submissions").select("id, opened_at, open_count")
-    .eq("lender_id", lender.id).not("submitted_at", "is", null).is("opened_at", null)
-    .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
-  sub = (un.data as unknown as SubRow | null) ?? null;
-  if (!sub) {
-    const any = await db.from("deal_submissions").select("id, opened_at, open_count")
-      .eq("lender_id", lender.id).not("submitted_at", "is", null)
-      .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
-    sub = (any.data as unknown as SubRow | null) ?? null;
+  const { data: lender } = await db.from("lenders")
+    .select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
+  if (lender) {
+    return {
+      outcome: "ignored",
+      detail: `email-open: ${lender.company_name} (funder) — opens are pixel loads and are not stamped on submissions`,
+      result: { lender: lender.company_name, stamped: false },
+    };
   }
-  if (!sub) return { outcome: "ignored", detail: `email-open: no sent submission for ${lender.company_name}`, result: {} };
-
-  const patch: Record<string, unknown> = { open_count: (Number(sub.open_count) || 0) + 1 };
-  const firstOpen = !sub.opened_at;
-  if (firstOpen) patch.opened_at = new Date().toISOString();
-  await db.from("deal_submissions").update(patch).eq("id", sub.id);
-  return {
-    outcome: "processed",
-    detail: `email-open: ${lender.company_name} submission ${sub.id} (${firstOpen ? "first open" : "repeat"})`,
-    result: { lender: lender.company_name, submissionId: sub.id, firstOpen },
-  };
+  return { outcome: "ignored", detail: `email-open: no lender/customer for contact ${contactId}`, result: {} };
 }
 
 // ── Funder reply → stamp submission + alert the owner ────────────────────────
