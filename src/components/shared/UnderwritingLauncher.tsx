@@ -39,6 +39,11 @@ import { Suspense, lazy, useEffect, useState } from "react";
 import { SparklesIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import type { UWVerdict } from "@/hooks/useUnderwritingSummaries";
 
+/** Which tab the panel opens on. Mirrors AIUnderwritingPanel's own TabKey; a
+ *  control placed beside the funder picker should land on "funders", because
+ *  that is why the reader clicked it. */
+export type UnderwritingTab = "decision" | "risks" | "funders" | "submission" | "working";
+
 // LAZY, not static. The launcher now sits on every row of the processor board and
 // the chase queue; a static import would make all of them fetch the panel's
 // ~17KB gzip (plus Recharts) on page load, for a modal most rows never open.
@@ -107,6 +112,7 @@ export default function UnderwritingLauncher({
   merchantName = null,
   size = "sm",
   className = "",
+  initialTab,
   onRan,
 }: {
   dealId: string;
@@ -118,6 +124,8 @@ export default function UnderwritingLauncher({
   merchantName?: string | null;
   size?: "xs" | "sm";
   className?: string;
+  /** Open the panel on a specific tab. Omit for "Decision" (can we fund it). */
+  initialTab?: UnderwritingTab;
   /** Called when the modal closes, so a list can refresh its verdict chips. */
   onRan?: () => void;
 }) {
@@ -248,7 +256,7 @@ export default function UnderwritingLauncher({
                   </div>
                 }
               >
-                <AIUnderwritingPanel dealId={dealId} />
+                <AIUnderwritingPanel dealId={dealId} initialTab={initialTab} />
               </Suspense>
             </div>
           </div>

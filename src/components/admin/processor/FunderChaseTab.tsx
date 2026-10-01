@@ -843,6 +843,7 @@ export default function FunderChaseTab() {
                   verdict={uwVerdictFor(g.dealId)}
                   merchantName={g.businessName}
                   size="xs"
+                  initialTab="funders"
                   onRan={reloadUnderwriting}
                 />
                 {g.dealNumber && (

@@ -1448,6 +1448,7 @@ export default function ProcessorDetailDrawer({
                       statements={uwStatements}
                       merchantName={title}
                       size="xs"
+                      initialTab="funders"
                       onRan={reloadUnderwriting}
                     />
                   </div>
@@ -1465,6 +1466,7 @@ export default function ProcessorDetailDrawer({
                       statements={uwStatements}
                       merchantName={title}
                       size="xs"
+                      initialTab="funders"
                       onRan={reloadUnderwriting}
                     />
                   </div>

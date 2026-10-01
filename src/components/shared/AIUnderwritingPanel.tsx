@@ -24,6 +24,20 @@ import DealAssistant from "../admin/DealAssistant";
 
 interface Props {
   dealId: string;
+  /**
+   * Narrow container (a drawer, a side panel) rather than a full page. Tightens
+   * padding and drops the metric grid to two columns. It does NOT remove or fold
+   * anything extra — the same information is present at both densities, because a
+   * reader in a drawer is doing the same job as a reader on a page.
+   */
+  embedded?: boolean;
+  /**
+   * Which tab opens. Defaults to "decision" — "can we fund it" is always the
+   * first question. A caller that already knows why the reader is here should say
+   * so: the control beside the funder picker opens on "funders", because she
+   * clicked it to choose a funder, not to re-read the capacity.
+   */
+  initialTab?: TabKey;
 }
 
 const TOOLTIP_STYLE = {
@@ -207,7 +221,7 @@ function ContextEditor({ dealId, canEdit }: { dealId: string; canEdit: boolean }
   );
 }
 
-export default function AIUnderwritingPanel({ dealId }: Props) {
+export default function AIUnderwritingPanel({ dealId, embedded = false, initialTab = "decision" }: Props) {
   const { isAdmin, isSuperAdmin } = useUserProfile();
   // PROCESSORS RUN UNDERWRITING TOO. Packaging a file — statements in, funder
   // fit out — is the processor's job, and the edge function has permitted them
@@ -369,12 +383,463 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
 
       <ContextEditor dealId={dealId} canEdit={canRun} />
 
-      {current && <ResultView r={current} />}
+      {current && <ResultView r={current} embedded={embedded} initialTab={initialTab} />}
     </div>
   );
 }
 
-function ResultView({ r }: { r: DealUnderwriting }) {
+// ─────────────────────── The reorganisation, 2026-10-01 ───────────────────────
+// Owner: "it's too much information and it's overwhelming... i want to keep
+// everything but it needs to be more geared towards humans that need to use
+// this information."
+//
+// Nothing below is deleted. It is RANKED and FOLDED, against the sequence the
+// reader actually works in — she is a processor about to pick funders:
+//
+//   ① Can we fund it, and for how much?   → the header. NEVER behind a tab.
+//   ② What will kill it?                  → Risks
+//   ③ Where does it go?                   → Funders
+//   ④ What do I say?                      → Submission
+//   ⑤ Show me the working                 → Working (accordions, collapsed)
+//
+// THE RULE THAT CONSTRAINS THE TABS: a tab may not hide something that is
+// currently screaming. "Unaffordable", "High risk", active collections, a
+// doctored statement and a failed document parse all render ABOVE the tab bar,
+// unconditionally, because a red flag behind a tab nobody opens is a red flag
+// that does not exist. The tabs only ever fold things that are safe to not see.
+
+type TabKey = "decision" | "risks" | "funders" | "submission" | "working";
+
+/** Semantic tone, kept separate from the brand accent on purpose: ocean-blue is
+ *  "this is interactive", these three are "this is good / watch it / this kills
+ *  the deal". Mixing them is how a warning ends up looking like a link. */
+type Tone = "good" | "warn" | "critical" | "neutral";
+
+const TONE_TEXT: Record<Tone, string> = {
+  good: "text-emerald-700 dark:text-emerald-300",
+  warn: "text-amber-700 dark:text-amber-300",
+  critical: "text-red-700 dark:text-red-300",
+  neutral: "text-gray-700 dark:text-gray-300",
+};
+const TONE_BAR: Record<Tone, string> = {
+  good: "bg-emerald-500",
+  warn: "bg-amber-500",
+  critical: "bg-red-500",
+  neutral: "bg-gray-400 dark:bg-gray-500",
+};
+
+/**
+ * Confidence as a SHAPE, not the word "medium" in grey.
+ *
+ * Owner's note was about exactly this: a read's confidence was a lowercase word
+ * in small grey text beside a red headline, so it carried none of the weight it
+ * should. Three segments, filled to level, coloured semantically — readable
+ * without being read.
+ */
+function ConfidenceMeter({ level, label = "confidence" }: { level: string | null | undefined; label?: string }) {
+  const n = level === "high" ? 3 : level === "medium" ? 2 : level === "low" ? 1 : 0;
+  // 0 = we were never told. That is NOT low confidence, and it must not draw as
+  // one segment of red — it draws as empty with its own wording.
+  const tone: Tone = n === 3 ? "good" : n === 2 ? "warn" : n === 1 ? "critical" : "neutral";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5"
+      title={n === 0 ? `This run did not record a ${label}.` : `${level} ${label}`}
+    >
+      <span className="inline-flex gap-0.5" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className={`block w-1.5 h-3.5 rounded-sm ${i < n ? TONE_BAR[tone] : "bg-gray-300 dark:bg-gray-600"}`}
+          />
+        ))}
+      </span>
+      <span className={`text-[11px] font-semibold capitalize ${n === 0 ? "text-gray-400" : TONE_TEXT[tone]}`}>
+        {n === 0 ? `${label} not recorded` : `${level} ${label}`}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * True vs reported revenue, as the ratio it actually is.
+ *
+ * "86% real" is a proportion and the eye reads a proportion instantly and a
+ * percentage slowly. The filled part is what survived the padding sweep; the
+ * remainder is what came out, and it is labelled with the dollar figure rather
+ * than left as a gap the reader has to infer.
+ */
+function RevenueRealityBar({
+  truth, reported, qualityPct, padding,
+}: {
+  truth: number | null | undefined;
+  reported: number | null | undefined;
+  qualityPct: number | null | undefined;
+  padding: number | null | undefined;
+}) {
+  if (truth == null || reported == null || reported <= 0) return null;
+  const raw = qualityPct ?? (truth / reported) * 100;
+  const filled = Math.max(0, Math.min(100, raw));
+  // Under 70% real is a file whose deposits are mostly not revenue — that is a
+  // submission problem, not a rounding note, so the bar says so in colour.
+  const tone: Tone = filled >= 85 ? "good" : filled >= 70 ? "warn" : "critical";
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-1">
+        <span className="text-xs opacity-80">True monthly revenue</span>
+        <span className={`text-[11px] font-bold ${TONE_TEXT[tone]}`}>{Math.round(filled)}% real</span>
+      </div>
+      <div className="text-2xl font-bold leading-tight">
+        {money(truth)}
+        <span className="text-sm font-normal opacity-70"> vs {money(reported)} reported</span>
+      </div>
+      <div className="mt-1.5 h-2.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden flex">
+        <div className={`h-full ${TONE_BAR[tone]}`} style={{ width: `${filled}%` }} />
+        <div className="h-full flex-1 bg-red-400/70 dark:bg-red-500/60" />
+      </div>
+      {padding != null && padding > 0 && (
+        <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+          <span className="font-semibold text-red-600 dark:text-red-400">−{money(padding)}</span> stripped as padding
+          <span className="opacity-70"> — itemised under Working</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Monthly revenue trend. Direction matters as much as the average: $40k/mo
+ * falling is a different deal from $40k/mo climbing, and the single averaged
+ * figure above hides which one you are looking at.
+ *
+ * True deposits per month (padding already removed), so it is the same basis as
+ * the headline — not total deposits, which would disagree with it.
+ */
+function RevenueTrendChart({ rows }: { rows: UWPerMonth[] }) {
+  const data = rows
+    .filter((m) => m.month)
+    .map((m) => ({ month: m.month as string, revenue: Number(m.true_deposits) || 0 }));
+  if (data.length < 2) return null; // a trend needs two points; one month is not a direction
+  const avg = data.reduce((s, d) => s + d.revenue, 0) / data.length;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          True revenue by month
+        </h4>
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+          dashed = {money(avg)} avg
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363D" opacity={0.3} />
+          <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke="#8B949E" />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            stroke="#8B949E"
+            tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`}
+          />
+          <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
+            itemStyle={{ color: "#F0F6FC" }}
+            formatter={(value) => [`$${Math.round(Number(value) || 0).toLocaleString()}`, "True revenue"]}
+          />
+          <ReferenceLine y={avg} stroke="#8B949E" strokeDasharray="4 4" />
+          <Bar dataKey="revenue" radius={[4, 4, 0, 0]}>
+            {data.map((d, i) => (
+              <Cell key={i} fill={d.revenue >= avg ? "#2DD4BF" : "#F59E0B"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/**
+ * The position stack — who is already taking money out, every day, in one bar.
+ *
+ * The numbers for this are in PositionsSection's table and stay there. What the
+ * table cannot do is show the SHAPE of the burden: five funders each taking a
+ * little is a different conversation from one taking most of it, and that is the
+ * thing a processor needs off a glance before she picks who to send to.
+ */
+const STACK_FILLS = ["#38BDF8", "#818CF8", "#F472B6", "#FB923C", "#A3E635", "#2DD4BF"];
+function PositionStack({
+  positions, capacity,
+}: {
+  positions: UWPosition[];
+  capacity: number | null | undefined;
+}) {
+  const live = positions.filter((p) => (Number(p.daily_amount) || 0) > 0);
+  if (live.length === 0) return null;
+  const total = live.reduce((s, p) => s + (Number(p.daily_amount) || 0), 0);
+  const sorted = [...live].sort((a, b) => (b.daily_amount || 0) - (a.daily_amount || 0));
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Who is already debiting — {live.length} active position{live.length === 1 ? "" : "s"}
+        </h4>
+        <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+          {money(total)}/day
+        </span>
+      </div>
+      <div className="h-6 w-full rounded-lg overflow-hidden flex bg-gray-200 dark:bg-gray-700">
+        {sorted.map((p, i) => {
+          const w = total > 0 ? ((p.daily_amount || 0) / total) * 100 : 0;
+          return (
+            <div
+              key={`${p.funder}-${i}`}
+              className="h-full flex items-center justify-center"
+              style={{ width: `${w}%`, backgroundColor: STACK_FILLS[i % STACK_FILLS.length] }}
+              title={`${p.funder} — ${money(p.daily_amount)}/day (${Math.round(w)}% of the stack), ${p.cadence}`}
+            >
+              {w >= 12 && (
+                <span className="text-[10px] font-bold text-gray-900 truncate px-1">{Math.round(w)}%</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+        {sorted.map((p, i) => (
+          <span key={`${p.funder}-lg-${i}`} className="inline-flex items-center gap-1 text-[11px] text-gray-600 dark:text-gray-300">
+            <span
+              className="inline-block w-2 h-2 rounded-sm shrink-0"
+              style={{ backgroundColor: STACK_FILLS[i % STACK_FILLS.length] }}
+            />
+            <span className="font-semibold">{p.funder}</span>
+            <span className="opacity-75 tabular-nums">{money(p.daily_amount)}/d</span>
+          </span>
+        ))}
+      </div>
+      {/* Room left, next to room taken — the actual question behind the stack. */}
+      {capacity != null && (
+        <div className="mt-2 text-[11px] text-gray-600 dark:text-gray-300">
+          Safe daily capacity <span className="font-bold">{money(capacity)}</span> ·{" "}
+          {capacity - total >= 0 ? (
+            <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+              {money(capacity - total)}/day of room left
+            </span>
+          ) : (
+            <span className="font-semibold text-red-700 dark:text-red-300">
+              {money(total - capacity)}/day OVER safe capacity
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * EVIDENCE INTEGRITY — the strip that stops this panel lying by omission.
+ *
+ * Every section below reports on a read that can fail. A statement that failed
+ * to parse means its month is NOT in any of these numbers, and "no red flags"
+ * computed over a partial read is the worst instance of the absence-vs-
+ * unreadable bug in the whole app: it tells a processor a file is clean when
+ * nobody has seen half of it.
+ *
+ * So the coverage of the read is stated ABOVE the tabs, always, in the same
+ * breath as the verdict it qualifies. Errors are red and name the count; a
+ * single month says "thin evidence" in its own right; bank-feed months are
+ * called out because the merchant cannot alter those.
+ */
+function EvidenceStrip({
+  statements, months, ledger, provenance,
+}: {
+  statements: number | null | undefined;
+  months: number;
+  ledger: UWDocumentLedgerRow[] | undefined;
+  provenance: UWProvenance | undefined;
+}) {
+  const errored = (ledger ?? []).filter((d) => d.status === "error");
+  const feedMonths = provenance?.bank_feed_months?.length ?? 0;
+  // Evidence strength is a DESCRIBED composite, not an invented score: months of
+  // coverage, minus any month we failed to read, plus a lift for feed-verified
+  // months. The inputs are all printed next to it so nobody has to trust it.
+  const strength: Tone =
+    errored.length > 0 ? "critical" : months >= 3 ? (feedMonths > 0 ? "good" : "good") : months === 2 ? "warn" : "critical";
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex gap-0.5" aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className={`block w-4 h-1.5 rounded-sm ${
+                i < (strength === "good" ? 3 : strength === "warn" ? 2 : 1)
+                  ? TONE_BAR[strength]
+                  : "bg-gray-300 dark:bg-gray-600"
+              }`}
+            />
+          ))}
+        </span>
+        <span className={`font-bold ${TONE_TEXT[strength]}`}>
+          {errored.length > 0
+            ? "Incomplete read"
+            : months >= 3
+              ? "Evidence: solid"
+              : months === 2
+                ? "Evidence: thin"
+                : "Evidence: single month"}
+        </span>
+      </span>
+      <span className="text-gray-500 dark:text-gray-400">
+        {num(statements)} statement{statements === 1 ? "" : "s"} · {num(months)} month{months === 1 ? "" : "s"}
+      </span>
+      {feedMonths > 0 && (
+        <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+          🏦 {feedMonths} feed-verified{provenance?.institution ? ` · ${provenance.institution}` : ""}
+        </span>
+      )}
+      {/* THE LINE THAT MATTERS. A failed parse is a hole, and every "none found"
+          in the tabs below is scoped to what was actually read. */}
+      {errored.length > 0 && (
+        <span className="font-bold text-red-700 dark:text-red-300">
+          ⚠ {errored.length} document{errored.length === 1 ? "" : "s"} failed to parse — those months are NOT in
+          these numbers. Nothing below is a statement that they are clean. (Working → Documents)
+        </span>
+      )}
+      {months === 1 && errored.length === 0 && (
+        <span className="font-semibold text-amber-700 dark:text-amber-300">
+          one month cannot show a trend or a seasonal dip
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Critical flags, lifted out of the flat chip pile at the bottom of the old
+ *  layout. A `critical` severity flag was rendering as one grey-ish pill in a row
+ *  of twenty, below five charts. Loudest first, above the tabs, always. */
+function CriticalFlags({ flags }: { flags: UWFlag[] }) {
+  const critical = flags.filter((f) => f.severity === "critical");
+  if (critical.length === 0) return null;
+  return (
+    <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-3">
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <ExclamationTriangleIcon className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+        <h4 className="text-xs font-bold uppercase tracking-wide text-red-800 dark:text-red-200">
+          {critical.length} deal-breaker{critical.length === 1 ? "" : "s"}
+        </h4>
+      </div>
+      <ul className="space-y-1">
+        {critical.map((f, i) => (
+          <li key={i} className="flex gap-2 text-sm font-semibold text-red-800 dark:text-red-200">
+            <span className="text-red-500 shrink-0">▸</span>
+            <span>{f.message}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** The tab bar. Counts and alert dots on the tabs themselves, so she can tell
+ *  there are six risks without opening Risks. */
+function TabBar({
+  tab, setTab, counts,
+}: {
+  tab: TabKey;
+  setTab: (t: TabKey) => void;
+  counts: Record<TabKey, { n: number | null; alert: boolean }>;
+}) {
+  const TABS: { key: TabKey; label: string; hint: string }[] = [
+    { key: "decision", label: "Decision", hint: "Capacity, affordability and the plays that make it work" },
+    { key: "risks", label: "Risks", hint: "What will kill this deal — worst first" },
+    { key: "funders", label: "Funders", hint: "Who buys this file, and who is knocked out" },
+    { key: "submission", label: "Submission", hint: "What to say when you send it" },
+    { key: "working", label: "Working", hint: "Every number's source — tables, debits, descriptors" },
+  ];
+  return (
+    <div
+      role="tablist"
+      className="flex flex-wrap gap-1 border-b border-gray-200 dark:border-gray-700 -mb-px"
+    >
+      {TABS.map((t) => {
+        const c = counts[t.key];
+        const active = tab === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={t.hint}
+            onClick={() => setTab(t.key)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${
+              active
+                ? "border-ocean-blue text-ocean-blue bg-ocean-blue/5 dark:bg-ocean-blue/10"
+                : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+            }`}
+          >
+            {t.label}
+            {c.n != null && c.n > 0 && (
+              <span
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                  c.alert
+                    ? "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                    : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                }`}
+              >
+                {c.n}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** An accordion for the Working tab. Collapsed by default — house rule — and it
+ *  says what is inside it before you open it, so folding costs no information. */
+function Fold({
+  title, note, children, defaultOpen = false,
+}: {
+  title: string;
+  note?: string | null;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details open={defaultOpen} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 group">
+      <summary className="flex items-center justify-between gap-2 p-4 cursor-pointer list-none">
+        <span className="min-w-0">
+          <span className="font-semibold text-gray-900 dark:text-white">{title}</span>
+          {note && <span className="block text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{note}</span>}
+        </span>
+        <ChevronDownIcon className="w-5 h-5 text-gray-400 shrink-0 group-open:rotate-180 transition-transform" />
+      </summary>
+      <div className="px-4 pb-4">{children}</div>
+    </details>
+  );
+}
+
+/** Shown when a tab has nothing in it. Says WHY it is empty — a run stored before
+ *  a detector shipped is not the same as a clean file, and this panel must never
+ *  let those two read alike. */
+function TabEmpty({ what, why }: { what: string; why: string }) {
+  return (
+    <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-600 p-6 text-center">
+      <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">{what}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{why}</p>
+    </div>
+  );
+}
+
+function ResultView({
+  r, embedded = false, initialTab = "decision",
+}: {
+  r: DealUnderwriting;
+  embedded?: boolean;
+  initialTab?: TabKey;
+}) {
   const m = (r.metrics ?? {}) as Partial<UWMetrics>;
   const flags = r.flags ?? [];
   const paddingCats = m.padding_by_category ?? {};
@@ -403,10 +868,43 @@ function ResultView({ r }: { r: DealUnderwriting }) {
       return Number.isNaN(ta) || Number.isNaN(tb) ? 0 : ta - tb;
     });
 
+  // ── Tab routing ────────────────────────────────────────────────────────────
+  // "decision" always opens first: the reader's first question is always "can we
+  // fund this and for how much", and she should never have to click to start.
+  const [tab, setTab] = useState<TabKey>(initialTab);
+
+  const perMonth = m.per_month ?? [];
+  const activePositions = m.active_positions ?? [];
+  const criticalCount = flags.filter((f) => f.severity === "critical").length;
+  const warnCount = flags.filter((f) => f.severity === "warn").length;
+  const collectionsLive =
+    !!m.collection_activity?.detected ||
+    (m.collection_activity?.settlement_servicers ?? []).length > 0;
+  const ledgerErrors = (m.document_ledger ?? []).filter((d) => d.status === "error").length;
+  const fraudChecks = (m.provenance?.cross_checks ?? []).filter((c) => c.fraud).length;
+
+  // Risk count on the tab = everything that tab holds which is genuinely bad.
+  // Deliberately NOT a total of rows in the tab: a badge that counts neutral
+  // context inflates to "14" on a clean file and then means nothing on a dirty one.
+  const riskCount =
+    criticalCount + warnCount + (collectionsLive ? 1 : 0) + fraudChecks +
+    ((m.negative_days ?? 0) > 0 ? 1 : 0) + ((m.nsf_total ?? 0) > 0 ? 1 : 0);
+  const funderCount = m.profile?.recommended_funders?.length ?? null;
+  const tabCounts: Record<TabKey, { n: number | null; alert: boolean }> = {
+    decision: { n: null, alert: false },
+    risks: { n: riskCount, alert: criticalCount > 0 || collectionsLive || fraudChecks > 0 },
+    funders: { n: funderCount, alert: false },
+    submission: { n: null, alert: false },
+    working: { n: ledgerErrors > 0 ? ledgerErrors : null, alert: ledgerErrors > 0 },
+  };
+
   return (
-    <div className="space-y-6">
-      {/* Verdict banner */}
-      <div className={`rounded-xl border p-5 ${verdictTone(r.affordability_rating, r.risk_rating)}`}>
+    <div className="space-y-4">
+      {/* ═══ ALWAYS VISIBLE — ① can we fund it, and for how much ═══════════════
+          Nothing in this zone is ever behind a tab. Owner's constraint and the
+          lead's: a red flag behind a tab nobody opens is a red flag that doesn't
+          exist. */}
+      <div className={`rounded-xl border ${embedded ? "p-4" : "p-5"} ${verdictTone(r.affordability_rating, r.risk_rating)}`}>
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-sm font-semibold uppercase tracking-wide">Verdict</span>
           {r.affordability_rating && (
@@ -424,12 +922,6 @@ function ResultView({ r }: { r: DealUnderwriting }) {
               <SparklesIcon className="w-3.5 h-3.5" /> Owner context factored in
             </span>
           )}
-          {m.provenance && m.provenance.bank_feed_months.length > 0 && (
-            <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1">
-              🏦 {m.provenance.bank_feed_months.length} bank-feed month{m.provenance.bank_feed_months.length === 1 ? "" : "s"} verified
-              {m.provenance.institution ? ` · ${m.provenance.institution}` : ""}
-            </span>
-          )}
           {m.latest_month_is_partial && (
             <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
               Latest month partial{m.normal_season_avg_monthly_revenue != null && (
@@ -437,273 +929,401 @@ function ResultView({ r }: { r: DealUnderwriting }) {
               )}
             </span>
           )}
-          <span className="text-xs opacity-80 ml-auto">
-            {/* Months = DISTINCT calendar months, computed from the statement labels
-                so runs stored before the months_covered fix also render right. */}
-            {num(m.statements_analyzed)} statements · {num(monthsCovered)} months
-            {monthsCovered === 1 && (
-              <span className="font-semibold"> · single month — thin evidence</span>
-            )}
-          </span>
         </div>
 
-        {/* Headline compare */}
-        <div className="grid sm:grid-cols-2 gap-4 mt-4">
+        {/* The two numbers the whole panel exists to produce. */}
+        <div className={`grid gap-5 mt-4 ${embedded ? "" : "sm:grid-cols-2"}`}>
           <div>
             <div className="text-xs opacity-80">Max affordable advance</div>
-            <div className="text-2xl font-bold">
+            <div className="text-2xl font-bold leading-tight">
               {money(m.max_affordable_advance)}
               <span className="text-sm font-normal opacity-70"> vs {money(m.amount_requested)} requested</span>
             </div>
+            {/* Ask vs capacity as a relationship, not two numbers side by side —
+                "over by $30k" is the sentence she has to act on. */}
+            {m.max_affordable_advance != null && m.amount_requested != null && m.amount_requested > 0 && (
+              <div className="mt-1.5 text-[11px] font-semibold">
+                {m.max_affordable_advance >= m.amount_requested ? (
+                  <span className="text-emerald-700 dark:text-emerald-300">
+                    ✓ the ask fits — {money(m.max_affordable_advance - m.amount_requested)} of headroom
+                  </span>
+                ) : (
+                  <span className="text-red-700 dark:text-red-300">
+                    ⚠ the ask is {money(m.amount_requested - m.max_affordable_advance)} over capacity — counter at{" "}
+                    {money(m.max_affordable_advance)}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-          <div>
-            <div className="text-xs opacity-80">True avg monthly revenue</div>
-            <div className="text-2xl font-bold">
-              {money(m.true_avg_monthly_revenue)}
-              <span className="text-sm font-normal opacity-70">
-                {" "}vs {money(m.reported_avg_monthly_revenue)} reported · {pct(m.revenue_quality_pct)} real
-              </span>
-            </div>
-          </div>
+          <RevenueRealityBar
+            truth={m.true_avg_monthly_revenue}
+            reported={m.reported_avg_monthly_revenue}
+            qualityPct={m.revenue_quality_pct}
+            padding={m.padding_total}
+          />
+        </div>
+
+        {/* Coverage of the read, in the same breath as the verdict it qualifies. */}
+        <div className="mt-4 pt-3 border-t border-current/15">
+          <EvidenceStrip
+            statements={m.statements_analyzed}
+            months={monthsCovered}
+            ledger={m.document_ledger}
+            provenance={m.provenance}
+          />
         </div>
       </div>
 
-      {/* Collection activity — collections / garnishment / tax levy / judgment.
-          Sits directly above the profile: it knocks funders off the shortlist,
-          so it has to be read first. Additive —
-          runs stored before the detector shipped render nothing here. */}
-      {(m.collection_activity?.detected ||
-        (m.collection_activity?.settlement_servicers ?? []).length > 0) && (
+      {/* ═══ ALWAYS VISIBLE — the things that must never be folded ═════════════ */}
+      <CriticalFlags flags={flags} />
+
+      {/* Collection activity — knocks funders off the shortlist, so it is read
+          first, above the tabs, exactly where it was. */}
+      {collectionsLive && (
         <CollectionActivitySection
           ca={m.collection_activity!}
-          summary={m.profile?.collection_activity_summary ?? null}
           excluded={m.profile?.excluded_note ?? []}
         />
       )}
 
-      {/* Merchant profile + the deal→funder shortlist. Sits directly under the
-          verdict because "what is this file, and who buys it" is the payoff.
-          Runs stored before the profiler shipped have no profile — hint only. */}
-      {m.profile ? (
-        <>
-          <MerchantProfileSection p={m.profile} />
-          <RecommendedFundersSection
-            funders={m.profile.recommended_funders ?? []}
-            note={m.profile.recommended_funders_note ?? null}
-          />
-        </>
-      ) : (
-        <p className="text-xs text-gray-400">
-          This run predates the merchant profiler — re-run underwriting to get the paper tier and funder shortlist.
-        </p>
-      )}
-
-      {/* Affordability — the headline read, directly under the verdict */}
-      {m.affordability && <AffordabilitySection a={m.affordability} />}
-
-      {/* How we make this deal work — paths to revenue (scenarios collapse under
-          as "the math"). Older runs without paths fall back to the scenarios card. */}
-      {m.paths && m.paths.length > 0 ? (
-        <PathsSection
-          paths={m.paths}
-          verdict={m.paths_verdict}
-          scenarios={m.scenarios}
-          scenariosVerdict={m.scenarios_verdict}
-        />
-      ) : m.scenarios && m.scenarios.length > 0 ? (
-        <ScenariosSection scenarios={m.scenarios} verdict={m.scenarios_verdict} />
-      ) : null}
-
-      {/* Estimated remaining balance + refi/consolidation feasibility */}
-      {((m.remaining_by_position && m.remaining_by_position.length > 0) || m.refi) && (
-        <RemainingRefiSection
-          positions={m.remaining_by_position}
-          refi={m.refi}
-          outstandingLow={m.est_outstanding_low}
-          outstandingMid={m.est_outstanding_mid}
-          outstandingHigh={m.est_outstanding_high}
-        />
-      )}
-
-      {/* Metric cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-        <Metric label="Avg daily balance" value={money(m.avg_daily_balance)} />
-        <Metric label="Min balance" value={money(m.min_balance)} tone={(m.min_balance ?? 0) < 0 ? "bad" : undefined} />
-        <Metric label="Negative days" value={num(m.negative_days)} tone={(m.negative_days ?? 0) > 0 ? "bad" : undefined} />
-        <Metric label="NSF total" value={num(m.nsf_total)} tone={(m.nsf_total ?? 0) > 0 ? "bad" : undefined} />
-        <Metric label="Avg net retained" value={money(m.avg_net_retained)} />
-        <Metric label="Active MCA positions" value={num(m.est_open_positions)} tone={(m.est_open_positions ?? 0) >= 3 ? "bad" : undefined} />
-        <Metric label="MCA daily debit" value={money(m.existing_daily_debit)} />
-        <Metric label="Debt service" value={pct(m.debt_service_pct)} tone={(m.debt_service_pct ?? 0) >= 25 ? "bad" : undefined} />
-        <Metric label="Safe daily capacity" value={money(m.safe_daily_debit_capacity)} />
-        <Metric label="Deposit concentration" value={pct(m.deposit_concentration_pct)} tone={(m.deposit_concentration_pct ?? 0) >= 40 ? "bad" : undefined} />
-        <Metric label="Revenue trend" value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "—"} />
-      </div>
-
-      {/* Positions — active MCA (latest month), paid-off history, other obligations */}
-      {((m.active_positions && m.active_positions.length > 0) ||
-        (m.ended_positions && m.ended_positions.length > 0) ||
-        (m.other_obligations && m.other_obligations.length > 0)) && (
-        <PositionsSection
-          active={m.active_positions ?? []}
-          ended={m.ended_positions ?? []}
-          other={m.other_obligations ?? []}
-          otherMonthly={m.other_obligations_monthly}
-          dailyMca={m.existing_daily_debit}
-          latestMonth={m.latest_statement_month}
-        />
-      )}
-
-      {/* Position timeline — every recurring debitor across all months, with
-          renewals/step-ups flagged and one-off anomalies called out */}
-      {m.position_timeline && m.position_timeline.length > 0 && (
-        <TimelineSection rows={m.position_timeline} anomalies={m.position_anomalies} />
-      )}
-
-      {/* Stacking velocity — positions added vs retired, month over month */}
-      {m.stacking_velocity && m.stacking_velocity.length > 0 && (
-        <StackingVelocitySection rows={m.stacking_velocity} narrative={m.stacking_velocity_narrative} />
-      )}
-
-      {/* Explicit per-month metrics table */}
-      {m.per_month && m.per_month.length > 0 && (
-        <PerMonthTable rows={m.per_month} overdraftFeesTotal={m.overdraft_fees_total} />
-      )}
-
-      {/* Holdback ratio — MCA remittances vs deposits, month over month */}
-      {m.per_month && m.per_month.some((row) => row.holdback_pct != null) && (
-        <HoldbackRatioChart rows={m.per_month} />
-      )}
-
-      {/* Per-document coverage ledger — every uploaded file → its disposition */}
-      {m.document_ledger && m.document_ledger.length > 0 && <DocumentLedger rows={m.document_ledger} />}
-
-      {/* Net retained by month chart */}
-      {chartData.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
-          <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Net retained by month</h4>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#30363D" opacity={0.3} />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="#8B949E" />
-              <YAxis tick={{ fontSize: 12 }} stroke="#8B949E" tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                // Recharts colors item text from the series fill by default, which
-                // reads near-black on this dark tooltip — pin label AND items light.
-                labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
-                itemStyle={{ color: "#F0F6FC" }}
-                formatter={(value) => [`$${Math.round(Number(value) || 0).toLocaleString()}`, "Net retained"]}
-              />
-              <Bar dataKey="net_retained" radius={[4, 4, 0, 0]}>
-                {chartData.map((d, i) => (
-                  <Cell key={i} fill={d.net_retained < 0 ? "#EF4444" : "#2DD4BF"} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Padding breakdown */}
-      {Object.keys(paddingCats).length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h4 className="font-semibold text-gray-900 dark:text-white">Revenue padding removed</h4>
-            <span className="text-sm font-semibold text-red-600 dark:text-red-400">
-              −{money(m.padding_total)} total
-            </span>
-          </div>
-          <div className="space-y-2">
-            {Object.entries(paddingCats)
-              .filter(([, v]) => (v ?? 0) !== 0)
-              .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
-              .map(([cat, amt]) => (
-                <div key={cat} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600 dark:text-gray-400">{PADDING_LABELS[cat] ?? cat.replace(/_/g, " ")}</span>
-                  <span className="font-medium text-gray-900 dark:text-white">{money(amt)}</span>
-                </div>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* Bank-feed fraud cross-check — the doctored-statement callout, rendered
-          prominently (a merchant can't fake the connected bank feed). */}
+      {/* Doctored-statement callout. A merchant cannot alter the bank feed, so a
+          statement claiming more than the feed is the single most expensive thing
+          on this screen. Never behind a tab. */}
       {m.provenance && <CrossCheckBanner provenance={m.provenance} />}
 
-      {/* Flags */}
-      {flags.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {flags.map((f, i) => (
-            <span key={i} className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${FLAG_BADGE[f.severity]}`}>
-              {f.message}
-            </span>
-          ))}
-        </div>
-      )}
+      {/* ═══ THE TABS — everything that is safe not to see at a glance ════════ */}
+      <TabBar tab={tab} setTab={setTab} counts={tabCounts} />
 
-      {/* AI narrative */}
-      {r.ai_narrative && (
-        <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-xl p-5 border border-blue-100 dark:border-blue-900/40">
-          <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-3">
-            <SparklesIcon className="w-4 h-4 text-ocean-blue" /> Underwriter's read
-          </h4>
-          <NarrativeText text={r.ai_narrative} />
-        </div>
-      )}
+      {/* ① DECISION — capacity, affordability, the plays, and the shape of the money */}
+      {tab === "decision" && (
+        <div className="space-y-4 pt-1">
+          {m.affordability ? (
+            <AffordabilitySection a={m.affordability} />
+          ) : (
+            <TabEmpty
+              what="No affordability block on this run."
+              why="This run predates the affordability model — re-run underwriting to get max daily/weekly payment and the advance each supports."
+            />
+          )}
 
-      {/* Per-statement drilldown */}
-      {r.per_statement && r.per_statement.length > 0 && (
-        <details className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 group">
-          <summary className="flex items-center justify-between p-5 cursor-pointer list-none">
-            <span className="font-semibold text-gray-900 dark:text-white">
-              Per-statement detail ({r.per_statement.length})
-            </span>
-            <ChevronDownIcon className="w-5 h-5 text-gray-400 group-open:rotate-180 transition-transform" />
-          </summary>
-          <div className="px-5 pb-5 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
-                  <th className="text-left py-2 pr-4 font-medium">Month</th>
-                  <th className="text-right py-2 px-4 font-medium">Deposits</th>
-                  <th className="text-right py-2 px-4 font-medium">Withdrawals</th>
-                  <th className="text-right py-2 px-4 font-medium">Avg balance</th>
-                  <th className="text-right py-2 px-4 font-medium">Min balance</th>
-                  <th className="text-right py-2 px-4 font-medium">Neg. days</th>
-                  <th className="text-right py-2 px-4 font-medium">NSF</th>
-                  <th className="text-right py-2 pl-4 font-medium">Padding items</th>
-                </tr>
-              </thead>
-              <tbody>
-                {r.per_statement.map((s, i) => (
-                  <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-                    <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">
-                      {s.month}
-                      {s._filename && (
-                        <span className="block text-xs text-gray-400 font-normal truncate max-w-[160px]">{s._filename}</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.total_deposits)}</td>
-                    <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.total_withdrawals)}</td>
-                    <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.avg_daily_balance)}</td>
-                    <td className={`py-2 px-4 text-right ${s.min_balance < 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
-                      {money(s.min_balance)}
-                    </td>
-                    <td className={`py-2 px-4 text-right ${s.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
-                      {num(s.negative_days)}
-                    </td>
-                    <td className={`py-2 px-4 text-right ${s.nsf_count > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
-                      {num(s.nsf_count)}
-                    </td>
-                    <td className="py-2 pl-4 text-right text-gray-500">{s.padding_deposits?.length ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Direction, not just the average. */}
+          {perMonth.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <RevenueTrendChart rows={perMonth} />
+            </div>
+          )}
+
+          {/* The burden already on the account, as a shape. */}
+          {activePositions.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <PositionStack positions={activePositions} capacity={m.safe_daily_debit_capacity} />
+            </div>
+          )}
+
+          {/* How we make this deal work. */}
+          {m.paths && m.paths.length > 0 && (
+            <PathsSection
+              paths={m.paths}
+              verdict={m.paths_verdict}
+              scenarios={m.scenarios}
+              scenariosVerdict={m.scenarios_verdict}
+            />
+          )}
+          {(!m.paths || m.paths.length === 0) && m.scenarios && m.scenarios.length > 0 && (
+            <ScenariosSection scenarios={m.scenarios} verdict={m.scenarios_verdict} />
+          )}
+
+          {/* Estimated remaining balance + refi/consolidation feasibility. */}
+          {((m.remaining_by_position && m.remaining_by_position.length > 0) || m.refi) && (
+            <RemainingRefiSection
+              positions={m.remaining_by_position}
+              refi={m.refi}
+              outstandingLow={m.est_outstanding_low}
+              outstandingMid={m.est_outstanding_mid}
+              outstandingHigh={m.est_outstanding_high}
+            />
+          )}
+
+          {/* The metric grid. Kept whole — every card the old layout had — but it
+              sits under the decision it supports rather than above the positions. */}
+          <div className={`grid gap-3 ${embedded ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"}`}>
+            <Metric label="Avg daily balance" value={money(m.avg_daily_balance)} />
+            <Metric label="Min balance" value={money(m.min_balance)} tone={(m.min_balance ?? 0) < 0 ? "bad" : undefined} />
+            <Metric label="Negative days" value={num(m.negative_days)} tone={(m.negative_days ?? 0) > 0 ? "bad" : undefined} />
+            <Metric label="NSF total" value={num(m.nsf_total)} tone={(m.nsf_total ?? 0) > 0 ? "bad" : undefined} />
+            <Metric label="Avg net retained" value={money(m.avg_net_retained)} />
+            <Metric label="Active MCA positions" value={num(m.est_open_positions)} tone={(m.est_open_positions ?? 0) >= 3 ? "bad" : undefined} />
+            <Metric label="MCA daily debit" value={money(m.existing_daily_debit)} />
+            <Metric label="Debt service" value={pct(m.debt_service_pct)} tone={(m.debt_service_pct ?? 0) >= 25 ? "bad" : undefined} />
+            <Metric label="Safe daily capacity" value={money(m.safe_daily_debit_capacity)} />
+            <Metric label="Deposit concentration" value={pct(m.deposit_concentration_pct)} tone={(m.deposit_concentration_pct ?? 0) >= 40 ? "bad" : undefined} />
+            <Metric label="Revenue trend" value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "—"} />
           </div>
-        </details>
+        </div>
+      )}
+
+      {/* ② RISKS — what will kill it, worst first */}
+      {tab === "risks" && (
+        <div className="space-y-4 pt-1">
+          {/* Warnings. Criticals are above the tab bar and are NOT repeated here —
+              one render per fact; the header is the louder place. */}
+          {warnCount > 0 && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
+              <h4 className="text-xs font-bold uppercase tracking-wide text-amber-800 dark:text-amber-200 mb-2">
+                {warnCount} warning{warnCount === 1 ? "" : "s"}
+              </h4>
+              <ul className="space-y-1">
+                {flags.filter((f) => f.severity === "warn").map((f, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-amber-800 dark:text-amber-200">
+                    <span className="text-amber-500 shrink-0">▸</span>
+                    <span>{f.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* `info` flags — context, not risk. Quiet, last, still present: the old
+              layout put every severity in one undifferentiated pill row, which is
+              why a `critical` read like an `info`. */}
+          {flags.some((f) => f.severity === "info") && (
+            <div className="flex flex-wrap gap-2">
+              {flags.filter((f) => f.severity === "info").map((f, i) => (
+                <span key={i} className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${FLAG_BADGE[f.severity]}`}>
+                  {f.message}
+                </span>
+              ))}
+            </div>
+          )}
+          {criticalCount > 0 && (
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              The {criticalCount} deal-breaker{criticalCount === 1 ? "" : "s"}
+              {collectionsLive ? " and the collection activity" : ""} are shown above the tabs, where they
+              cannot be missed.
+            </p>
+          )}
+
+          {/* Cash stress, as the count it is. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Metric label="Negative days" value={num(m.negative_days)} tone={(m.negative_days ?? 0) > 0 ? "bad" : undefined} />
+            <Metric label="NSF total" value={num(m.nsf_total)} tone={(m.nsf_total ?? 0) > 0 ? "bad" : undefined} />
+            <Metric label="Min balance" value={money(m.min_balance)} tone={(m.min_balance ?? 0) < 0 ? "bad" : undefined} />
+            <Metric label="Overdraft fees" value={money(m.overdraft_fees_total)} tone={(m.overdraft_fees_total ?? 0) > 0 ? "bad" : undefined} />
+          </div>
+
+          {/* Positions — the count and the stack are the two biggest decline
+              reasons after collections. */}
+          {(activePositions.length > 0 || (m.ended_positions ?? []).length > 0 || (m.other_obligations ?? []).length > 0) && (
+            <PositionsSection
+              active={activePositions}
+              ended={m.ended_positions ?? []}
+              other={m.other_obligations ?? []}
+              otherMonthly={m.other_obligations_monthly}
+              dailyMca={m.existing_daily_debit}
+              latestMonth={m.latest_statement_month}
+            />
+          )}
+
+          {/* Stacking velocity — the direction of the position count. */}
+          {m.stacking_velocity && m.stacking_velocity.length > 0 && (
+            <StackingVelocitySection rows={m.stacking_velocity} narrative={m.stacking_velocity_narrative} />
+          )}
+
+          {/* Holdback stress — remittances against deposits. Guarded on the FIELD,
+              not on the row count: holdback_pct is additive, and a chart drawn
+              over rows that never carried it is an empty axis that reads as "no
+              holdback stress" on a run that simply never measured it. */}
+          {perMonth.some((row) => row.holdback_pct != null) && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <HoldbackRatioChart rows={perMonth} />
+            </div>
+          )}
+
+          {riskCount === 0 && (
+            <TabEmpty
+              what="No flags, no collections, no negative days and no NSFs in the months read."
+              why={
+                ledgerErrors > 0
+                  ? `⚠ But ${ledgerErrors} document(s) failed to parse, so this is a clean read of an INCOMPLETE set — not a clean file.`
+                  : `Scoped to the ${monthsCovered} month(s) analysed. It is not a representation about anything outside them.`
+              }
+            />
+          )}
+        </div>
+      )}
+
+      {/* ③ FUNDERS — where does it go */}
+      {tab === "funders" && (
+        <div className="space-y-4 pt-1">
+          {m.profile ? (
+            <>
+              <MerchantProfileSection p={m.profile} />
+              <RecommendedFundersSection
+                funders={m.profile.recommended_funders ?? []}
+                note={m.profile.recommended_funders_note ?? null}
+              />
+            </>
+          ) : (
+            <TabEmpty
+              what="No funder shortlist on this run."
+              why="This run predates the merchant profiler — re-run underwriting to get the paper tier and the gated funder shortlist."
+            />
+          )}
+        </div>
+      )}
+
+      {/* ④ SUBMISSION — what do I say.
+          The underwriter's narrative is the closest thing we have to submission
+          copy today. underwriter-dimensions is adding a purpose-built submission
+          paragraph plus a funder's-eye read; both land in this tab, above the
+          narrative, so nothing here needs restructuring when they ship. */}
+      {tab === "submission" && (
+        <div className="space-y-4 pt-1">
+          {r.ai_narrative ? (
+            <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-xl p-5 border border-blue-100 dark:border-blue-900/40">
+              <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-3">
+                <SparklesIcon className="w-4 h-4 text-ocean-blue" /> Underwriter&apos;s read
+              </h4>
+              <NarrativeText text={r.ai_narrative} />
+            </div>
+          ) : (
+            <TabEmpty
+              what="No underwriter narrative on this run."
+              why="The judge pass produces this. If the run is recent and this is empty, the judge call failed — re-run rather than reading the absence as 'nothing to say'."
+            />
+          )}
+          {/* Named here so the structure is self-documenting rather than implied. */}
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            A purpose-built submission paragraph and a funder&apos;s-eye summary are being added to the
+            underwriter; they will appear here, above the read.
+          </p>
+        </div>
+      )}
+
+      {/* ⑤ WORKING — show me the numbers. Accordions, every one collapsed. */}
+      {tab === "working" && (
+        <div className="space-y-3 pt-1">
+          {/* Documents FIRST and open when something failed: an unreadable
+              document is the thing that invalidates everything else in here. */}
+          {m.document_ledger && m.document_ledger.length > 0 && (
+            <Fold
+              title={`Documents read (${m.document_ledger.length})`}
+              note={
+                ledgerErrors > 0
+                  ? `⚠ ${ledgerErrors} failed to parse — their months are missing from every number in this panel`
+                  : "Every uploaded file and what became of it"
+              }
+              defaultOpen={ledgerErrors > 0}
+            >
+              <DocumentLedger rows={m.document_ledger} />
+            </Fold>
+          )}
+
+          {perMonth.length > 0 && (
+            <Fold title="Per-month metrics" note="Deposits, balances, NSFs and holdback, month by month">
+              <PerMonthTable rows={perMonth} overdraftFeesTotal={m.overdraft_fees_total} />
+            </Fold>
+          )}
+
+          {m.position_timeline && m.position_timeline.length > 0 && (
+            <Fold
+              title="Position timeline"
+              note="Every recurring debitor across all months, with the one-offs excluded from the count"
+            >
+              <TimelineSection rows={m.position_timeline} anomalies={m.position_anomalies} />
+            </Fold>
+          )}
+
+          {Object.keys(paddingCats).length > 0 && (
+            <Fold title="Revenue padding removed" note={`−${money(m.padding_total)} total — by category`}>
+              <div className="space-y-2">
+                {Object.entries(paddingCats)
+                  .filter(([, v]) => (v ?? 0) !== 0)
+                  .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+                  .map(([cat, amt]) => (
+                    <div key={cat} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600 dark:text-gray-400">{PADDING_LABELS[cat] ?? cat.replace(/_/g, " ")}</span>
+                      <span className="font-medium text-gray-900 dark:text-white">{money(amt)}</span>
+                    </div>
+                  ))}
+              </div>
+            </Fold>
+          )}
+
+          {chartData.length > 0 && (
+            <Fold title="Net retained by month" note="What was left after every debit">
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#30363D" opacity={0.3} />
+                  <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="#8B949E" />
+                  <YAxis tick={{ fontSize: 12 }} stroke="#8B949E" tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    // Recharts colors item text from the series fill by default, which
+                    // reads near-black on this dark tooltip — pin label AND items light.
+                    labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
+                    itemStyle={{ color: "#F0F6FC" }}
+                    formatter={(value) => [`$${Math.round(Number(value) || 0).toLocaleString()}`, "Net retained"]}
+                  />
+                  <Bar dataKey="net_retained" radius={[4, 4, 0, 0]}>
+                    {chartData.map((d, i) => (
+                      <Cell key={i} fill={d.net_retained < 0 ? "#EF4444" : "#2DD4BF"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </Fold>
+          )}
+
+          {r.per_statement && r.per_statement.length > 0 && (
+            <Fold
+              title={`Per-statement detail (${r.per_statement.length})`}
+              note="One row per file, as extracted"
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+                      <th className="text-left py-2 pr-4 font-medium">Month</th>
+                      <th className="text-right py-2 px-4 font-medium">Deposits</th>
+                      <th className="text-right py-2 px-4 font-medium">Withdrawals</th>
+                      <th className="text-right py-2 px-4 font-medium">Avg balance</th>
+                      <th className="text-right py-2 px-4 font-medium">Min balance</th>
+                      <th className="text-right py-2 px-4 font-medium">Neg. days</th>
+                      <th className="text-right py-2 px-4 font-medium">NSF</th>
+                      <th className="text-right py-2 pl-4 font-medium">Padding items</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.per_statement.map((s, i) => (
+                      <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
+                        <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">
+                          {s.month}
+                          {s._filename && (
+                            <span className="block text-xs text-gray-400 font-normal truncate max-w-[160px]">{s._filename}</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.total_deposits)}</td>
+                        <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.total_withdrawals)}</td>
+                        <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(s.avg_daily_balance)}</td>
+                        <td className={`py-2 px-4 text-right ${s.min_balance < 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                          {money(s.min_balance)}
+                        </td>
+                        <td className={`py-2 px-4 text-right ${s.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                          {num(s.negative_days)}
+                        </td>
+                        <td className={`py-2 px-4 text-right ${s.nsf_count > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                          {num(s.nsf_count)}
+                        </td>
+                        <td className="py-2 pl-4 text-right text-gray-500">{s.padding_deposits?.length ?? 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Fold>
+          )}
+        </div>
       )}
     </div>
   );
@@ -750,11 +1370,31 @@ function CollectionItemRows({ items }: { items: UWCollectionActivity["items"] })
   );
 }
 
+/**
+ * THE PARAGRAPH THAT RENDERED TWICE (owner's screenshot, 2026-10-01).
+ *
+ * The same text appeared, verbatim, above and below the stats line. It was not a
+ * duplicated JSX node — it was TWO FIELDS HOLDING ONE STRING. underwrite-deal
+ * writes `profile.collection_activity_summary` as a straight copy of
+ * `collection_activity.note`:
+ *
+ *   collection_activity_summary: collectionActivity.detected ? collectionActivity.note : null
+ *
+ * Confirmed against the stored runs, not inferred: of the runs that have both,
+ * all six are byte-identical, and the summary is null on exactly the runs where
+ * nothing was detected. So the field carries no information that `note` does not.
+ *
+ * This section used to take both and render both. It now takes only `ca` and
+ * renders `ca.note` once — the redundant INPUT is gone, which is the cause, and
+ * not a second copy suppressed at the point of display. `collection_activity_summary`
+ * had exactly one reader in the codebase (this prop), so dropping it here leaves
+ * it unread; the server-side write is underwriter-dimensions' file to retire and
+ * they have been told. Keeping the write costs nothing in the meantime.
+ */
 function CollectionActivitySection({
-  ca, summary, excluded,
+  ca, excluded,
 }: {
   ca: UWCollectionActivity;
-  summary: string | null;
   excluded: UWExcludedFunder[];
 }) {
   const items = ca.items ?? [];
@@ -781,15 +1421,11 @@ function CollectionActivitySection({
           </span>
         ))}
         {!possibleOnly && (
-          <span className="ml-auto text-xs font-medium text-red-700 dark:text-red-300 capitalize">
-            {ca.confidence} confidence
+          <span className="ml-auto">
+            <ConfidenceMeter level={ca.confidence} />
           </span>
         )}
       </div>
-
-      {summary && summary.trim() && (
-        <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-2">{summary}</p>
-      )}
 
       {!possibleOnly && (
       <div className="text-sm text-red-700 dark:text-red-300 mb-2">
@@ -803,7 +1439,8 @@ function CollectionActivitySection({
       </div>
       )}
 
-      {ca.note && <p className="text-sm text-red-700 dark:text-red-300 mb-2">{ca.note}</p>}
+      {/* The ONE paragraph. Carries the weight the duplicated copy used to. */}
+      {ca.note && <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-2">{ca.note}</p>}
 
       {/* Named debt-settlement servicers — the thing a setter must see before
           submitting. Additive: runs stored before the settlement detector shipped
