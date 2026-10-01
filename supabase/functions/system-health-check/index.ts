@@ -31,7 +31,7 @@ import {
   type GhlConfig,
 } from "../_shared/ghl.ts";
 import { getInstantlyKey } from "../_shared/instantly.ts";
-import { callLLM, resolveConfig } from "../_shared/llm.ts";
+import { callLLM, resolveConfig, assertModelCapableFor, ModelCapabilityError } from "../_shared/llm.ts";
 import { buildPlaidHealth, getPlaidConfig, plaidFetch, resolveEnv, type PlaidHealth } from "../_shared/plaid.ts";
 import { getHotProspectorConfig, hotProspectorRequest, hotProspectorToken } from "../_shared/hotprospector.ts";
 
@@ -176,6 +176,113 @@ async function checkLlm(db: SupabaseClient): Promise<CheckResult> {
     else if (code && code >= 500) { status = "degraded"; detail = `${provider}/${model}: provider error (${code}).`; }
     return { service: svc, status, http_status: code, latency_ms: latency, detail };
   }
+}
+
+/**
+ * THE MODELS PRODUCTION ACTUALLY RUNS — and why `checkLlm` above is not enough.
+ *
+ * `checkLlm` pings whatever `resolveConfig` returns, which is the GENERAL-purpose
+ * model (claude-sonnet-4-6 at the time of writing). The underwriter does not use
+ * it. Extraction and the judge are configured separately, so the health check was
+ * exercising a model nothing critical depends on.
+ *
+ * It caught the 2026-10-01 credit outage only because credit exhaustion is
+ * ACCOUNT-WIDE. It could not have caught anything model-specific — and we shipped
+ * a model-specific failure mode that same morning: some newer Claude models
+ * REMOVED forced tool use, which extraction depends on to guarantee every required
+ * per-statement field comes back. If the judge or extraction model started 400ing
+ * on a request shape, this file would have reported `llm: up` while every
+ * underwrite failed. A check that cannot fail for the thing you care about, living
+ * inside the component whose job is detecting failure.
+ *
+ * TWO DISTINCT CAUSES, DELIBERATELY NOT COLLAPSED, because they need different
+ * responses from whoever reads the alert:
+ *   BILLING/CREDIT  — account-wide, every model, nothing works until someone pays.
+ *   CAPABILITY      — ONE model rejecting a request shape; the fix is a dropdown.
+ * They are reported as separate services so neither can mask the other.
+ *
+ * COSTS NOTHING EXTRA. Capability is a property of the model id, so
+ * `assertModelCapableFor` decides it with no API call; account health is
+ * account-wide, so the single ping in `checkLlm` already covers all three models.
+ * This adds two rows and zero spend.
+ *
+ * ⚠ NO DEFAULTS ARE INVENTED HERE. underwrite-deal resolves
+ * platform_settings.underwriting_models → underwriting_settings → its own hardcoded
+ * DEFAULT_SETTINGS, and that last tier lives in a file this one cannot import.
+ * Duplicating it would drift, and a drifted default means this check tests a model
+ * production does not use — the exact bug being fixed. So an unresolvable model is
+ * reported as UNKNOWN and DOWN, never guessed: "we cannot tell which model will run"
+ * is itself worth waking someone for.
+ */
+async function resolveUnderwriterModels(
+  db: SupabaseClient,
+): Promise<{ extraction: string | null; judge: string | null; why: string | null }> {
+  try {
+    const { data: pmRow, error: pmErr } = await db
+      .from("platform_settings").select("value").eq("key", "underwriting_models").maybeSingle();
+    if (pmErr) return { extraction: null, judge: null, why: `platform_settings unreadable — ${pmErr.message}` };
+    const override = (pmRow?.value ?? {}) as { extraction_model?: string; judge_model?: string };
+
+    const { data: uw, error: uwErr } = await db
+      .from("underwriting_settings").select("extraction_model, judge_model").maybeSingle();
+    if (uwErr) return { extraction: null, judge: null, why: `underwriting_settings unreadable — ${uwErr.message}` };
+
+    const pick = (a?: string | null, b?: string | null) => (a || b || "").trim() || null;
+    return {
+      extraction: pick(override.extraction_model, uw?.extraction_model),
+      judge: pick(override.judge_model, uw?.judge_model),
+      why: null,
+    };
+  } catch (e) {
+    return { extraction: null, judge: null, why: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** One row per underwriter role, reporting the model actually configured for it and
+ *  whether that model supports what the role REQUIRES. Capability only — account and
+ *  API health is the `llm` row above, and each detail says so, so an `up` here is
+ *  never read as "underwriting works". */
+async function checkUnderwriterModels(db: SupabaseClient): Promise<CheckResult[]> {
+  const { extraction, judge, why } = await resolveUnderwriterModels(db);
+  const rows: CheckResult[] = [];
+
+  const probe = (
+    svc: string,
+    role: string,
+    model: string | null,
+    needs: { forcedToolUse?: boolean },
+  ): CheckResult => {
+    if (!model) {
+      return {
+        service: svc, status: "down", http_status: null, latency_ms: null,
+        detail:
+          `UNKNOWN model for ${role} — ${why ?? "nothing is configured in platform_settings.underwriting_models or underwriting_settings"}. ` +
+          `Not guessed: this check cannot tell which model production will run, so it cannot vouch for it.`,
+      };
+    }
+    try {
+      assertModelCapableFor(model, role, needs);
+      const reqs = needs.forcedToolUse ? "forced tool use" : "no special request shape";
+      return {
+        service: svc, status: "up", http_status: null, latency_ms: null,
+        detail: `${model} supports what ${role} requires (${reqs}). Capability only — see the \`llm\` row for account/API health.`,
+      };
+    } catch (e) {
+      const capability = e instanceof ModelCapabilityError;
+      return {
+        service: svc, status: "down", http_status: null, latency_ms: null,
+        detail: capability
+          ? `CAPABILITY failure, not billing: ${model} cannot run ${role} — ${e.message.slice(0, 220)} Change the model in Admin → Integrations.`
+          : `${model}: ${(e instanceof Error ? e.message : String(e)).slice(0, 220)}`,
+      };
+    }
+  };
+
+  // Extraction forces a single tool call so required per-statement fields cannot be
+  // omitted; the judge is plain prose and needs no special shape.
+  rows.push(probe("llm:extraction", "bank-statement extraction", extraction, { forcedToolUse: true }));
+  rows.push(probe("llm:judge", "the underwriting judge", judge, {}));
+  return rows;
 }
 
 /** Plaid: an authenticated read against the ACTIVE environment (Limited Production
@@ -683,6 +790,8 @@ const LABELS: Record<string, string> = {
   instantly: "Instantly (email verify / warmup)",
   ghl: "GoHighLevel / VibeReach",
   llm: "AI provider (underwriting / recommendations)",
+  "llm:extraction": "Underwriter extraction model",
+  "llm:judge": "Underwriter judge model",
   plaid: "Plaid (bank connection)",
   hotprospector: "HotProspector (PowerDialer)",
   twilio: "Twilio (phone validation)",
@@ -810,6 +919,10 @@ Deno.serve(async (req) => {
     checkSupabaseEgress(db),
   ]);
   results.push(instantly, ghl, llm, plaid, hotprospector, wavv, twilio, realvalidation, site1, site2, cron, egress);
+  // Per-model rows for the underwriter. Separate services on purpose: a capability
+  // failure on one model must not be maskable by a healthy general model, and a
+  // billing outage must not be maskable by a capable one.
+  results.push(...(await checkUnderwriterModels(db)));
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 
