@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { readResult, type Readable } from "../lib/readable";
 import { invokeThrow } from "../utils/invokeError";
 import { mustWrite } from "../supabase/writes";
 
@@ -660,6 +661,55 @@ export async function getUnderwritingHistory(dealId: string): Promise<DealUnderw
     .order("version", { ascending: false });
   if (error) throw error;
   return (data ?? []) as DealUnderwriting[];
+}
+
+// ── STUCK ATTEMPTS ───────────────────────────────────────────────────────────
+// An underwriting run that the gateway killed leaves a row in
+// `deal_underwriting_attempts` that was opened before extraction and never
+// resolved. Nothing else records it: a 504 IDLE_TIMEOUT dies inside the
+// extraction pool, before the engine's own failed-run guard can refuse, so there
+// is no `deal_underwriting` row and no activity_log entry. Measured on
+// MF-2026-0086 (21 unique byte-sets): 0 and 0.
+//
+// A ledger nobody reads is the same blind spot one layer out, which is why this
+// is surfaced on the panel rather than left to a SQL query. It matters MOST on a
+// deal with no successful run at all, because that deal renders "No AI
+// underwriting yet" — which reads as "nobody has tried" when in fact three
+// attempts were silently killed.
+
+/** The gateway's idle limit. An attempt still open past this did not merely run
+ *  long — the worker was killed and will never report. 150s is the limit itself;
+ *  the extra 30s keeps a genuinely in-flight run from being called stuck. */
+export const ATTEMPT_STUCK_SECONDS = 180;
+
+export interface StuckAttempt {
+  id: string;
+  started_at: string;
+  run_mode: string | null;
+  bank_doc_count: number | null;
+  unique_byte_sets: number | null;
+}
+
+/**
+ * Attempts that started and never reported. Returns a `Readable` on purpose: a
+ * failed read must NOT render as "none stuck" — that would be the same defect
+ * this exists to expose, one level up.
+ */
+export async function getStuckUnderwritingAttempts(
+  dealId: string,
+): Promise<Readable<StuckAttempt[]>> {
+  const cutoff = new Date(Date.now() - ATTEMPT_STUCK_SECONDS * 1000).toISOString();
+  const res = await supabase
+    .from("deal_underwriting_attempts")
+    .select("id, started_at, run_mode, bank_doc_count, unique_byte_sets")
+    .eq("deal_id", dealId)
+    .is("finished_at", null)
+    .lt("started_at", cutoff)
+    .order("started_at", { ascending: false });
+  return readResult<StuckAttempt[]>(
+    res as { data: StuckAttempt[] | null; error: { message: string } | null },
+    [],
+  );
 }
 
 // The latest run for a deal (null if never underwritten).

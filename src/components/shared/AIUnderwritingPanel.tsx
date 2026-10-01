@@ -9,6 +9,7 @@ import {
 import {
   getUnderwritingHistory, runUnderwriting,
   getUnderwritingContext, saveUnderwritingContext,
+  getStuckUnderwritingAttempts, ATTEMPT_STUCK_SECONDS, type StuckAttempt,
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
   type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
   type UWPosition, type UWEndedPosition, type UWOtherObligation,
@@ -18,6 +19,7 @@ import {
   type UWCollectionActivity, type UWCollectionType,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
+import { loading as rLoading, type Readable } from "../../lib/readable";
 import { PRODUCT_LABEL_SHORT, type ProductId } from "@/lib/lenderProducts";
 import { useUserProfile } from "../../context/UserProfileContext";
 import useIsProcessor from "@/hooks/useIsProcessor";
@@ -237,6 +239,10 @@ export default function AIUnderwritingPanel({ dealId, embedded = false, initialT
   const canRun = isAdmin || isSuperAdmin || isProcessor;
 
   const [history, setHistory] = useState<DealUnderwriting[]>([]);
+  // Attempts that started and never reported — a gateway kill leaves no other
+  // trace. `Readable` on purpose: an unreadable check must not render as
+  // "none stuck", which is the same defect one layer up.
+  const [stuck, setStuck] = useState<Readable<StuckAttempt[]>>(rLoading<StuckAttempt[]>());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -247,6 +253,9 @@ export default function AIUnderwritingPanel({ dealId, embedded = false, initialT
     try {
       const rows = await getUnderwritingHistory(dealId);
       setHistory(rows);
+      // Independent of the history read: a deal can have ZERO runs and still have
+      // killed attempts, which is exactly the case the empty state misreads.
+      setStuck(await getStuckUnderwritingAttempts(dealId));
       if (selectLatest || !selectedId) setSelectedId(rows[0]?.id ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load underwriting");
@@ -275,6 +284,54 @@ export default function AIUnderwritingPanel({ dealId, embedded = false, initialT
 
   const current = history.find((h) => h.id === selectedId) ?? null;
 
+  // ── STUCK-ATTEMPT BANNER ───────────────────────────────────────────────────
+  // A run the gateway killed (504 IDLE_TIMEOUT at 150s) dies inside the extraction
+  // pool, before the engine's failed-run guard can refuse — so it writes no
+  // underwriting row and no activity_log entry, and the spinner just stops. The
+  // attempt ledger records it; this is what makes the record visible to the person
+  // who clicked, without anyone running SQL.
+  //
+  // Deliberately rendered in BOTH the empty state and the header. On a deal whose
+  // every attempt was killed, the empty state says "No AI underwriting yet", which
+  // reads as "nobody has tried" — the most misleading screen we have.
+  const stuckBanner = (() => {
+    if (stuck.kind === "loading") return null;
+    if (stuck.kind === "unreadable") {
+      // Never silently "none stuck".
+      return (
+        <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+          <p className="text-sm text-amber-800 dark:text-amber-200">
+            <strong>Couldn't check for interrupted runs.</strong> {stuck.why} — so this panel cannot
+            say whether an earlier attempt was cut off. It is not saying there were none.
+          </p>
+        </div>
+      );
+    }
+    if (stuck.value.length === 0) return null;
+    const n = stuck.value.length;
+    const oldest = stuck.value[stuck.value.length - 1];
+    const mins = Math.max(1, Math.round((Date.now() - Date.parse(oldest.started_at)) / 60000));
+    const docs = stuck.value.find((a) => a.bank_doc_count != null)?.bank_doc_count ?? null;
+    return (
+      <div className="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3">
+        <p className="text-sm text-red-800 dark:text-red-200">
+          <strong>
+            {n} underwriting {n === 1 ? "attempt" : "attempts"} started and never reported
+          </strong>{" "}
+          — the oldest {mins === 1 ? "a minute" : `${mins} minutes`} ago
+          {docs != null ? ` on ${docs} document${docs === 1 ? "" : "s"}` : ""}. A run that stops
+          responding for more than {Math.round(ATTEMPT_STUCK_SECONDS / 60)} minutes was cut off by
+          the request timeout, not still working: it saved nothing and produced no verdict, so there
+          is no result to wait for.
+        </p>
+        <p className="text-xs text-red-700 dark:text-red-300 mt-1">
+          This happens on merchants with many statements. Re-running will most likely be cut off the
+          same way — flag it rather than retrying repeatedly.
+        </p>
+      </div>
+    );
+  })();
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -288,6 +345,7 @@ export default function AIUnderwritingPanel({ dealId, embedded = false, initialT
     return (
       <div className="space-y-4">
         <ContextEditor dealId={dealId} canEdit={canRun} />
+        {stuckBanner}
         <div className="bg-white dark:bg-gray-800 rounded-xl p-10 border border-gray-200 dark:border-gray-700 text-center">
         <SparklesIcon className="w-12 h-12 text-ocean-blue/60 mx-auto mb-4" />
         <h3 className="font-semibold text-gray-900 dark:text-white mb-1">No AI underwriting yet</h3>
@@ -324,6 +382,7 @@ export default function AIUnderwritingPanel({ dealId, embedded = false, initialT
 
   return (
     <div className="space-y-6">
+      {stuckBanner}
       {/* Header: version selector + run */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
