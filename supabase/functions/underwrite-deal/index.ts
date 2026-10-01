@@ -599,10 +599,36 @@ function safeParseJson(text: string): Any | null {
   try {
     return JSON.parse(text);
   } catch {
+    // (a) first-brace .. LAST-brace. Handles prose or a fence wrapped around the JSON.
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start !== -1 && end > start) {
       try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
+    }
+    // (b) first-brace .. the brace that BALANCES it. Observed on a real judge reply
+    // (2026-10-01): a well-formed object followed by one extra "}" — ending
+    // `...factoring signal."}}}` where two braces close it. Strategy (a) slices to the
+    // LAST "}", so it keeps the stray brace and fails too, and the run then falls back
+    // to the flag-derived rating having paid for a perfectly good narrative it threw
+    // away. Walking the depth finds the real end of the object and ignores whatever
+    // trails it. String-aware so a brace inside a narrative string is not counted.
+    if (start !== -1) {
+      let depth = 0, inStr = false, esc = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (esc) { esc = false; continue; }
+        if (ch === "\\") { if (inStr) esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            try { return JSON.parse(text.slice(start, i + 1)); } catch { /* fall through */ }
+            break;
+          }
+        }
+      }
     }
   }
   return null;
@@ -2470,9 +2496,98 @@ Deno.serve(async (req) => {
         (askAmt != null && scAsIs.max_affordable_advance < askAmt ? ` — the ${money(askAmt)} ask is unreachable as-is.` : ".")
       : scenariosVerdict;
 
+    // ── CONSOLIDATION: DOES IT LEAVE THE MERCHANT BETTER OFF? ──────────────────
+    // The `refi` block above answers "does a consolidated payment FIT". It does not
+    // answer the question a merchant actually asks, which is whether consolidating is
+    // a good idea. Those are different questions and the honest answer is usually
+    // "better monthly, more expensive overall" — so the trade is computed here in
+    // CODE, both halves, and the judge only explains it. An AI left to narrate this
+    // unaided reliably sells the cash-flow relief and omits the premium.
+    //
+    // TRUE CONSOLIDATION / PAYOFF: the funder pays the existing advances off and
+    // writes one new advance. Monthly burden falls; total owed RISES by the factor
+    // premium (outstanding x (factor - 1)). That premium is the price of the relief
+    // and must be stated, not buried.
+    //
+    // REVERSE CONSOLIDATION is a materially different product and must never be
+    // described in the same breath: the existing positions STAY OPEN and the funder
+    // advances new money to service them. It relieves cash flow while ADDING a
+    // position and increasing total exposure. For a merchant already stacked it can be
+    // the only door open, but it is not a payoff and calling it one misleads.
+    const currentMonthlyRemittance = round2(existingDailyDebit * BIZ_DAYS_PER_MONTH);
+    const consolidationPremium = round2(refiPayback - outstandingMid);
+    const consolidationAnalysis = (() => {
+      // Earned-zero discipline: with no measurable balance there is nothing to
+      // consolidate, and that is a known "not applicable" — NOT a computed "no".
+      // activePositions.length, not positionsCount — the latter is declared further
+      // down the function and this block runs before it exists.
+      const openPositions = activePositions.length;
+      if (!(outstandingMid > 0) || !(openPositions > 0)) {
+        return {
+          applicable: false,
+          reason: openPositions > 0
+            ? "No estimable outstanding MCA balance, so there is nothing to consolidate."
+            : "No open MCA positions on the statements, so consolidation does not apply.",
+          months_read: monthsCovered,
+          documents_unreadable: unreadableDocs,
+        };
+      }
+      const monthlyRelief = bestRefi ? round2(currentMonthlyRemittance - bestRefi.monthly_payment) : null;
+      const reliefPctOfRevenue = monthlyRelief != null && trueAvgMonthlyRevenue > 0
+        ? round2((monthlyRelief / trueAvgMonthlyRevenue) * 100)
+        : null;
+      // The verdict is a code decision on two independent axes, never a model opinion.
+      const cashFlowBetter = monthlyRelief != null && monthlyRelief > 0;
+      const verdict = !bestRefi
+        ? "not_viable"
+        : cashFlowBetter
+          ? "better_monthly_costlier_overall"
+          : "no_monthly_benefit";
+      return {
+        applicable: true,
+        verdict,
+        // What it COSTS — the half an unaided narrator drops.
+        est_outstanding_mid: outstandingMid,
+        factor: REFI_FACTOR,
+        total_payback: refiPayback,
+        premium_vs_paying_as_is: consolidationPremium,
+        premium_pct: outstandingMid > 0 ? round2((consolidationPremium / outstandingMid) * 100) : null,
+        // The BEFORE / AFTER the merchant feels.
+        current_daily_remittance: existingDailyDebit,
+        current_monthly_remittance: currentMonthlyRemittance,
+        current_pct_of_revenue: debtServicePct,
+        consolidated_term_months: bestRefi?.months ?? null,
+        consolidated_monthly_payment: bestRefi?.monthly_payment ?? null,
+        consolidated_pct_of_revenue: bestRefi?.pct_of_normal_revenue ?? null,
+        monthly_relief: monthlyRelief,
+        monthly_relief_pct_of_revenue: reliefPctOfRevenue,
+        // Plain-language trade, so no reader has to assemble it from the numbers.
+        tradeoff: bestRefi
+          ? `Monthly remittance ${cashFlowBetter ? "falls" : "does NOT fall"} from ` +
+            `${money(currentMonthlyRemittance)} to ${money(bestRefi.monthly_payment)} ` +
+            `(${cashFlowBetter ? money(monthlyRelief ?? 0) + "/mo freed" : "no relief"}), ` +
+            `paid for with ${money(consolidationPremium)} of additional total cost ` +
+            `(${money(outstandingMid)} owed now vs ${money(refiPayback)} total payback).`
+          : "No term from 12 to 24 months produces a payment that fits revenue.",
+        // Which of OUR desks can actually take it, and by which mechanism. The
+        // shortlist itself is built in the funder-matching block below (status-gated
+        // and criteria-gated); this records the distinction that changes the
+        // merchant's outcome rather than just naming a lane.
+        mechanism_note:
+          "True consolidation/payoff retires the existing positions. Reverse " +
+          "consolidation does NOT: the positions stay open and are serviced by a new " +
+          "advance, which relieves cash flow but adds a position and raises total " +
+          "exposure. These are not interchangeable.",
+        caveat: refi.caveat,
+        months_read: monthsCovered,
+        documents_unreadable: unreadableDocs,
+      };
+    })();
+
     const metrics = {
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
+      consolidation_analysis: consolidationAnalysis,
       reported_avg_monthly_revenue: reportedAvgMonthlyRevenue,
       true_avg_monthly_revenue: trueAvgMonthlyRevenue,
       revenue_quality_pct: revenueQualityPct,
@@ -2978,6 +3093,47 @@ Deno.serve(async (req) => {
       new Set(funderMinimums.map((f) => f.monthly_revenue_required).filter((x): x is number => x != null && x > 0)),
     ).sort((a, b) => a - b);
 
+    // ── NETWORK CAPABILITY (for the term-loan / consolidation lenses) ──────────
+    // "Can we place this as a term loan?" is only answerable if we know whether a
+    // term-loan desk is actually onboarded. The full funder shortlist is matched
+    // AFTER the judge, so the judge gets COUNTS only — enough to say "placeable
+    // in-network" without being handed funder names it must never print.
+    //
+    // UNREADABLE is distinct from ZERO. If this query fails we say so; we do NOT
+    // report "0 term-loan desks", which would read as a finding and make the judge
+    // tell the closer we cannot place a term loan when in fact we never looked.
+    let networkCapability: Any = { status: "unreadable" };
+    try {
+      const { data: capRows, error: capErr } = await db
+        .from("lenders").select("category").eq("status", "live_vendor");
+      if (capErr) {
+        networkCapability = { status: "unreadable", detail: capErr.message };
+      } else {
+        const rows = (capRows ?? []) as Any[];
+        const prodsOf = (r: Any): string[] =>
+          ((r.category?.products ?? []) as unknown[]).map((p) => String(p).toLowerCase().trim());
+        const consolTypesOf = (r: Any): string[] => {
+          const t = r.category?.consolidation?.type;
+          const raw = Array.isArray(t) ? t : t == null ? [] : [t];
+          return raw.map((x: unknown) => String(x).toLowerCase().trim()).filter((x: string) => x && x !== "none");
+        };
+        networkCapability = {
+          status: "read_ok",
+          live_funders_total: rows.length,
+          live_term_loan_desks: rows.filter((r) => prodsOf(r).includes("term_loan")).length,
+          live_sba_desks: rows.filter((r) => prodsOf(r).includes("sba_loan")).length,
+          live_loc_desks: rows.filter((r) => prodsOf(r).includes("line_of_credit")).length,
+          live_factoring_desks: rows.filter((r) => prodsOf(r).includes("invoice_factoring")).length,
+          live_true_consolidation_desks: rows.filter((r) =>
+            consolTypesOf(r).some((t) => /payoff|true/.test(t))).length,
+          live_reverse_consolidation_desks: rows.filter((r) =>
+            consolTypesOf(r).some((t) => /reverse/.test(t))).length,
+        };
+      }
+    } catch (e) {
+      networkCapability = { status: "unreadable", detail: String(e instanceof Error ? e.message : e) };
+    }
+
     const judgeSystem =
       "You are the senior underwriter at an ISO (Independent Sales Organization / MCA broker) writing a " +
       "SHORT internal affordability + risk read for a closer. An MCA is a purchase of future receivables, " +
@@ -3071,8 +3227,35 @@ Deno.serve(async (req) => {
       "record or use-of-funds (owned collateral, a stated equipment/property purchase, B2B receivables, an " +
       "industry that obviously implies it). Do NOT force a product in without evidence. " +
       "Do NOT name any funder — the funder shortlist is matched deterministically in code from this profile. " +
+      // ── THE THREE ADDED LENSES ────────────────────────────────────────────────
+      // Each reasons INSIDE numbers computed in code. The model explains a trade; it
+      // never decides one, and it must not invent a figure it was not given.
+      "CONSOLIDATION READ (consolidation_read): metrics.consolidation_analysis is COMPUTED — use its numbers and do " +
+      "not recompute them. When applicable is false, set consolidation_read to the single sentence explaining why it " +
+      "does not apply and stop. When applicable is true, give BOTH halves of the trade in plain English: the monthly " +
+      "relief AND the premium in additional total cost (`premium_vs_paying_as_is`). Never present consolidation as " +
+      "free money or as a saving — on a factor-rate payoff the merchant pays MORE in total and buys breathing room " +
+      "with it. Say explicitly whether it leaves the merchant better off and on which axis. Keep the two mechanisms " +
+      "distinct exactly as mechanism_note describes: a TRUE consolidation/payoff retires the existing positions, " +
+      "while a REVERSE consolidation leaves them open and services them with a new advance, relieving cash flow but " +
+      "adding a position and increasing total exposure — never call a reverse consolidation a payoff. Balances are " +
+      "ESTIMATES: say payoff letters are required before anything is quoted. 2-4 sentences. " +
+      "TERM-LOAN READ (term_loan_read): answer 'what would this look like as a term loan, and can we place one?'. " +
+      "A term loan IS a loan, so for THIS field ordinary lending language (loan, repay, monthly payment, amortize) " +
+      "is correct and expected — the MCA receivables-language rule does not apply to it. Judge placeability on what " +
+      "term-loan desks actually underwrite: time in business, revenue consistency across the months read, NSFs and " +
+      "negative days, average daily balance, and existing debt service. Say plainly whether it is placeable, " +
+      "roughly what shape (size band and term in months, sized off the SAME affordability numbers already computed " +
+      "— never invent a rate or an APR we have not been quoted), and name the single biggest obstacle. A merchant " +
+      "with open MCA positions, NSFs or settlement activity is usually NOT term-loan material: say so directly " +
+      "rather than hedging. 2-4 sentences. " +
+      "FUNDER VIEW (funder_view): how this file LANDS ON AN UNDERWRITER'S DESK — their perspective, not ours. What " +
+      "they will see first, what they will stop on, what they will ask for, and the single thing most likely to get " +
+      "it declined. Be blunt; this is the internal read that tells the closer what is coming. Do NOT name any " +
+      "funder (code matches the shortlist). 2-4 sentences. " +
       "Return ONLY strict JSON: " +
       '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string,' +
+      '"consolidation_read":string,"term_loan_read":string,"funder_view":string,' +
       '"profile":{"paper_tier":"A"|"B"|"C"|"D","product_signals":string[],"profile_reason":string}}. ' +
       "profile.profile_reason = 1-2 plain-English sentences tying the tier to the actual numbers. " +
       "FORMAT the narrative as lightweight markdown the closer can scan in 5 seconds — NOT a wall of prose:\n" +
@@ -3110,6 +3293,11 @@ Deno.serve(async (req) => {
       "\n\nAFFORDABILITY METRICS (computed deterministically from the bank statements):\n" +
       JSON.stringify(metrics, null, 2) +
       "\n\nFLAGS:\n" + JSON.stringify(flags, null, 2) +
+      // Counts only, never names. status "unreadable" means we could not look — the
+      // judge must then say placement needs checking, NOT that we have no such desk.
+      "\n\nOUR NETWORK (live, onboarded desks — COUNTS ONLY, never name a funder). If status is " +
+      "'unreadable' we could not read the network: say placement has to be confirmed, and do NOT state that we " +
+      "lack a desk.\n" + JSON.stringify(networkCapability, null, 2) +
       "\n\nASSUMPTIONS THE UNDERWRITER MADE (state these + the sensitivity in the narrative):\n" +
       JSON.stringify(assumptions, null, 2) +
       (hasQuestionable
@@ -3154,11 +3342,18 @@ Deno.serve(async (req) => {
     // Set ONLY when the judge failed because the PROVIDER failed (out of credit, bad
     // key, 5xx) — a data/parse miss leaves this null and still persists (below).
     let judgeProviderError: string | null = null;
+    let judgeDiag: Any | null = null;
     // The judge's PROFILE half — tier + product signals + rationale. Everything else
     // on the profile is deterministic; these are validated/clamped below.
     let aiTier: PaperTier | null = null;
     let aiProductSignals: string[] = [];
     let aiProfileReason = "";
+    // The three added lenses. Each stays NULL when the judge did not return it, so a
+    // reader can tell "the model had nothing to say" from "this run predates the
+    // feature" from an empty string — and the UI can hide the section entirely.
+    let consolidationRead: string | null = null;
+    let termLoanRead: string | null = null;
+    let funderView: string | null = null;
     try {
       profLog("before-judge");
       const judgeText = await callLLM(db, {
@@ -3187,10 +3382,28 @@ Deno.serve(async (req) => {
         model: judgeModel,
       });
       const parsed = safeParseJson(judgeText);
+      // DIAGNOSTIC: a judge that silently falls back is expensive to debug blind — a
+      // truncated reply and a malformed one both arrive as "no narrative". Record the
+      // shape (never the full text) so the cause is visible in the response.
+      judgeDiag = {
+        raw_len: judgeText.length,
+        parsed: !!parsed,
+        keys: parsed ? Object.keys(parsed) : null,
+        head: judgeText.slice(0, 160),
+        tail: judgeText.slice(-160),
+      };
       if (parsed) {
         if (["low", "medium", "high"].includes(parsed.risk_rating)) riskRating = parsed.risk_rating;
         if (typeof parsed.narrative === "string") aiNarrative = parsed.narrative.trim();
         if (typeof parsed.funder_fit_note === "string") funderFitNote = parsed.funder_fit_note.trim();
+        // Trim-then-check: a whitespace-only reply is "nothing said", not content.
+        const lens = (v: unknown): string | null => {
+          const t = typeof v === "string" ? v.trim() : "";
+          return t.length > 0 ? t : null;
+        };
+        consolidationRead = lens(parsed.consolidation_read);
+        termLoanRead = lens(parsed.term_loan_read);
+        funderView = lens(parsed.funder_view);
         const p = (parsed.profile ?? {}) as Any;
         const t = String(p.paper_tier ?? "").trim().toUpperCase();
         if ((TIERS as readonly string[]).includes(t)) aiTier = t as PaperTier;
@@ -3986,7 +4199,18 @@ Deno.serve(async (req) => {
     };
     // metrics is already frozen into the judge prompt above — the profile rides on the
     // PERSISTED copy (additive: older stored rows simply have no `profile` key).
-    const metricsOut = { ...metrics, profile };
+    // The lenses ride on the PERSISTED metrics copy (additive: older stored rows
+    // simply have no `lenses` key, so the UI must null-check it).
+    const metricsOut = {
+      ...metrics,
+      profile,
+      lenses: {
+        consolidation_read: consolidationRead,
+        term_loan_read: termLoanRead,
+        funder_view: funderView,
+      },
+      network_capability: networkCapability,
+    };
 
     // ── SUBMISSION PARAGRAPH (funder-facing) ───────────────────────────────────
     // One pasteable paragraph a closer attaches to a submission. It tells the story
@@ -4254,6 +4478,8 @@ Deno.serve(async (req) => {
       risk_rating: riskRating,
       affordability_rating: affordabilityRating,
       ai_narrative: narrativeOut,
+      // Shape of the judge's reply (not persisted) — makes a silent fallback debuggable.
+      judge_diag: judgeDiag,
       // NULL (not "") when the writer could not produce a usable paragraph, so the UI
       // shows "not generated" rather than an empty box a closer might paste.
       submission_paragraph: submissionParagraph,
