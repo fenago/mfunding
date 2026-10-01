@@ -173,6 +173,13 @@ const numOrNull = (v: unknown): number | null => {
   return Number.isFinite(x) ? x : null;
 };
 const round2 = (n: number) => Math.round(n * 100) / 100;
+// Floor to the nearest $1,000 for FUNDER-FACING figures that rest on a judged input.
+// Floor, never round-to-nearest: rounding up a revenue figure is the one direction
+// that can overstate the merchant to a funder, and overstating engages the reliance
+// clause in the merchant authorization while understating only costs approval size.
+// Guards against a negative or non-finite input returning something nonsensical.
+const floorTo1k = (n: number): number =>
+  Number.isFinite(n) && n > 0 ? Math.floor(n / 1000) * 1000 : 0;
 
 // US state name → USPS code. Funder criteria record restricted states as free-ish
 // text ("CA", "HI (not currently funding)", "Canada (non-US)") and the merchant
@@ -4247,26 +4254,106 @@ Deno.serve(async (req) => {
         "a third-party debt-settlement / restructuring servicer, NOT an advance — " +
         "excluded from the position count and from any payoff math",
     }));
+    // ── OBSERVED REVENUE BAND FROM OUR OWN HISTORY ─────────────────────────────
+    // The conservative/base sensitivity bounds ONE source of variation (whether
+    // owner-payroll income counts). It does not bound the padding classifier's
+    // run-to-run instability, which on this very deal produced $46,121 / $40,121 /
+    // $46,246 / $45,336 from byte-identical statements. Within a single run the
+    // engine cannot see its own spread — but it CAN see what it previously concluded
+    // about THE SAME DOCUMENTS: prior runs carrying the same docs_hash analysed the
+    // identical file, so any difference between them is our own variance, and the
+    // lowest figure we have ever published for this file is the defensible floor.
+    //
+    // UNREADABLE is not zero and not "no history": on a query failure we keep the
+    // current run's own figure as the floor rather than inventing a lower one.
+    let revenueFloorBasis = "current run only";
+    let revenueBandLow = trueAvgMonthlyRevenue;
+    try {
+      const { data: priorRuns, error: priorErr } = await db
+        .from("deal_underwriting")
+        .select("version, metrics")
+        .eq("deal_id", dealId)
+        .eq("docs_hash", docsHash)
+        .order("version", { ascending: false })
+        .limit(12);
+      if (priorErr) {
+        revenueFloorBasis = `UNREADABLE (${priorErr.message}) — using this run's figure only`;
+      } else {
+        const priors = (priorRuns ?? [])
+          .map((r) => num((r.metrics as Any)?.true_avg_monthly_revenue))
+          .filter((v): v is number => v != null && v > 0);
+        if (priors.length === 0) {
+          revenueFloorBasis = "no prior run on these same documents";
+        } else {
+          const lowest = Math.min(trueAvgMonthlyRevenue, ...priors);
+          revenueBandLow = lowest;
+          revenueFloorBasis =
+            `lowest of ${priors.length + 1} run(s) on the identical document set ` +
+            `(spread ${money(Math.min(...priors, trueAvgMonthlyRevenue))}–` +
+            `${money(Math.max(...priors, trueAvgMonthlyRevenue))})`;
+        }
+      }
+    } catch (e) {
+      revenueFloorBasis = `UNREADABLE (${String(e instanceof Error ? e.message : e)}) — using this run's figure only`;
+    }
+
     const submissionFacts = {
       business_name: cust.business_name ?? null,
       industry: cust.industry ?? null,
       state: cust.address_state ?? null,
       time_in_business: cust.time_in_business ?? null,
       amount_requested: amountRequested,
-      // VERIFIED revenue only. `reported_avg_monthly_revenue` is deliberately absent:
-      // quoting a stated figure a funder cannot reproduce from the statements is how
-      // a package loses credibility.
-      verified_avg_monthly_revenue: trueAvgMonthlyRevenue,
-      normal_season_avg_monthly_revenue: normalSeasonAvgMonthlyRevenue,
-      worst_month_revenue: worstMonthRevenue,
+      // ── FUNDER-FACING FIGURES: LOW END OF THE BAND, ROUNDED, NO CENTS ───────
+      // Any figure resting on a JUDGED input (what counts as revenue vs padding) is
+      // handed over already rounded DOWN, and the exact value is withheld so the
+      // writer physically cannot assert cents it has no right to.
+      //
+      // Two reasons. Precision implies certainty: our own engine produced
+      // $46,121.31 and $40,121.31 from the SAME statements minutes apart, so ".31"
+      // claims a determinacy we demonstrably do not have. And the exposure is
+      // asymmetric — overstating revenue to a funder costs credibility and engages
+      // the reliance clause in the merchant authorization, while understating it
+      // costs only approval size. When a number has a band, send the bottom of it.
+      //
+      // The low end is the CONSERVATIVE case where one exists (owner-payroll income
+      // excluded), else the base figure; then floored to the nearest $1,000.
+      verified_avg_monthly_revenue_approx: floorTo1k(
+        Math.min(
+          trueAvgMonthlyRevenue,
+          conservativeAvgMonthlyRevenue > 0 ? conservativeAvgMonthlyRevenue : trueAvgMonthlyRevenue,
+          // ...and the floor of everything we have previously concluded about these
+          // same documents, so our own instability cannot overstate the merchant.
+          revenueBandLow,
+        ),
+      ),
+      revenue_floor_basis: revenueFloorBasis,
+      normal_season_avg_monthly_revenue_approx: floorTo1k(normalSeasonAvgMonthlyRevenue),
+      worst_month_revenue_approx: floorTo1k(worstMonthRevenue),
+      revenue_figures_are_approximate: true,
       revenue_trend: revenueTrend,
       months_of_statements: monthsCovered,
-      // Position facts WITHOUT naming the funders behind them (house rule: funder-
-      // facing copy never names another funder). Count + remittance load is what an
-      // underwriter actually needs, and it is all visible on the statements anyway.
-      open_position_count: positionsCount,
-      existing_daily_remittance: existingDailyDebit,
-      debt_service_pct_of_verified_revenue: debtServicePct,
+      // ── POSITION COUNT DELIBERATELY ABSENT ──────────────────────────────────
+      // Removed 2026-10-01 on the owner's instruction, and it must not come back
+      // until a count can be defended. The classifier defaults any recurring debit
+      // it cannot classify to "mca" (index.ts:1769 `|| "mca"`), which is an
+      // ASSERTION dressed as a default: across the latest run of all 13 deals, 51 of
+      // 51 asserted positions were classed "mca" and 12 were seen exactly ONCE in
+      // the latest month — a genuine weekly advance appears about four times.
+      // Spirit Drilling's "3 open advance positions" are three different Intuit
+      // amounts each seen once, and Intuit's financing arm writes TERM LOANS, not
+      // advances.
+      //
+      // So "3 open advance positions remitting $334.10 daily" is a claim the funder
+      // can disprove from the statements WE attached — on the one file whose purpose
+      // was buying back credibility after two declines. Saying nothing beats saying
+      // something disprovable. The daily remittance and the debt-service percentage
+      // are derived by summing the same unverified array, so they go with it: the
+      // count and the figures built on it stand or fall together.
+      position_count_withheld_reason:
+        "Open-position count and remittance burden are withheld from funder-facing copy: " +
+        "the holder of each recurring debit is not yet verified. Never state or imply a " +
+        "number of open positions, a daily/monthly remittance total, or a debt-service " +
+        "percentage.",
       avg_daily_balance: avgDailyBalance,
       negative_days: negativeDays,
       nsf_total: nsfTotal,
@@ -4276,10 +4363,12 @@ Deno.serve(async (req) => {
       collection_activity_confidence: collectionActivity.confidence,
       collection_activity_types: collectionActivity.types,
       // Consolidation, when the deterministic math says it is the realistic shape.
+      // Also judged, not observed: these rest on ESTIMATED outstanding balances, so
+      // they are rounded too and must be spoken of as approximate.
       consolidation_viable: refi.feasible,
-      consolidation_amount: refi.feasible ? refi.est_outstanding_mid : null,
+      consolidation_amount_approx: refi.feasible ? floorTo1k(refi.est_outstanding_mid) : null,
       consolidation_term_months: bestRefi?.months ?? null,
-      consolidation_monthly_payment: bestRefi?.monthly_payment ?? null,
+      consolidation_monthly_payment_approx: bestRefi ? floorTo1k(bestRefi.monthly_payment) : null,
       // COVERAGE — so a silence can never be sold as a clean bill of health.
       months_read: monthsCovered,
       documents_unreadable: unreadableDocs,
@@ -4306,6 +4395,21 @@ Deno.serve(async (req) => {
         "say exactly what it is, and say plainly that it is NOT an advance and therefore is not in " +
         "the position count — give the correct count.\n" +
         "4. Close on the structure being asked for and why it fits the cash flow.\n\n" +
+        "NEVER STATE A POSITION COUNT OR A REMITTANCE BURDEN. Do not say how many open advances, " +
+        "positions, advances or fundings the merchant has, do not give a daily/weekly/monthly " +
+        "remittance total across them, and do not give a debt-service or holdback percentage — not " +
+        "even approximately, not even as a range, and do not imply a number by listing them. The " +
+        "holder of each recurring debit is not yet verified and a count we cannot defend is worse " +
+        "than no count: the funder has the same statements and can disprove it. Say nothing about " +
+        "the count at all rather than hedging about it. (A named debt-settlement servicer in " +
+        "settlement_servicers is the exception and MUST still be disclosed — that one is " +
+        "identified, and saying it is not an advance is the point of raising it.)\n" +
+        "REVENUE FIGURES ARE APPROXIMATE. Every *_approx field is already rounded DOWN and is the " +
+        "only version you get. Write it as 'approximately $40,000 per month', never with cents and " +
+        "never as an exact figure — the number carries a judgement about what counts as revenue and " +
+        "asserting pennies claims a precision we do not have. Figures read straight off the " +
+        "statements (average daily balance, a specific debit amount, NSF and negative-day counts, " +
+        "the requested amount) are exact: keep those as given.\n" +
         "HARD LIMITS. Use ONLY the figures in the FACTS JSON. Never invent, round away from, or " +
         "extrapolate a number. If a field is null or absent, say nothing about it — do not guess " +
         "and do not note that it is missing. Never name any funder or lender. Never mention " +
@@ -4353,6 +4457,25 @@ Deno.serve(async (req) => {
         [/\bdisqualif\w*\b/i, "mentions a disqualification"],
         [/\bpaper (?:tier|grade)\b/i, "leaks the internal paper tier"],
         [/\bcredit score\b/i, "mentions a credit score"],
+        // ── UNDEFENDABLE POSITION CLAIMS (added 2026-10-01) ────────────────────
+        // The classifier defaults an unclassifiable recurring debit to "mca", so a
+        // position COUNT is an assertion we cannot defend to a desk holding the same
+        // statements. The prompt forbids it; this makes the prompt enforceable, which
+        // is the difference between a rule and a hope.
+        [/\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:open\s+|active\s+)?(?:advance|mca|funding)\s+positions?\b/i,
+          "states a position count"],
+        [/\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:open|active)\s+(?:advances?|positions?)\b/i,
+          "states a count of open advances"],
+        [/\bposition count\b/i, "refers to a position count"],
+        [/\bdebt service\b/i, "states a debt-service burden"],
+        [/\bholdback\b/i, "states a holdback percentage"],
+        [/\b\d{1,3}(?:\.\d+)?\s?%\s*(?:of|against)\s+(?:the\s+)?(?:verified\s+|monthly\s+|average\s+)*revenue/i,
+          "states a remittance burden as a % of revenue"],
+        // Cents on a REVENUE figure only. Figures read straight off a statement (an
+        // average daily balance, a specific debit) are genuinely exact and keep their
+        // precision, so this is deliberately scoped to revenue rather than banning
+        // every decimal — a false rejection here costs a whole paragraph.
+        [/revenue[^.$]{0,60}\$\s?[\d,]+\.\d{2}/i, "asserts revenue to the cent"],
       ] as Array<[RegExp, string]>) {
         if (re.test(cand)) complianceViolations.push(label);
       }
