@@ -55,14 +55,36 @@ type Lender = Record<string, any>;
 // The criteria/submission fields we hand the model. A lender is "usable" for
 // recommendation if it has a name plus at least one of these populated.
 const LENDER_FIELDS = [
-  "lender_types", "funding_products", "paper_types",
+  "lender_types", "paper_types",
   "min_funding_amount", "max_funding_amount", "min_time_in_business",
   "min_monthly_revenue", "min_credit_score", "requires_collateral",
   "industries_restricted", "industries_preferred",
   "states_available", "states_restricted",
   "factor_rate_range", "funding_speed", "stacking_policy",
-  "submission_email", "submission_portal_url", "submission_notes", "notes",
+  "submission_notes", "notes",
 ] as const;
+
+// ⚠ THREE FIELDS DELIBERATELY NOT SENT. Each was selected, passed into the
+// prompt, and referenced nowhere else in this function.
+//
+// `funding_products` — not merely empty, ACTIVELY WRONG. 116 of 125 lenders
+//   still hold the never-written 2024 default `{}`; of the 9 populated, 8 say
+//   only ['mca'], and on 3 of them it CONTRADICTS the curated
+//   `category->'products'` (Swoop Funding: ['mca'] here vs term_loan, LOC, SBA,
+//   equipment, factoring and CRE there). It also carries an eighth product
+//   vocabulary of its own, including `revenue_based`, which exists nowhere
+//   else. Handing the model a contradictory product list is worse than handing
+//   it none: `lender_types` stays and is populated on 28 of 29 live funders.
+//   Measured by funder-ops 2026-10-01; the column is superseded by
+//   `category->'products'` + `productsOf()` in src/lib/lenderProducts.ts.
+//
+// `submission_email` / `submission_portal_url` — destination data. A model
+//   RANKING funders has no use for where the package gets emailed, and the
+//   portal URL is where one funder stores credentials as query params. Not
+//   sending them is better than scrubbing them: the scrubber below exists for
+//   `notes`/`submission_notes`, which DO carry real underwriting intel and have
+//   to travel. If you ever re-add either field here, restore a URL scrub with
+//   it — they were removed with one, not without.
 
 /**
  * STRIP CREDENTIALS BEFORE THE FUNDER ROW LEAVES OUR INFRASTRUCTURE.
@@ -91,9 +113,6 @@ const SECRET_LINE_RE =
 // word "password" appears, so the address itself is the better tell.
 const SHARED_MAILBOX_RE = /send\.mfunding\.net/i;
 
-// One funder stores portal credentials IN THE URL (user=/pwd= query params),
-// which the keyword scan above never sees because it only reads note text.
-const URL_CREDENTIAL_RE = /[?&#](pass|passwd|pwd|pw|user|username|login|token|key)=/i;
 
 function scrubText(v: unknown): unknown {
   if (typeof v !== "string" || !v) return v;
@@ -105,21 +124,12 @@ function scrubText(v: unknown): unknown {
     .join("\n");
 }
 
-// Keep the origin and path so the model still knows a portal EXISTS and where it
-// lives; drop only the query/fragment carrying the credentials. Stripping the
-// whole URL would tell it this funder has no portal, which is false.
-function scrubUrl(v: unknown): unknown {
-  if (typeof v !== "string" || !v || !URL_CREDENTIAL_RE.test(v)) return v;
-  const cut = v.search(/[?#]/);
-  return (cut > 0 ? v.slice(0, cut) : v) + " [credentials stripped from URL]";
-}
 
 function scrubLenderSecrets<T extends Record<string, unknown>>(l: T): T {
   return {
     ...l,
     submission_notes: scrubText(l.submission_notes),
     notes: scrubText(l.notes),
-    submission_portal_url: scrubUrl(l.submission_portal_url),
   };
 }
 
