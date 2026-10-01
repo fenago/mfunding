@@ -1,5 +1,14 @@
 // Shared GoHighLevel (LeadConnector API v2) client for Supabase edge functions.
 //
+// ⚠ The buildInfo re-export below is deliberate and load-bearing. 96 of 100 edge
+// functions import this module, so re-exporting the deploy marker here puts it in
+// nearly every bundle from ONE line, instead of editing a hundred entrypoints. It
+// is re-exported rather than merely imported because a bundler may drop an unused
+// import, and a marker that can be tree-shaken out proves nothing. See buildInfo.ts
+// for exactly what it does and does not prove, and scripts/deploy-edge-function.sh
+// for the refusals that make it mean anything.
+export { BUILD_COMMIT, BUILD_AT } from "./buildInfo.ts";
+//
 // Credentials are NEVER hardcoded. They are read from the Supabase vault via the
 // `public.get_ghl_config()` SECURITY DEFINER RPC, using the service-role client.
 // This keeps the GHL Private Integration Token server-side only.
