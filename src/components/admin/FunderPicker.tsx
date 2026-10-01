@@ -144,8 +144,14 @@ interface PreviewFunder {
 }
 
 /**
- * A standing instruction a funder emailed us — "send submissions to X", "stop
- * using Y", "use the portal", "we now require Z", "your rep has changed".
+ * A reason this funder's submission recipe needs a human before the next send.
+ *
+ * Two writers produce these. A funder's own email — "send submissions to X",
+ * "stop using Y", "use the portal", "we now require Z", "your rep has changed"
+ * (funderDirective.ts). And an observed delivery failure — a permanent SMTP
+ * rejection on the to: address (email-delivery-events). Only the first is
+ * something the funder SAID, so nothing here narrates on their behalf: the row
+ * carries its own `summary` and this panel quotes `evidence_quote`.
  *
  * Shown here, at the To line of the preview, because this is the last moment
  * before the package leaves. Uplyft told us on 2026-09-17 to stop using
@@ -216,17 +222,21 @@ function DirectiveNotice({ p }: { p: PreviewFunder }) {
       {blocked && (
         <div className="rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
           <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
-            ⛔ This will not send — {p.name} retired this inbox
+            ⛔ This will not send — mail to this inbox is on file as undeliverable
           </p>
+          {/* THE ROW'S OWN SUMMARY, not a sentence written here.
+              This used to read "{p.name} retired this inbox ... which they told
+              us to stop using", which is true of a funder's emailed instruction
+              and FALSE of the other thing that writes these rows — a permanent
+              SMTP rejection, where the funder said nothing at all. Each writer
+              phrases `summary` for its own evidence; this panel quotes. */}
           <p className="mt-1 text-[11px] text-rose-700 dark:text-rose-300">
-            The recipe still points at <span className="font-mono font-semibold">{blocked.retired_email}</span>, which they
-            told us to stop using{blocked.received_at ? ` on ${blocked.received_at.slice(0, 10)}` : ""}.
-            {blocked.new_email && (
-              <> They said to use <span className="font-mono font-semibold">{blocked.new_email}</span> instead.</>
-            )}
+            {blocked.summary}{" "}
+            The recipe still sends to <span className="font-mono font-semibold">{blocked.retired_email}</span>
+            {blocked.received_at ? ` (recorded ${blocked.received_at.slice(0, 10)})` : ""}.
           </p>
-          {/* The funder's OWN WORDS. A human changes a submission destination on
-              the strength of this quote, never on the strength of our summary. */}
+          {/* The EVIDENCE, verbatim. A human changes a submission destination on
+              the strength of this, never on the strength of a summary. */}
           <blockquote className="mt-1.5 border-l-2 border-rose-400 pl-2 text-[11px] italic text-rose-800 dark:text-rose-200">
             “{blocked.evidence_quote}”
             {blocked.from_email && <span className="not-italic"> — {blocked.from_email}</span>}

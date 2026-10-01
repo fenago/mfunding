@@ -1457,13 +1457,24 @@ Deno.serve(async (req) => {
           newEmail: d.new_email, retiredEmail: d.retired_email,
           quote: d.evidence_quote, receivedAt: d.received_at, fromEmail: d.from_email,
         },
+        // THE ROW'S OWN SUMMARY CARRIES THE SENTENCE, not a phrasing invented
+        // here. This message used to open "<funder> asked us to stop using X"
+        // and close with "Their words: ...", which is true of a funder's email
+        // and FALSE of the other thing that now writes these rows: a permanent
+        // SMTP rejection. The live test read
+        //
+        //   Amerifi Capital asked us to stop using submit@amerificapital.com
+        //   ... Their words: "550 5.1.10 RESOLVER.ADR.RecipientNotFound..."
+        //
+        // attributing a mail server's bounce to the funder as something they
+        // said. Each writer knows what its own evidence is and phrases
+        // `summary` for it; the guard quotes rather than narrates.
         error:
-          `Not sent. ${name} asked us to stop using ${d.retired_email}` +
-          (d.received_at ? ` on ${String(d.received_at).slice(0, 10)}` : "") +
-          `, and that is still the address on this funder's recipe` +
-          (d.new_email ? `. They said to use ${d.new_email} instead` : "") +
-          `. Update the recipe, then mark the instruction applied on ` +
-          `/admin/funder-instructions. Their words: "${d.evidence_quote.slice(0, 220)}"`,
+          `Not sent. ${name}: ${d.summary} ` +
+          `The recipe still sends to ${d.retired_email}` +
+          (d.received_at ? ` (recorded ${String(d.received_at).slice(0, 10)})` : "") +
+          `. Fix the funder's recipe, then mark it applied on ` +
+          `/admin/funder-instructions. Evidence on file: "${d.evidence_quote.slice(0, 220)}"`,
       });
       continue;
     }
