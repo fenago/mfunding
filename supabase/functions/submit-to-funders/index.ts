@@ -698,11 +698,12 @@ Deno.serve(async (req) => {
    * HARD BLOCK vs WARN — and the line between them is "can we PROVE it".
    *
    * BLOCK only when the resolved destination is an address an open directive
-   * says in the funder's own words to stop using. That is not a judgement call:
-   * the funder wrote "stop sending submissions to X", we are about to send to
-   * exactly X, and the submission was going to a dead inbox either way. The
-   * cost of a wrong block is one dismissal click by an admin; the cost of a
-   * wrong send is a deal that sits silent for twelve days.
+   * names as one to stop using (`retired_email`), whatever evidence produced
+   * that row — the funder writing "stop sending submissions to X", or their
+   * mail server permanently rejecting X. Neither is a judgement call: we are
+   * about to send to exactly X, and the submission was going to a dead inbox
+   * either way. The cost of a wrong block is one dismissal click by an admin;
+   * the cost of a wrong send is a deal that sits silent for twelve days.
    *
    * WARN, never block, for everything else — portal-only, new required docs, a
    * changed contact, or an address change whose destination we could not read.
@@ -715,7 +716,27 @@ Deno.serve(async (req) => {
     const addr = (to ?? "").trim().toLowerCase();
     if (!addr) return null;
     for (const d of directivesByLender.get(lenderId) ?? []) {
-      if (d.kind !== "submission_email_change") continue;
+      // KEYED ON retired_email, NOT ON kind.
+      //
+      // `retired_email` IS the claim "stop sending to this address" — it is the
+      // only field the block has ever actually read, and gating it on
+      // kind === 'submission_email_change' as well made the kind name, not the
+      // claim, the thing that decides whether a send is refused.
+      //
+      // That matters now that a second writer produces the same claim from
+      // different evidence: email-delivery-events turns a PERMANENT SMTP
+      // rejection on the `to:` address (550 5.1.10 to
+      // submissions@highlandhillcap.com) into exactly this — an address we can
+      // prove mail does not reach. A bounce is not a funder "instruction", so
+      // it will not be kind 'submission_email_change'; under the old test it
+      // would have sat in the queue warning nobody while every send kept going
+      // to the dead inbox. The same shape of hole this guard was built to
+      // close, one field along.
+      //
+      // No-op for current data — of the 7 live rows, only the 4
+      // submission_email_change ones carry a retired_email at all, and
+      // use_portal / new_required_docs / contact_change always write null. So
+      // this widens what CAN block without changing what DOES.
       if (d.retired_email && d.retired_email.trim().toLowerCase() === addr) return d;
     }
     return null;
