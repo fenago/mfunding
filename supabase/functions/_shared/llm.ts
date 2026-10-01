@@ -107,6 +107,78 @@ function anthropicOmitsTemperature(model: string): boolean {
     || /claude-opus-4-8/i.test(model);
 }
 
+// ── MODEL CAPABILITY: FORCED TOOL USE ────────────────────────────────────────
+// Some newer Claude models REMOVED forced tool use. `tool_choice: {type:"tool"}`
+// (or "any") returns a hard 400 on them:
+//   `tool_choice: type "tool" and "any" are not supported for this model.`
+// VERIFIED 2026-10-01 against the live API: claude-opus-5-5 rejects it, while
+// claude-opus-5 and claude-sonnet-5 accept it. Anthropic's own tool-use pricing
+// table corroborates — it lists an "any, tool" system-prompt token count for
+// Opus 5 (406) and leaves it BLANK for Opus 5.5 and Sonnet 5.5.
+//
+// This matters because a caller that NEEDS a guaranteed structured reply (the
+// underwriter's per-statement extraction) is not merely degraded by such a model —
+// every single call 400s. Both model fields are super-admin switchable from the
+// UI, so the wrong pick has to fail LOUDLY and name the model, never silently.
+//
+// Deliberately a PATTERN list, not an exhaustive allowlist: a model id we have
+// never seen is treated as CAPABLE (we do not block on ignorance) and the runtime
+// net below catches it if the API disagrees. That keeps a future model working
+// without an edit here, while the known-bad ones are refused before any spend.
+const REJECTS_FORCED_TOOL_USE: RegExp[] = [
+  /claude-opus-5-5(?:$|[-_])/i,
+  /claude-sonnet-5-5(?:$|[-_])/i,
+  /claude-fable-5-1(?:$|[-_])/i,
+  /claude-mythos-5-1(?:$|[-_])/i,
+  /claude-mythos-preview/i,
+];
+export function anthropicRejectsForcedToolUse(model: string): boolean {
+  return REJECTS_FORCED_TOOL_USE.some((re) => re.test(model));
+}
+
+// Does an Anthropic error body say the model refused forced tool use? Used to turn
+// a generic "HTTP 400: {...}" into a named, actionable misconfiguration error even
+// for a model that is not in the list above (released after this was written).
+export function isForcedToolUseRejection(msg: unknown): boolean {
+  return /tool_choice[\s\S]{0,80}not supported for this model/i.test(String(msg ?? ""));
+}
+
+/** Thrown when a configured model cannot do what its ROLE requires. Never degrade
+ *  to another model on this — a verdict from a model the owner did not choose is
+ *  the defect, not the fix. */
+export class ModelCapabilityError extends Error {
+  readonly model: string;
+  readonly role: string;
+  constructor(model: string, role: string, detail: string) {
+    super(
+      `Model "${model}" cannot be used for ${role}: ${detail} ` +
+      `Change the ${role} model in Admin → Settings (AI models). ` +
+      `Nothing was run and nothing was saved — no fallback model was substituted.`,
+    );
+    this.name = "ModelCapabilityError";
+    this.model = model;
+    this.role = role;
+  }
+}
+
+/** Preflight a model against a role's hard requirements. Throws
+ *  ModelCapabilityError (loud, names the model) rather than returning a boolean,
+ *  so a caller cannot accidentally ignore it. */
+export function assertModelCapableFor(
+  model: string,
+  role: string,
+  needs: { forcedToolUse?: boolean },
+): void {
+  if (needs.forcedToolUse && anthropicRejectsForcedToolUse(model)) {
+    throw new ModelCapabilityError(
+      model,
+      role,
+      `it does not support forced tool use (tool_choice "tool"/"any"), which ${role} ` +
+      `requires to guarantee every required field comes back.`,
+    );
+  }
+}
+
 // POST to Anthropic, returning the raw response text. On a temperature-deprecated
 // 400, strip `temperature` from the body and retry once (body is mutated).
 async function anthropicFetch(key: string, body: Record<string, unknown>): Promise<string> {
@@ -125,6 +197,20 @@ async function anthropicFetch(key: string, body: Record<string, unknown>): Promi
     delete body.temperature;
     res = await doFetch();
     text = await res.text();
+  }
+  // RUNTIME NET for the forced-tool-use capability: a model we have not catalogued
+  // may still refuse tool_choice "tool"/"any". A bare `HTTP 400: {...}` reads like a
+  // transient provider blip and buries the actual cause (the configured model), so
+  // name it. Deliberately NOT retried without tool_choice — dropping the forced call
+  // would let required fields go missing and return a normal-looking result, which is
+  // precisely the silent degradation this must avoid.
+  if (!res.ok && res.status === 400 && isForcedToolUseRejection(text)) {
+    throw new ModelCapabilityError(
+      String(body.model ?? "unknown"),
+      "this task",
+      "the Anthropic API rejected forced tool use for it " +
+      `(HTTP 400: ${bodyPrefix(text)}).`,
+    );
   }
   if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
   return text;

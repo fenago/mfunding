@@ -30,7 +30,12 @@ import { base64FromBytes as sharedBase64 } from "../_shared/base64.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import { docTypeFor, ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { reconcileDocumentType } from "../_shared/docClassify.ts";
-import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
+import {
+  assertModelCapableFor,
+  callAnthropicBlocks,
+  callLLM,
+  ModelCapabilityError,
+} from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import { getPlaidSettings } from "../_shared/plaid.ts";
 import { loadMerchantIdentity } from "../_shared/merchantIdentity.ts";
@@ -133,8 +138,13 @@ const DEFAULT_SETTINGS = {
   // judgment call between business commission income and personal W-2 pay.
   // 'count' | 'flag_and_discount' (default: count but flag + compute downside) | 'exclude'.
   owner_payroll_treatment: "flag_and_discount" as "count" | "flag_and_discount" | "exclude",
-  extraction_model: "claude-sonnet-5",
-  judge_model: "claude-opus-5",
+  // Extraction forces a tool call, so this model MUST support forced tool use —
+  // see assertModelCapableFor in _shared/llm.ts. claude-opus-5 does; 5.5 does NOT.
+  extraction_model: "claude-opus-5",
+  // The judge is plain text + JSON mode (no tools), so the forced-tool-use
+  // restriction does not apply. claude-opus-5-5 is also cheaper than opus-5
+  // ($4/$20 vs $5/$25 per MTok) and returned shorter, valid JSON in testing.
+  judge_model: "claude-opus-5-5",
 };
 
 type Settings = typeof DEFAULT_SETTINGS;
@@ -677,6 +687,38 @@ Deno.serve(async (req) => {
       (modelOverride.extraction_model || settings.extraction_model || DEFAULT_SETTINGS.extraction_model).trim();
     const judgeModel =
       (modelOverride.judge_model || settings.judge_model || DEFAULT_SETTINGS.judge_model).trim();
+
+    // ── MODEL PREFLIGHT (fail loud, never degrade) ──────────────────────────────
+    // EXTRACTION forces a single tool call (tool_choice "tool") so the per-statement
+    // required fields cannot be omitted. Some newer models REMOVED forced tool use and
+    // return a hard 400 on every call — VERIFIED 2026-10-01: claude-opus-5-5 rejects
+    // it, claude-opus-5 accepts it. Both model fields are switchable from the admin UI,
+    // so the wrong pick is one dropdown away.
+    //
+    // Without this preflight the failure is merely survivable-looking: every statement
+    // 400s, each becomes an error row, and FAILED-RUN GUARD #1 returns a generic
+    // "AI provider error" — true, but it points at the provider instead of at the model
+    // setting that actually broke it, after paying for N round trips. Checking here
+    // costs nothing and names the cause.
+    //
+    // It throws rather than falling back. A verdict produced by a model the owner did
+    // not choose, presented as a normal run, is the defect — not the remedy.
+    try {
+      assertModelCapableFor(extractionModel, "the extraction model", { forcedToolUse: true });
+    } catch (e) {
+      if (e instanceof ModelCapabilityError) {
+        console.error(`[underwrite-deal] model preflight failed for deal ${dealId} — ${e.message}`);
+        return json({
+          error: e.message,
+          code: "model_misconfigured",
+          model: e.model,
+          role: e.role,
+          persisted: false,
+          dealId,
+        }, 422);
+      }
+      throw e;
+    }
 
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
@@ -3123,10 +3165,20 @@ Deno.serve(async (req) => {
         system: judgeSystem,
         prompt: judgeUser,
         // 1024 truncated the JSON mid-narrative on a real 3-statement deal — the
-        // parse then failed and the run persisted an EMPTY narrative with a default
-        // "medium" rating. Give the judge room to close its JSON (now also carrying
+        // parse then failed and the run fell back to the flag-derived rating with no
+        // AI narrative. Give the judge room to close its JSON (now also carrying
         // the profile block).
-        maxTokens: 3072,
+        //
+        // Raised 3072 → 8192 on 2026-10-01. Measured against the live API: the Claude
+        // 5 tier runs adaptive thinking BY DEFAULT and those thinking tokens count
+        // toward max_tokens — a deliberately minimal judge prompt already consumed
+        // 2,757 of 3,072 output tokens on claude-opus-5 (572 of them thinking), i.e.
+        // 90% of the ceiling before any real statement data. Reproduced the failure at
+        // max_tokens 900: stop_reason "max_tokens", JSON unparseable, narrative cut
+        // mid-sentence. Headroom here is not waste — output is billed on tokens
+        // GENERATED, not on the ceiling, so a larger cap costs nothing on a normal run
+        // and is the difference between a narrative and a fallback on a long one.
+        maxTokens: 8192,
         temperature: 0.2,
         jsonMode: true,
         task: "underwrite_judge",
