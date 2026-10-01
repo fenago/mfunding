@@ -241,11 +241,18 @@ export function recipientRole(
  * the deal activity_log entry and the owner alert — a processor needs to see
  * `550 5.1.10 RecipientNotFound` rather than "delivery problem". */
 export function failureLine(p: ParsedStats): string {
-  const bits = [
-    p.smtpCode != null ? String(p.smtpCode) : null,
-    p.smtpEnhancedCode,
-    p.smtpMessage,
-  ].filter(Boolean);
+  // Mailgun's `message` usually ALREADY opens with the code and the enhanced
+  // code ("550 5.1.10 RESOLVER.ADR.RecipientNotFound"). Prepending them blindly
+  // produced "550 5.1.10 550 5.1.10 RESOLVER..." in the first live replay — a
+  // small thing that reads as a broken parser in the one line a processor is
+  // meant to trust. So each is added only when the message doesn't already
+  // carry it.
+  const body = p.smtpMessage ?? "";
+  const bits: string[] = [];
+  const code = p.smtpCode != null ? String(p.smtpCode) : null;
+  if (code && !body.includes(code)) bits.push(code);
+  if (p.smtpEnhancedCode && !body.includes(p.smtpEnhancedCode)) bits.push(p.smtpEnhancedCode);
+  if (body) bits.push(body);
   const detail = bits.length ? bits.join(" ") : `no SMTP detail (${p.shape} payload)`;
   const sev = p.severity ?? "unproven severity";
   return `${p.eventRaw} (${sev}) to ${p.recipient || "unknown recipient"}: ${detail}` +

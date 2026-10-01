@@ -134,6 +134,11 @@ Deno.test("a 5xx to the submission's to: address marks it undelivered", async ()
   assert(failPatch, "the submission must be stamped delivery_failed_at");
   assertEquals(failPatch!.row.status, "pending");
   assert(String(failPatch!.row.delivery_error).includes("550"), "the SMTP reply must survive into delivery_error");
+  // The code appears ONCE: Mailgun's own message already opens with it, and the
+  // first live replay produced "550 5.1.10 550 5.1.10 RESOLVER..." — which reads
+  // as a broken parser in the one line a processor is meant to trust.
+  assertEquals(String(failPatch!.row.delivery_error).match(/550/g)?.length, 1);
+  assertEquals(String(failPatch!.row.delivery_error).match(/5\.1\.10/g)?.length, 1);
   // submitted_at is deliberately NOT cleared — we really did send it.
   assertEquals(failPatch!.row.submitted_at, undefined);
 
