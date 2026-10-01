@@ -677,6 +677,55 @@ export async function recordDirectives(
     return { kinds: found.map((d) => d.kind), written: 0, error: error.message };
   }
 
+  // ── REFRESH A STALE EXTRACTION ───────────────────────────────────────────
+  //
+  // `ignoreDuplicates` is right for not re-raising a row, and WRONG for a row
+  // whose content the rules now read differently. The kind is the conflict key,
+  // so an improvement to EXTRACTION rather than classification never lands: the
+  // old row stays and the corrected one is dropped on the floor.
+  //
+  // Velocity Capital Group, measured. Their 2026-07-07 email names the ISO rep
+  // ("Email: jesse@velocitycg.com") and the inbox ("Deal Submissions:
+  // Subs@velocitycg.com"). The detector originally extracted jesse@ — a
+  // salesperson's mailbox — and after the signature-label fix it correctly
+  // reads subs@. The kind is `submission_email_change` either way, so the
+  // prune left it alone and the upsert ignored the correction. The queue went
+  // on telling a processor to move submissions off the funder's own stated
+  // inbox, from a row the rules no longer produce.
+  //
+  // So the machine-owned fields are refreshed in place — and ONLY those, and
+  // only on a row still open, written by the rule, and untouched by a human.
+  // status, resolved_by, resolved_at and resolution_note are never written
+  // here: a blanket upsert would have resurrected dismissed rows, which is the
+  // opposite failure and a worse one.
+  for (const row of rows) {
+    const { error: refreshErr } = await db
+      .from("funder_directives")
+      .update({
+        retired_email: row.retired_email,
+        new_email: row.new_email,
+        matched_phrases: row.matched_phrases,
+        summary: row.summary,
+        evidence_quote: row.evidence_quote,
+      })
+      .eq("funder_reply_id", o.funderReplyId)
+      .eq("kind", row.kind)
+      .eq("status", "open")
+      .eq("detected_by", "rule")
+      .is("resolved_by", null)
+      .is("resolution_note", null);
+    // Unconditional on the matched rows rather than filtered to "only if
+    // changed": PostgREST has no `is distinct from`, and writing identical
+    // values to a row that has not drifted costs nothing. A clever filter that
+    // is not valid syntax fails at RUNTIME, inside a path wrapped so it cannot
+    // break the reply — which is how it would never have been noticed.
+    // Non-fatal: the row exists and is raised, it is only its wording that may
+    // be stale. Reported rather than swallowed.
+    if (refreshErr) {
+      await noteFailure(db, o, `row raised but its extraction could not be refreshed: ${refreshErr.message}`);
+    }
+  }
+
   // READ BACK WHAT ACTUALLY EXISTS, rather than trusting what the write said.
   //
   // `.upsert(..., { ignoreDuplicates: true }).select()` returns an EMPTY array
