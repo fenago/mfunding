@@ -72,6 +72,13 @@ interface Directive {
    * showing them as outstanding work would make this page three-quarters noise.
    */
   needs_action: boolean;
+  /**
+   * A LATER address instruction exists from this funder, so this one is
+   * history. Shown rather than hidden: Uplyft told us on 2026-08-12 to submit
+   * to underwriting@, then retired that inbox on 09-17. Both are real; before
+   * this existed the queue offered the dead one back as outstanding work.
+   */
+  is_superseded: boolean;
   company_name: string | null;
 }
 
@@ -144,7 +151,7 @@ export default function FunderInstructionsPage() {
       .select(
         "id, lender_id, kind, status, summary, retired_email, new_email, evidence_quote, " +
         "matched_phrases, from_email, received_at, created_at, resolved_at, resolution_note, deal_id, " +
-        "current_destination, needs_action, company_name",
+        "current_destination, needs_action, is_superseded, company_name",
       )
       .in("status", statuses)
       .order("needs_action", { ascending: false })
@@ -362,8 +369,14 @@ export default function FunderInstructionsPage() {
                         evidence, and it becomes work again the moment someone
                         edits the recipe away from it. Just not counted as work. */}
                     {isOpen && !d.needs_action && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-                        already satisfied — recipe matches
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                        d.is_superseded
+                          ? "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                          : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      }`}>
+                        {d.is_superseded
+                          ? "superseded — this funder sent a later address"
+                          : "already satisfied — recipe matches"}
                       </span>
                     )}
                   </div>
