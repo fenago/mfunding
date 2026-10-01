@@ -10,7 +10,7 @@
 // Run:  deno test --allow-env --allow-net supabase/functions/_shared/emailDelivery.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { handleEmailDeliveryEvent } from "./emailDelivery.ts";
-import { isEmailStatsPayload, parseEmailStats } from "./emailStats.ts";
+import { failureLine, isEmailStatsPayload, parseEmailStats } from "./emailStats.ts";
 
 // ── A recording stub standing in for the database ────────────────────────────
 interface Write { table: string; op: "insert" | "update"; row: Record<string, unknown>; match?: unknown }
@@ -151,6 +151,10 @@ Deno.test("a 5xx to the submission's to: address marks it undelivered", async ()
   // as a broken parser in the one line a processor is meant to trust.
   assertEquals(String(failPatch!.row.delivery_error).match(/550/g)?.length, 1);
   assertEquals(String(failPatch!.row.delivery_error).match(/5\.1\.10/g)?.length, 1);
+  // And a code the message does NOT carry is appended, not prepended: the first
+  // live run against a real funder produced "5.2.2 552 delivery refused".
+  const appended = failureLine({ ...parseEmailStats(evt)!, smtpMessage: "552 delivery refused", smtpEnhancedCode: "5.2.2", smtpCode: 552 });
+  assert(/^552 delivery refused \(5\.2\.2\)/.test(appended.split(": ")[1] ?? appended), appended);
   // submitted_at is deliberately NOT cleared — we really did send it.
   assertEquals(failPatch!.row.submitted_at, undefined);
 
@@ -303,6 +307,9 @@ Deno.test("a placed permanent 5.1.x writes an address_undeliverable directive th
   assertEquals(dir.row.detected_by, "observed");
   // THE field submit-to-funders keys its hard block on.
   assertEquals(dir.row.retired_email, "submissions@highlandhillcap.com");
+  // Name the funder. The first live run said "get a working one from the
+  // funder", which sends the reader off to look up who that is.
+  assert(String(dir.row.summary).includes("Highland Hill Capital"), String(dir.row.summary));
   // evidence_quote is NOT NULL and must be the server's own words.
   assert(String(dir.row.evidence_quote).includes("RESOLVER.ADR.RecipientNotFound"));
   // The summary is printed verbatim when a send is refused, so it must not put

@@ -174,14 +174,24 @@ function retiresTheAddress(p: ParsedStats): boolean {
 /** The funder behind an address we could not tie to a submission. lender_id is
  *  funder_directives' one required key, so this is what lets a bounce to a
  *  funder we have not submitted to lately still become an actionable row. */
-async function lenderForAddress(db: DB, addr: string): Promise<string | null> {
+async function lenderForAddress(db: DB, addr: string): Promise<{ id: string; name: string | null } | null> {
   if (!addr.includes("@")) return null;
   const prof = await db.from("funder_submission_profiles")
-    .select("lender_id").ilike("to_email", addr).limit(1).maybeSingle();
-  if (prof.data?.lender_id) return prof.data.lender_id as string;
+    .select("lender_id, lender:lenders!lender_id ( company_name )")
+    .ilike("to_email", addr).limit(1).maybeSingle();
+  if (prof.data?.lender_id) {
+    return {
+      id: prof.data.lender_id as string,
+      name: ((prof.data.lender as { company_name?: string } | null)?.company_name) ?? null,
+    };
+  }
   const len = await db.from("lenders")
-    .select("id").ilike("submission_email", addr).limit(1).maybeSingle();
-  return (len.data?.id as string | undefined) ?? null;
+    .select("id, company_name").ilike("submission_email", addr).limit(1).maybeSingle();
+  if (!len.data?.id) return null;
+  // The NAME matters, not just the key: "get a working address from Amerifi
+  // Capital" is actionable where "from the funder" sends the reader looking it
+  // up. The first live run said "the funder" because this path returned an id.
+  return { id: len.data.id as string, name: (len.data.company_name as string | null) ?? null };
 }
 
 async function recordUndeliverableDirective(db: DB, a: {
@@ -392,16 +402,15 @@ export async function handleEmailDeliveryEvent(db: DB, evt: Record<string, unkno
     // picking one. With no candidates at all we can still resolve the funder
     // from the address itself.
     const lenderIds = new Set(place.candidates.map((r) => r.lender_id).filter(Boolean));
-    const dirLenderId = lenderIds.size === 1
-      ? [...lenderIds][0]
-      : lenderIds.size === 0
-      ? await lenderForAddress(db, p.recipient)
-      : null;
+    const byAddr = lenderIds.size === 0 ? await lenderForAddress(db, p.recipient) : null;
+    const dirLender = lenderIds.size === 1
+      ? { id: [...lenderIds][0], name: place.candidates[0]?.lender?.company_name ?? null }
+      : byAddr;
     let dir: string = lenderIds.size > 1 ? "skipped: candidates span several funders" : "skipped: no funder for this address";
-    if (dirLenderId) {
+    if (dirLender) {
       dir = await recordUndeliverableDirective(db, {
-        lenderId: dirLenderId, p, line, dealId: null, dealSubmissionId: null,
-        candidates: names, lenderName: place.candidates[0]?.lender?.company_name ?? null,
+        lenderId: dirLender.id, p, line, dealId: null, dealSubmissionId: null,
+        candidates: names, lenderName: dirLender.name,
       });
     }
 

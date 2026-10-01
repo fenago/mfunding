@@ -247,13 +247,19 @@ export function failureLine(p: ParsedStats): string {
   // small thing that reads as a broken parser in the one line a processor is
   // meant to trust. So each is added only when the message doesn't already
   // carry it.
-  const body = p.smtpMessage ?? "";
-  const bits: string[] = [];
+  const body = (p.smtpMessage ?? "").trim();
   const code = p.smtpCode != null ? String(p.smtpCode) : null;
-  if (code && !body.includes(code)) bits.push(code);
-  if (p.smtpEnhancedCode && !body.includes(p.smtpEnhancedCode)) bits.push(p.smtpEnhancedCode);
-  if (body) bits.push(body);
-  const detail = bits.length ? bits.join(" ") : `no SMTP detail (${p.shape} payload)`;
+  // Any code the message ALREADY carries is dropped; one it lacks is appended
+  // in parentheses rather than prepended. The first live run against a real
+  // funder address produced "5.2.2 552 delivery refused" — the enhanced code
+  // leading a sentence that already began with its own numeric code reads as
+  // garbled machine output in the line we are asking a processor to trust.
+  const missing = [code, p.smtpEnhancedCode].filter((c): c is string => !!c && !body.includes(c));
+  const detail = body
+    ? (missing.length ? `${body} (${missing.join(" ")})` : body)
+    : missing.length
+    ? missing.join(" ")
+    : `no SMTP detail (${p.shape} payload)`;
   const sev = p.severity ?? "unproven severity";
   return `${p.eventRaw} (${sev}) to ${p.recipient || "unknown recipient"}: ${detail}` +
     (p.mxHost ? ` [mx ${p.mxHost}]` : "");
