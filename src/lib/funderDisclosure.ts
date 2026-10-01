@@ -4,9 +4,18 @@
 //
 // This file exists so there is exactly ONE credential guard and ONE
 // unknown-vs-absent discriminator. Both are safety properties, not conveniences:
-//   • `lenders.notes` / `submission_notes` hold live plaintext credentials on
-//     four funders (Guidant's is a working uid:/pw: pair). Anything that renders
-//     those columns must go through safeQuote().
+//   • `lenders.notes` / `submission_notes` HAVE held live plaintext credentials
+//     — four funders, across BOTH columns, Guidant's as a working `uid:`/`pw:`
+//     pair in `notes`. Those password values were removed 2026-10-01 at the
+//     owner's instruction (each site carries a dated marker; verified by a
+//     whole-database sweep of every text column, and by re-reading as a test
+//     setter account). Surviving `uid:` labels are usernames, not secrets.
+//     **safeQuote() stays regardless**: the guard is against the column being
+//     ABLE to carry a credential, not against the four that did. Anyone pasting
+//     a funder's portal login into a note re-creates the condition in one edit,
+//     and these columns are readable by all 14 `closer` accounts — including the
+//     test setter logins — because `closer_read_lenders` predates the Processor
+//     role. Anything that renders these columns must still go through it.
 //   • funder_submission_profiles, lender_documents and lender_programs are all
 //     readable by Ops and NOT by a setter, and RLS returns zero rows with no
 //     error. "None recorded" and "you may not see this" are different sentences
