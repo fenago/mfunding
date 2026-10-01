@@ -2650,7 +2650,13 @@ Deno.serve(async (req) => {
 
     // 4) PRODUCT SWITCH — MCA unaffordable but revenue steady. Statements can't see
     //    collateral / receivables, so emit as closer QUESTIONS, not a verdict.
-    if (scAsIs.max_affordable_advance < COUNTER_FLOOR && trueAvgMonthlyRevenue >= COUNTER_FLOOR && revenueTrend !== "down") {
+    // revenueTrendCalled, not revenueTrend: when the direction is not callable this
+    // reads null !== "down" → true, so the path IS still offered. That is the
+    // doctrine-correct direction — an uncallable trend is OUR measurement limit, and a
+    // merchant is never penalised for a fact we could not establish (same rule as
+    // unknown credit never disqualifying). Treating "we cannot tell" as "declining"
+    // would silently withhold a product that may be the only one that fits.
+    if (scAsIs.max_affordable_advance < COUNTER_FLOOR && trueAvgMonthlyRevenue >= COUNTER_FLOOR && revenueTrendCalled !== "down") {
       paths.push({
         rank: 0, key: "product_switch",
         label: "Product switch — ask two questions",
@@ -3330,8 +3336,14 @@ Deno.serve(async (req) => {
     // DEBT-RELIEF CANDIDATE — distressed/near-default: unaffordable, heavily stacked,
     // cash-stressed, AND the consolidation math itself doesn't clear (or debt service
     // has passed 100% of revenue). That merchant needs a restructure, not more paper.
+    // revenueTrendCalled, not revenueTrend. This feeds the risk rating and the
+    // debt-relief classification, so an uncallable direction flipping run-to-run would
+    // flip a merchant between "cash stressed" and not on identical statements — a
+    // judgement that changes what the processor does, which is worse than a flipping
+    // label. null === "down" is false, so an uncallable trend does not escalate: NSFs
+    // and negative days are measured facts and still do.
     const cashStressed =
-      nsfTotal > nsfCap || negativeDays >= numOr0(settings.negative_days_flag) || revenueTrend === "down";
+      nsfTotal > nsfCap || negativeDays >= numOr0(settings.negative_days_flag) || revenueTrendCalled === "down";
     const heavilyStacked = positionsCount >= 3 || (positionsCount >= 2 && debtServicePct > 50);
     const debtReliefCandidate =
       affordabilityRating === "unaffordable" && heavilyStacked &&
@@ -3388,7 +3400,12 @@ Deno.serve(async (req) => {
       fico_low: ficoLow,
       time_in_business_months: tibMonthsKnown,
       true_avg_monthly_revenue: trueAvgMonthlyRevenue,
-      revenue_trend: revenueTrend,
+      // null when we refuse to call a direction — the judge must not reason about a
+      // trend we would not state to a funder. The companion flag tells it that the
+      // null is a deliberate refusal over too few months, NOT a missing figure, so it
+      // does not read the absence as a finding.
+      revenue_trend: revenueTrendCalled,
+      revenue_trend_callable: revenueTrendCallable,
       nsf_total: nsfTotal,
       negative_days: negativeDays,
       avg_daily_balance: avgDailyBalance,
