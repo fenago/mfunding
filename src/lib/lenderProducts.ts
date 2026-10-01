@@ -1,6 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Which products a funder does — ONE definition, read by every surface.
 //
+// ⚠ BEFORE YOU MIRROR THIS INTO `functions/_shared/`: `ProductId` is NOT the
+// same list as `underwrite-deal`'s KNOWN_PRODUCTS, and merging them is the one
+// mistake this file invites.
+//
+//   ProductId (here) ................... 9 — what a FUNDER CAN OFFER
+//   KNOWN_PRODUCTS (underwrite-deal) ... 7 — what the MODEL MAY CLAIM of a deal
+//   lender_programs.product_type CHECK . the same 7
+//
+// The two extra are `consumer` and `startup_robs_401k`. They are legitimate
+// funder products and must stay here; they are NOT legitimate product signals,
+// because no `lender_programs` row can ever carry them. Widen KNOWN_PRODUCTS to
+// these 9 and the failure half-works, which is the worst kind: the matcher reads
+// `category.products` off the lender row, which CAN contain them, so a
+// `consumer` signal would score funders and match no program. It would render,
+// look right, and be wrong where nobody checks.
+//
+// So: share the canonical ids, the labels and the DB-enum aliases below. Leave
+// the model-shorthand aliases (`loc`, `factoring`, `real_estate`) and the
+// whitelist next to the prompt that produces them — they are a property of that
+// prompt's vocabulary, not of the schema. A product addition then touches both
+// files; a prompt-wording change touches one.
+//
 // The catalog answers this question in two columns that were populated by
 // different processes and never reconciled, and they disagree in BOTH
 // directions:
