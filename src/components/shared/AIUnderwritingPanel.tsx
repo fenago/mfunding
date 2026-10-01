@@ -822,6 +822,107 @@ function Fold({
   );
 }
 
+// ── Why there is no paragraph ────────────────────────────────────────────────
+// A NULL `submission_paragraph` used to mean three different things and the UI
+// said so by listing all three, because it could not tell them apart.
+// underwriter-dimensions added `submission_facts.writer_status` so it can.
+//
+// THE STATE THAT MATTERS IS `rejected_compliance`, AND IT IS NOT AN ERROR.
+// It means the gate caught a draft asserting something we will not send a funder
+// and held it back — the system working, not breaking. Rendering it in the same
+// red as a crash would tell a closer the feature is broken when it has just
+// protected them, and the words on this screen decide whether they re-run or
+// give up. So it gets its own treatment: amber, a tick rather than a warning
+// triangle, and the reasons listed.
+//
+// The rejected draft itself is deliberately unreachable from here. It exists on
+// the edge function's response only and is never persisted, because it is copy we
+// decided not to send and a screen that displayed it is a screen someone could
+// copy it from.
+//
+// `submission_facts` absent entirely = a run from before the feature. That one
+// gets NO re-run prompt: re-running an old row is not what is wanted, and the row
+// will never have a paragraph.
+function NoParagraph({ facts }: { facts: Record<string, unknown> | null }) {
+  if (!facts) {
+    return (
+      <TabEmpty
+        what="No submission paragraph on this run."
+        why="This run predates the submission writer, so it will never have one. Re-run underwriting only if you want a fresh read of the file — the absence here is not a failure."
+      />
+    );
+  }
+  const status = typeof facts.writer_status === "string" ? facts.writer_status : null;
+  const reasons = Array.isArray(facts.writer_rejected_for)
+    ? (facts.writer_rejected_for as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+
+  if (status === "rejected_compliance") {
+    return (
+      <div className="rounded-xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
+        <div className="flex items-start gap-2">
+          <CheckCircleIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <h4 className="font-bold text-amber-900 dark:text-amber-100">
+              Held back — the draft said something we don&apos;t send a funder
+            </h4>
+            <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
+              The writer produced a paragraph and the compliance gate{" "}
+              <span className="font-semibold">refused it</span>. Nothing is broken and nothing was sent.
+              Re-run to get a clean draft.
+            </p>
+            {reasons.length > 0 && (
+              <ul className="mt-2 space-y-0.5">
+                {reasons.map((why, i) => (
+                  <li key={i} className="flex gap-2 text-xs text-amber-800 dark:text-amber-200">
+                    <span className="text-amber-500 shrink-0">▸</span>
+                    <span>{why}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
+              The refused draft is not shown anywhere on purpose — it is copy we decided not to send.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "failed" || status === "too_short") {
+    return (
+      <div className="rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60 p-4">
+        <div className="flex items-start gap-2">
+          <ExclamationTriangleIcon className="w-5 h-5 text-gray-500 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">The writer failed — re-run</h4>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+              {status === "too_short"
+                ? "It returned something too short to use."
+                : "It errored before producing a paragraph."}{" "}
+              Everything else on this run is unaffected — only the cover note is missing.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // A fact set with a status we do not recognise, or none at all. Say that, rather
+  // than picking the most likely cause and asserting it.
+  return (
+    <TabEmpty
+      what="No submission paragraph on this run."
+      why={
+        status
+          ? `The writer reported a state this screen doesn't recognise ("${status}") — re-run, and tell an engineer if it repeats.`
+          : "This run recorded no writer state, so why it is missing cannot be read from it. Re-run to get one."
+      }
+    />
+  );
+}
+
 // ── The fact set behind the submission paragraph ─────────────────────────────
 // `submission_facts` is the code-computed ground truth the writer was allowed to
 // use — the migration's words: "so a human can verify the paragraph invented
@@ -1340,10 +1441,51 @@ function ResultView({
             </div>
           )}
 
-          {/* The burden already on the account, as a shape. */}
-          {activePositions.length > 0 && (
+          {/* The burden already on the account, as a shape — or the earned absence
+              of one.
+
+              ZERO POSITIONS IS A FINDING, NOT A BLANK. PositionStack returns null
+              on an empty list, so until now a clean file rendered nothing here and
+              a reader could not tell "no positions" from "positions not analysed".
+              Spirit Drilling (MF-2026-0442) made that live: its three "open
+              advance positions" turned out to be three Intuit charges seen once
+              each, and the file now reads 0 positions / $0 daily remittance. That
+              zero is the most fundable fact on the page and it was about to render
+              as empty space.
+
+              The sentence is SCOPED to the months actually read, and it refuses to
+              claim a clean file when a document failed to parse — a position in an
+              unread month is not a position we know about. */}
+          {activePositions.length > 0 ? (
             <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
               <PositionStack positions={activePositions} capacity={m.safe_daily_debit_capacity} />
+            </div>
+          ) : (
+            <div className={`rounded-xl p-4 border ${
+              ledgerErrors > 0
+                ? "border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20"
+                : "border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-900/15"
+            }`}>
+              {ledgerErrors > 0 ? (
+                <p className="text-sm text-amber-800 dark:text-amber-200">
+                  <span className="font-bold">No open MCA positions found</span> in the months that could be
+                  read — but {num(ledgerErrors)} document{ledgerErrors === 1 ? "" : "s"} failed to parse, so
+                  this is <span className="font-bold">not</span> a clean file, it is an incomplete read. Fix
+                  the documents and re-run before telling a funder the merchant is unstacked.
+                </p>
+              ) : (
+                <p className="text-sm text-emerald-800 dark:text-emerald-200">
+                  <span className="font-bold">No open MCA positions</span> across the{" "}
+                  {num(monthsCovered)} month{monthsCovered === 1 ? "" : "s"} read — no recurring advance
+                  remittance on the statements, <span className="font-bold">{money(0)}/day</span> of existing
+                  burden. Safe daily capacity is{" "}
+                  <span className="font-bold">{money(m.safe_daily_debit_capacity)}</span>, all of it
+                  available.
+                </p>
+              )}
+              <p className="mt-1 text-[11px] opacity-75">
+                This is what the statements show. It is not a representation about anything outside them.
+              </p>
             </div>
           )}
 
@@ -1467,7 +1609,24 @@ function ResultView({
           </div>
 
           {/* Positions — the count and the stack are the two biggest decline
-              reasons after collections. */}
+              reasons after collections.
+
+              When all three lists are empty this section used to vanish entirely,
+              which on the Risks tab reads as "we didn't look". The earned zero is
+              stated instead; the full detail of WHY it is zero (the one-off debits
+              that were excluded from the count) is in Working → Position timeline. */}
+          {activePositions.length === 0 &&
+            (m.ended_positions ?? []).length === 0 &&
+            (m.other_obligations ?? []).length === 0 && (
+            <p className="text-sm text-gray-600 dark:text-gray-300 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <span className="font-semibold">No positions of any kind found</span> in the{" "}
+              {num(monthsCovered)} month{monthsCovered === 1 ? "" : "s"} read — no open advances, nothing paid
+              off during them, no other fixed obligations.
+              {(m.position_timeline ?? []).length > 0 && (
+                <> Recurring debitors were examined and none qualified; see Working → Position timeline.</>
+              )}
+            </p>
+          )}
           {(activePositions.length > 0 || (m.ended_positions ?? []).length > 0 || (m.other_obligations ?? []).length > 0) && (
             <PositionsSection
               active={activePositions}
@@ -1593,10 +1752,7 @@ function ResultView({
               </p>
             </div>
           ) : (
-            <TabEmpty
-              what="No submission paragraph on this run."
-              why="Either the run predates the feature, or the writer failed, or its output was rejected by the funder-facing compliance check. Re-run to generate one — do not read the absence as 'nothing worth saying'."
-            />
+            <NoParagraph facts={r.submission_facts} />
           )}
 
           {/* The checkable half. The paragraph above is model-written prose about to
