@@ -2267,13 +2267,23 @@ Deno.serve(async (req) => {
     // apart — one run's paragraph said "an upward revenue trend", the next said
     // "revenue is trending down". A direction nobody double-checks is the easiest
     // kind of wrong to ship, so it is withheld unless each side averages at least
-    // two months AND no month is anomalous. The INTERNAL revenueTrend above is
-    // unchanged — flags and risk scoring still use it.
-    const TREND_MIN_MONTHS_FOR_FUNDER = 6;
-    const revenueTrendForFunder =
-      anomalousMonthCount === 0 && effPerMonthNet.length >= TREND_MIN_MONTHS_FOR_FUNDER
-        ? revenueTrend
-        : null;
+    // two months AND no month is anomalous.
+    //
+    // ONE SOURCE OF TRUTH, not a funder-only gate. This started life as
+    // `revenueTrendForFunder` and that name was the bug: the funder stopped seeing a
+    // flipping direction while the PROCESSOR's panel kept rendering the raw value,
+    // and a warn flag fired off it, so "Revenue trend: Up" plus a declining-revenue
+    // warning appeared and disappeared on refresh. Measured across five consecutive
+    // runs on identical statements: up, down, up, up, up. A flipping label is
+    // confusing; a flipping WARNING is a judgement that changes what the processor
+    // does. If we will not assert a direction to a funder we must not assert it to
+    // the person working the file either, so every consumer reads `revenueTrendCalled`.
+    const TREND_MIN_MONTHS_TO_CALL = 6;
+    const revenueTrendCallable =
+      anomalousMonthCount === 0 && effPerMonthNet.length >= TREND_MIN_MONTHS_TO_CALL;
+    // null = "we refused to call a direction". NOT "flat" — rendering it as flat
+    // would assert the stability we just declined to assert.
+    const revenueTrendCalled = revenueTrendCallable ? revenueTrend : null;
 
     // Deposit concentration — largest single sales deposit vs total deposits
     // (a proxy for one-customer dependency). Computed across all analyzed months.
@@ -2848,7 +2858,15 @@ Deno.serve(async (req) => {
       safe_daily_debit_capacity: safeDailyDebitCapacity,
       max_affordable_advance: maxAffordableAdvance,
       amount_requested: amountRequested,
-      revenue_trend: revenueTrend,
+      // NULLABLE since 2026-10-01: null means "not enough months to call a
+      // direction", which AIUnderwritingPanel renders as "Not claimed" rather than
+      // as "flat" or a dash. Was the raw `revenueTrend`, which flipped up/down
+      // between runs on identical statements on the processor's screen.
+      revenue_trend: revenueTrendCalled,
+      // ADDITIVE companion so a consumer can tell "we refused to call it" (false)
+      // apart from an older row that predates the field (absent).
+      revenue_trend_callable: revenueTrendCallable,
+      revenue_trend_min_months: TREND_MIN_MONTHS_TO_CALL,
       deposit_concentration_pct: depositConcentrationPct,
       // Explicit per-month table + first-class affordability block (both additive;
       // old rows lack them and the UI hides those sections).
@@ -3016,8 +3034,17 @@ Deno.serve(async (req) => {
     } else if (safeDailyDebitCapacity <= 0) {
       flags.push({ code: "no_capacity", severity: "critical", message: "No safe daily-debit capacity remains after existing debits — a new advance is unaffordable." });
     }
-    if (revenueTrend === "down") {
-      flags.push({ code: "revenue_trend", severity: "warn", message: "Real revenue is trending down across the analyzed period." });
+    // Gated on revenueTrendCalled, NOT revenueTrend: a warning about declining
+    // revenue that appears and disappears between runs on the same statements is
+    // worse than no warning, because the processor acts on it.
+    if (revenueTrendCalled === "down") {
+      flags.push({
+        code: "revenue_trend",
+        severity: "warn",
+        message:
+          `Real revenue is trending down across the analyzed period ` +
+          `(${effPerMonthNet.length} months, direction callable).`,
+      });
     }
     if (depositConcentrationPct >= 40) {
       flags.push({ code: "deposit_concentration", severity: "info", message: `Largest single deposit is ${depositConcentrationPct}% of all deposits — possible customer concentration.` });
@@ -4628,8 +4655,8 @@ Deno.serve(async (req) => {
       worst_month_revenue_approx: floorTo1kOrNull(worstMonthRevenueForFunder),
       revenue_figures_are_approximate: true,
       // A DIRECTION is a claim and needs enough months to be one — null below 6
-      // months or when any month is anomalous. See revenueTrendForFunder.
-      revenue_trend: revenueTrendForFunder,
+      // months or when any month is anomalous. See revenueTrendCalled.
+      revenue_trend: revenueTrendCalled,
       months_of_statements: monthsCovered,
       // ── POSITION COUNT DELIBERATELY ABSENT ──────────────────────────────────
       // Removed 2026-10-01 on the owner's instruction, and it must not come back
