@@ -39,6 +39,8 @@ import {
 import supabase from "@/supabase";
 import FunderWorkspace from "@/components/admin/FunderWorkspace";
 import DeclineCloseOut from "@/components/admin/DeclineCloseOut";
+import UnderwritingLauncher from "@/components/shared/UnderwritingLauncher";
+import useUnderwritingSummaries from "@/hooks/useUnderwritingSummaries";
 // The cheat sheet's disclosure blocks, extracted by cheatsheet-products so this
 // page mounts them rather than owning a second copy. The credential guard, the
 // link-classification chips and the unreadable-vs-absent split all come with
@@ -527,6 +529,15 @@ export default function FunderChaseTab() {
 
   const groups = useMemo(() => (state.kind === "ready" ? state.groups : []), [state]);
 
+  // HAS THIS FILE BEEN UNDERWRITTEN? The underwriter's read — true revenue after
+  // padding, affordability, and the gated funder shortlist — is the input to the
+  // decision this whole tab exists for: who gets this package next. One lean
+  // batched read for every merchant on screen (no jsonb, nothing invoked), so a
+  // row can offer "View underwriting" on a run someone already paid for instead
+  // of inviting a second one.
+  const uwDealIds = useMemo(() => groups.map((g) => g.dealId), [groups]);
+  const { verdictFor: uwVerdictFor, reload: reloadUnderwriting } = useUnderwritingSummaries(uwDealIds);
+
   // Fire once the rows land, keyed on the SET of funders actually on screen.
   const lenderIdKey = useMemo(
     () => [...new Set(groups.flatMap((g) => g.subs.map((x) => x.lenderId)))].sort().join(","),
@@ -816,8 +827,25 @@ export default function FunderChaseTab() {
                 ))}
               </div>
 
-              {g.dealNumber && (
-                <div className="px-3 pb-2 flex items-center">
+              {/* The underwriter, on the row. Deliberately OUTSIDE the
+                  expand/collapse button (which would swallow the click) and
+                  outside the `isOpen` guard: she must be able to read the
+                  verdict while triaging, without mounting FunderWorkspace and
+                  scoring the whole funder network for a merchant she is only
+                  glancing at.
+
+                  `statements` is left at its default `unknown`: this tab reads
+                  deal_submissions and deals, neither of which carries a document
+                  count, and a guess here would be the one-store lie. */}
+              <div className="px-3 pb-2 flex items-center gap-2">
+                <UnderwritingLauncher
+                  dealId={g.dealId}
+                  verdict={uwVerdictFor(g.dealId)}
+                  merchantName={g.businessName}
+                  size="xs"
+                  onRan={reloadUnderwriting}
+                />
+                {g.dealNumber && (
                   <Link
                     to={`/admin/deals/${g.dealId}`}
                     className="ml-auto text-[10px] text-gray-400 hover:text-ocean-blue inline-flex items-center gap-0.5"
@@ -825,8 +853,8 @@ export default function FunderChaseTab() {
                     {g.dealNumber}
                     <ArrowTopRightOnSquareIcon className="w-3 h-3" />
                   </Link>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* ── Close-out: tell the merchant everyone passed, then park ──
                   Same component the Playbook's FunderWorkspace mounts. The

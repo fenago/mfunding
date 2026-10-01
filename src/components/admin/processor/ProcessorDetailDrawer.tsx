@@ -50,6 +50,8 @@ import {
   type PipelineRow,
 } from "./types";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import UnderwritingLauncher, { type StatementEvidence } from "@/components/shared/UnderwritingLauncher";
+import useUnderwritingSummaries from "@/hooks/useUnderwritingSummaries";
 import FunderWorkspace from "@/components/admin/FunderWorkspace";
 import FunderPicker from "@/components/admin/FunderPicker";
 import type { SignatureState } from "@/lib/applicationSignature";
@@ -588,6 +590,13 @@ export default function ProcessorDetailDrawer({
     [row],
   );
 
+  // Has this file already been underwritten? One lean row read (no jsonb), so the
+  // control can say "View" instead of inviting a second paid run — the exact bug
+  // migration 20260921a was written for. ABOVE the early return: hooks run
+  // unconditionally, and an empty id list is a no-op read.
+  const uwIds = useMemo(() => (dealId ? [dealId] : []), [dealId]);
+  const { verdictFor: uwVerdictFor, reload: reloadUnderwriting } = useUnderwritingSummaries(uwIds);
+
   if (!dealId) return null;
 
   const detail = state.kind === "ready" ? state.detail : null;
@@ -621,6 +630,32 @@ export default function ProcessorDetailDrawer({
       : ghlFiles.kind === "ready"
         ? (ghlFiles.uploadsError ?? (ghlFiles.docs.kind === "unreadable" ? ghlFiles.docs.why : null))
         : null;
+  // ── What this drawer can honestly say about bank statements ───────────────
+  // It is the only client surface that reads BOTH document stores, so it is the
+  // only one that can narrow the hint past "unknown". It still cannot say
+  // "there are none": underwrite-deal also treats a connected Plaid feed as
+  // first-class evidence and synthesises months from plaid_transactions, and
+  // nothing here reads plaid_items. Hence `none_in_docs` — "the stores I can see
+  // are empty" — which changes the wording and never hides the control.
+  const localStatements = documents.filter((d) => d.is_bank_statement).length;
+  const uwStatements: StatementEvidence =
+    localStatements > 0
+      ? { kind: "present", count: localStatements, where: "this app" }
+      : vrUnreadable
+        ? { kind: "unknown", why: `VibeReach couldn't be read — ${vrUnreadable}` }
+        : vrUploadCount > 0
+          // Files ARE on the contact. We don't know which of them are statements
+          // (the uploads carry field names, not document types) — the underwriter
+          // classifies them when it ingests. "Unknown", not "none".
+          ? {
+              kind: "unknown",
+              why: `${vrUploadCount} uploaded file${vrUploadCount === 1 ? "" : "s"} on the merchant's VibeReach contact`,
+            }
+          : ghlFiles.kind === "ready"
+            ? { kind: "none_in_docs", where: "this app or the merchant's VibeReach contact" }
+            : { kind: "unknown", why: "VibeReach hasn't been read for this merchant yet" };
+  const uwVerdict = uwVerdictFor(dealId);
+
   const chip = stageChip(deal?.status as string | undefined);
   const title =
     (customer?.business_name as string) ||
@@ -933,9 +968,29 @@ export default function ProcessorDetailDrawer({
 
               {/* Bank statements + documents */}
               <section>
-                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-                  Documents in this app ({documents.length})
-                </h3>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    Documents in this app ({documents.length})
+                  </h3>
+                  {/* ── The AI underwriter, next to the statements themselves ──
+                      Owner, 10/1: the button belongs wherever a file has bank
+                      statements. This drawer is the processor's main screen and
+                      the only surface that reads BOTH document stores, so it is
+                      the one place that can describe the evidence honestly.
+
+                      It never suppresses itself on an empty store: `none_in_docs`
+                      means "the two stores I can see are empty", and
+                      underwrite-deal also reads any connected Plaid feed, which
+                      nothing on the client does. The run happens on click, in a
+                      modal — never on render. */}
+                  <UnderwritingLauncher
+                    dealId={dealId}
+                    verdict={uwVerdict}
+                    statements={uwStatements}
+                    merchantName={title}
+                    onRan={reloadUnderwriting}
+                  />
+                </div>
                 {documents.length === 0 ? (
                   vrUploadCount > 0 ? (
                     // They did send files — the files just landed in the other store.
@@ -1378,16 +1433,41 @@ export default function ProcessorDetailDrawer({
                    a collapsed accordion is the wrong weight for the main thing
                    she came here to do. */
                 <section>
-                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-                    Funders — nothing has gone out yet
-                  </h3>
+                  {/* The underwriter's verdict IS the input to "who do I send
+                      this to" — affordability, true revenue after padding, and
+                      the gated funder shortlist. So it sits on the heading of
+                      the panel where that decision gets made, not two screens
+                      away. */}
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                      Funders — nothing has gone out yet
+                    </h3>
+                    <UnderwritingLauncher
+                      dealId={dealId}
+                      verdict={uwVerdict}
+                      statements={uwStatements}
+                      merchantName={title}
+                      size="xs"
+                      onRan={reloadUnderwriting}
+                    />
+                  </div>
                   <FunderPicker deal={dealForFunders} />
                 </section>
               ) : (
                 <section>
-                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-                    Funders — {subs.count} submission{subs.count === 1 ? "" : "s"} out
-                  </h3>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                      Funders — {subs.count} submission{subs.count === 1 ? "" : "s"} out
+                    </h3>
+                    <UnderwritingLauncher
+                      dealId={dealId}
+                      verdict={uwVerdict}
+                      statements={uwStatements}
+                      merchantName={title}
+                      size="xs"
+                      onRan={reloadUnderwriting}
+                    />
+                  </div>
                   {/* The close-out says "every funder declined", which cannot be
                       true of a deal nobody has submitted — so it rides with the
                       responses, never with the first-submission picker. */}

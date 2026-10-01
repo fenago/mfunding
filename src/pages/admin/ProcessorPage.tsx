@@ -32,12 +32,15 @@ import useProcessorUpdatesBadge from "@/hooks/useProcessorUpdatesBadge";
 import DialOriginsPanel from "@/components/admin/DialOriginsPanel";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import useApplicationSignatures from "@/hooks/useApplicationSignatures";
+import UnderwritingLauncher from "@/components/shared/UnderwritingLauncher";
+import useUnderwritingSummaries from "@/hooks/useUnderwritingSummaries";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
-import { DEAL_STATUS_CONFIG, type DealStatus, type LostReason } from "@/types/deals";
+import { DEAL_STATUS_CONFIG, PARKED_STATUSES, type DealStatus, type LostReason } from "@/types/deals";
 import ParkReasonPicker from "@/components/shared/ParkReasonPicker";
 import {
   closerLabel,
   hasReachedApplicationSent,
+  hasStatements,
   isInterested,
   matchesSegment,
   merchantName,
@@ -270,6 +273,14 @@ export default function ProcessorPage() {
   // flag — so the board says the same thing the Application chase tab says.
   const rowDealIds = useMemo(() => allRows.map((r) => r.id), [allRows]);
   const { signatureFor, sentAtFor, sendEvidenceFor, statusFor } = useApplicationSignatures(rowDealIds);
+
+  // HAS THIS FILE ALREADY BEEN UNDERWRITTEN? One lean read for the whole board
+  // (ids + the two verdict ratings, no jsonb) so a row can offer "View
+  // underwriting" on a deal somebody already paid to run, instead of "Run" —
+  // which is how the same statements get underwritten twice. Nothing here
+  // invokes the underwriter; that happens only on a click, in the modal.
+  const { verdictFor: uwVerdictFor, reload: reloadUnderwriting } =
+    useUnderwritingSummaries(rowDealIds);
 
   // The working funnel: interested-but-not-yet-submission-ready.
   const inScopeRows = useMemo(
@@ -892,6 +903,8 @@ export default function ProcessorPage() {
                       const chip = stageChip(r.status);
                       const stale = !!r.is_stale;
                       const na = nextAction(r);
+                      const parkedRow =
+                        !!r.status && (PARKED_STATUSES as readonly string[]).includes(r.status);
                       return (
                         <tr
                           key={r.id}
@@ -1024,6 +1037,38 @@ export default function ProcessorPage() {
                               >
                                 Submit →
                               </button>
+                            )}
+                            {/* ── The AI underwriter, right on the row ──
+                                Owner, 10/1: "anytime that we have a file where
+                                we have bank statements, I'd love to have that
+                                button where we have the AI underwriter right
+                                there."
+
+                                `has_bank_statements` on this RPC counts ONE
+                                store — customer_documents where document_type =
+                                'bank_statement'. Merchants who upload through
+                                the VibeReach form never touch it, and
+                                underwrite-deal ingests from the contact set (and
+                                reads any connected Plaid feed) before it gives
+                                up. So a false here means UNKNOWN, not absent:
+                                gating the button on it would hide the
+                                underwriter on exactly the merchants it works
+                                for. Parked deals are the one exclusion — a
+                                nurtured/declined file is not being underwritten. */}
+                            {!parkedRow && (
+                              <UnderwritingLauncher
+                                dealId={r.id}
+                                verdict={uwVerdictFor(r.id)}
+                                statements={
+                                  hasStatements(r)
+                                    ? { kind: "present", count: r.bank_statement_count, where: "this app" }
+                                    : { kind: "unknown", why: "only this app's uploads are counted on a list row" }
+                                }
+                                merchantName={merchantName(r)}
+                                size="xs"
+                                className="mt-1"
+                                onRan={reloadUnderwriting}
+                              />
                             )}
                           </td>
 

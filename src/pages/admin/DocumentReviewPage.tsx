@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   DocumentMagnifyingGlassIcon, EyeIcon, CheckCircleIcon, XCircleIcon,
@@ -8,6 +8,67 @@ import {
   getDocumentsForReview, setDocumentStatus, getDocumentUrl,
   type ReviewDoc, type DocReviewStatus,
 } from "../../services/documentService";
+import supabase from "@/supabase";
+import { readResult, type Readable } from "@/lib/readable";
+import { PARKED_STATUSES } from "@/types/deals";
+import UnderwritingLauncher from "@/components/shared/UnderwritingLauncher";
+import useUnderwritingSummaries from "@/hooks/useUnderwritingSummaries";
+
+/**
+ * A bank statement is the underwriter's whole input, so the control belongs on
+ * the row that shows one (owner, 2026-10-01). The queue is keyed by CUSTOMER,
+ * though, and the underwriter is keyed by DEAL — so resolve the merchant's
+ * current deal for the statement rows only, in one batched read.
+ *
+ * Three states, as ever: a failed resolve renders as "couldn't resolve", never as
+ * a row with no control and no explanation.
+ */
+function useDealForCustomers(customerIds: string[]) {
+  const key = useMemo(() => [...new Set(customerIds)].sort().join(","), [customerIds]);
+  const [state, setState] = useState<Readable<Map<string, string>>>({ kind: "loading" });
+
+  const load = useCallback(async () => {
+    const ids = key ? key.split(",") : [];
+    if (ids.length === 0) {
+      setState({ kind: "ok", value: new Map() });
+      return;
+    }
+    setState({ kind: "loading" });
+    const res = await supabase
+      .from("deals")
+      .select("id, customer_id, status, created_at")
+      .in("customer_id", ids)
+      .order("created_at", { ascending: false });
+    const rows = readResult<{ id: string; customer_id: string; status: string | null }[]>(
+      res as { data: { id: string; customer_id: string; status: string | null }[] | null; error: { message: string } | null },
+      [],
+    );
+    if (rows.kind !== "ok") {
+      setState({
+        kind: "unreadable",
+        why: rows.kind === "unreadable" ? rows.why : "the deal lookup did not complete",
+      });
+      return;
+    }
+    // Newest LIVE deal per customer; a parked deal only if it is all they have.
+    const live = new Map<string, string>();
+    const any = new Map<string, string>();
+    for (const r of rows.value) {
+      if (!any.has(r.customer_id)) any.set(r.customer_id, r.id);
+      const parked = !!r.status && (PARKED_STATUSES as readonly string[]).includes(r.status);
+      if (!parked && !live.has(r.customer_id)) live.set(r.customer_id, r.id);
+    }
+    const out = new Map(any);
+    for (const [c, d] of live) out.set(c, d);
+    setState({ kind: "ok", value: out });
+  }, [key]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return state;
+}
 
 const DOC_LABELS: Record<string, string> = {
   bank_statement: "Bank Statement", application: "Application", id: "ID / License",
@@ -34,6 +95,20 @@ export default function DocumentReviewPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const shown = typeFilter === "all" ? docs : docs.filter((d) => d.document_type === typeFilter);
+
+  // Deal + prior-run lookups for the bank-statement rows only — the rows where
+  // "underwrite this" is a meaningful offer. Both are batched and read-only;
+  // nothing invokes the underwriter until someone clicks.
+  const stmtCustomerIds = useMemo(
+    () => shown.filter((d) => d.document_type === "bank_statement").map((d) => d.customer_id),
+    [shown],
+  );
+  const dealByCustomer = useDealForCustomers(stmtCustomerIds);
+  const uwDealIds = useMemo(
+    () => (dealByCustomer.kind === "ok" ? [...dealByCustomer.value.values()] : []),
+    [dealByCustomer],
+  );
+  const { verdictFor: uwVerdictFor, reload: reloadUnderwriting } = useUnderwritingSummaries(uwDealIds);
 
   async function load() {
     setLoading(true);
@@ -143,6 +218,30 @@ export default function DocumentReviewPage() {
                   <td className="py-3 px-4"><span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_STYLE[d.status]}`}>{d.status}</span></td>
                   <td className="py-3 px-4">
                     <div className="flex items-center gap-2 justify-end">
+                      {/* THE AI UNDERWRITER, ON THE STATEMENT ITSELF.
+                          Only on bank-statement rows (nothing else is its input),
+                          and only once the merchant's deal is resolved — the
+                          underwriter is keyed by deal. A failed resolve says so
+                          rather than silently dropping the control. */}
+                      {d.document_type === "bank_statement" && (
+                        dealByCustomer.kind === "unreadable" ? (
+                          <span
+                            className="text-[10px] text-amber-600 dark:text-amber-400"
+                            title={`Couldn't resolve this merchant's deal — ${dealByCustomer.why}. Open the merchant to underwrite.`}
+                          >
+                            ⚠ no deal link
+                          </span>
+                        ) : dealByCustomer.kind === "ok" && dealByCustomer.value.get(d.customer_id) ? (
+                          <UnderwritingLauncher
+                            dealId={dealByCustomer.value.get(d.customer_id)!}
+                            verdict={uwVerdictFor(dealByCustomer.value.get(d.customer_id)!)}
+                            statements={{ kind: "present", count: null, where: "this app" }}
+                            merchantName={d.customer?.business_name ?? null}
+                            size="xs"
+                            onRan={reloadUnderwriting}
+                          />
+                        ) : null
+                      )}
                       <button onClick={() => act(d.id, "approved")} disabled={busyId === d.id}
                         className="px-2.5 py-1 text-xs font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-1">
                         <CheckCircleIcon className="w-4 h-4" /> Approve
