@@ -3988,6 +3988,172 @@ Deno.serve(async (req) => {
     // PERSISTED copy (additive: older stored rows simply have no `profile` key).
     const metricsOut = { ...metrics, profile };
 
+    // ── SUBMISSION PARAGRAPH (funder-facing) ───────────────────────────────────
+    // One pasteable paragraph a closer attaches to a submission. It tells the story
+    // HONESTLY — including the adverse facts — while still making the merchant's case.
+    //
+    // Why: Spirit Drilling was declined by two funders over recurring RAM Payment
+    // debits. This engine had ALREADY worked out that RAM is a debt-settlement
+    // servicer, that it is NOT an MCA position, and that it was excluded from the
+    // position count — and all of that reached only our own internal narrative. A
+    // submission that gets ahead of it ("you'll see RAM debits; here's what they are
+    // and why the position count is 3, not 4") is the difference between a decline and
+    // a conversation.
+    //
+    // DESIGN — the funder-facing rules are enforced STRUCTURALLY, not by asking the
+    // model nicely. The model is handed `submissionFacts` and nothing else: a curated,
+    // code-computed fact set that deliberately OMITS our funder shortlist, the
+    // exclusion/near-miss list, decline reasons, the paper tier and every other
+    // internal artifact. It cannot leak a funder's name or a disqualification because
+    // it is never told one. Code computes ground truth; the model only phrases it.
+    //
+    // Revenue is the VERIFIED (bank-derived) figure, never the stated one — funders
+    // recompute revenue themselves and a stated number they cannot reproduce costs us
+    // credibility. Coverage rides along so "nothing adverse found" can never be
+    // phrased as "nothing adverse exists": an unreadable document is not a clean month.
+    let submissionParagraph: string | null = null;
+    const settlementForFunder = [...new Map(
+      settlementHits.map((h) => [h.servicer, h]),
+    ).values()].map((h) => ({
+      servicer: h.servicer,
+      statement_descriptor: h.desc,
+      monthly_amount: h.amount,
+      confidence: h.confidence,
+      what_it_is:
+        "a third-party debt-settlement / restructuring servicer, NOT an advance — " +
+        "excluded from the position count and from any payoff math",
+    }));
+    const submissionFacts = {
+      business_name: cust.business_name ?? null,
+      industry: cust.industry ?? null,
+      state: cust.address_state ?? null,
+      time_in_business: cust.time_in_business ?? null,
+      amount_requested: amountRequested,
+      // VERIFIED revenue only. `reported_avg_monthly_revenue` is deliberately absent:
+      // quoting a stated figure a funder cannot reproduce from the statements is how
+      // a package loses credibility.
+      verified_avg_monthly_revenue: trueAvgMonthlyRevenue,
+      normal_season_avg_monthly_revenue: normalSeasonAvgMonthlyRevenue,
+      worst_month_revenue: worstMonthRevenue,
+      revenue_trend: revenueTrend,
+      months_of_statements: monthsCovered,
+      // Position facts WITHOUT naming the funders behind them (house rule: funder-
+      // facing copy never names another funder). Count + remittance load is what an
+      // underwriter actually needs, and it is all visible on the statements anyway.
+      open_position_count: positionsCount,
+      existing_daily_remittance: existingDailyDebit,
+      debt_service_pct_of_verified_revenue: debtServicePct,
+      avg_daily_balance: avgDailyBalance,
+      negative_days: negativeDays,
+      nsf_total: nsfTotal,
+      // The adverse facts to GET AHEAD OF, with what they actually are.
+      settlement_servicers: settlementForFunder,
+      collection_activity_detected: collectionActivity.detected,
+      collection_activity_confidence: collectionActivity.confidence,
+      collection_activity_types: collectionActivity.types,
+      // Consolidation, when the deterministic math says it is the realistic shape.
+      consolidation_viable: refi.feasible,
+      consolidation_amount: refi.feasible ? refi.est_outstanding_mid : null,
+      consolidation_term_months: bestRefi?.months ?? null,
+      consolidation_monthly_payment: bestRefi?.monthly_payment ?? null,
+      // COVERAGE — so a silence can never be sold as a clean bill of health.
+      months_read: monthsCovered,
+      documents_unreadable: unreadableDocs,
+    };
+    try {
+      const subSystem =
+        "You are an experienced MCA broker writing the cover note that goes out WITH a funding " +
+        "submission to a funder's underwriting desk. An MCA is a PURCHASE OF FUTURE RECEIVABLES, " +
+        "never a loan — never write 'loan', 'borrow', 'lend', 'interest' or 'repay'; use advance, " +
+        "remittance, receivables, funding.\n\n" +
+        "Write ONE paragraph, 90-160 words, plain prose. No markdown, no bullets, no headings, no " +
+        "bold, no salutation, no sign-off, no subject line. It must be pasteable verbatim into an " +
+        "email with zero editing, so never include a placeholder, a bracket or a TODO.\n\n" +
+        "THE POINT OF THIS PARAGRAPH IS HONEST ADVOCACY. You are not hiding the bad facts and you " +
+        "are not confessing. Rules:\n" +
+        "1. Lead with what makes this merchant fundable — verified revenue, months of statements, " +
+        "trend, time in business.\n" +
+        "2. Then raise EVERY adverse fact present in the data, in its own plain assertion, and " +
+        "immediately explain it. State it head-on: 'You will see recurring debits to X on the " +
+        "statements. These are Y.' NEVER bury an adverse fact in a subordinate or concessive " +
+        "clause ('although there are a few debits...'), and never imply a funder might not notice. " +
+        "Assume they will read every line of every statement, because they will.\n" +
+        "3. A debt-settlement servicer is the single most important thing to get ahead of. Name it, " +
+        "say exactly what it is, and say plainly that it is NOT an advance and therefore is not in " +
+        "the position count — give the correct count.\n" +
+        "4. Close on the structure being asked for and why it fits the cash flow.\n\n" +
+        "HARD LIMITS. Use ONLY the figures in the FACTS JSON. Never invent, round away from, or " +
+        "extrapolate a number. If a field is null or absent, say nothing about it — do not guess " +
+        "and do not note that it is missing. Never name any funder or lender. Never mention " +
+        "declines, disqualifications, other submissions, missing documents, credit scores, or our " +
+        "internal analysis, scoring or process. Never promise an approval.\n" +
+        "If documents_unreadable is above 0, you may describe the months you DO have, but never " +
+        "state or imply that the full picture is clean — absence of a finding in the months read is " +
+        "not evidence about months not read.\n\n" +
+        'Return STRICT JSON only: {"submission_paragraph": string}';
+      const subText = await callLLM(db, {
+        system: subSystem,
+        prompt: "FACTS (the only figures you may use):\n" + JSON.stringify(submissionFacts, null, 2),
+        maxTokens: 2048,
+        temperature: 0.3,
+        jsonMode: true,
+        task: "underwrite_submission_paragraph",
+        model: judgeModel,
+      });
+      const subParsed = safeParseJson(subText);
+      const cand = typeof subParsed?.submission_paragraph === "string"
+        ? subParsed.submission_paragraph.trim()
+        : "";
+      // ── COMPLIANCE GATE on funder-facing copy ────────────────────────────────
+      // This paragraph leaves the building and lands on a funder's desk, so the
+      // prompt's rules are not trusted on their own — the output is checked. An MCA
+      // is a purchase of future receivables; calling it a loan in writing, to a
+      // funder, is the one wording mistake that is genuinely costly. The same scan
+      // catches internal vocabulary ("declined", "paper tier") leaking outward.
+      //
+      // A violation leaves the column NULL. It is never auto-repaired by deleting the
+      // offending word: a paragraph that reasoned about this as a loan is wrong in its
+      // substance, not just its vocabulary, and patching the word would hide that.
+      //
+      // Funder NAMES need no pattern here — the model is never shown one (see the
+      // curated `submissionFacts` above), so that leak is prevented structurally
+      // rather than filtered after the fact.
+      const complianceViolations: string[] = [];
+      for (const [re, label] of [
+        [/\bloans?\b/i, "calls the advance a loan"],
+        [/\bborrow\w*\b/i, "borrower language"],
+        [/\blend\w*\b/i, "lending language"],
+        [/\binterest rate\b|\bAPR\b/i, "interest-rate language"],
+        [/\brepay\w*\b/i, "repayment language"],
+        [/\bdeclin\w*\b/i, "mentions a decline"],
+        [/\bdisqualif\w*\b/i, "mentions a disqualification"],
+        [/\bpaper (?:tier|grade)\b/i, "leaks the internal paper tier"],
+        [/\bcredit score\b/i, "mentions a credit score"],
+      ] as Array<[RegExp, string]>) {
+        if (re.test(cand)) complianceViolations.push(label);
+      }
+      // A too-short reply is a failed generation, not a terse paragraph — leave NULL
+      // rather than ship a stub a closer would paste in front of a funder.
+      if (cand.length < 120) {
+        console.error(`[underwrite-deal] submission paragraph unusable for deal ${dealId} (${cand.length} chars)`);
+      } else if (complianceViolations.length) {
+        console.error(
+          `[underwrite-deal] submission paragraph REJECTED for deal ${dealId} — ` +
+          `funder-facing compliance: ${complianceViolations.join("; ")}. Paragraph discarded.`,
+        );
+      } else {
+        submissionParagraph = cand;
+      }
+    } catch (e) {
+      // Never sinks the run: the underwriting itself is unaffected and the column stays
+      // NULL, which the UI renders as "not generated" — never as an empty paragraph a
+      // closer might mistake for a finished one.
+      console.error(
+        `[underwrite-deal] submission paragraph failed for deal ${dealId}: ` +
+        String(e instanceof Error ? e.message : e),
+      );
+    }
+
     // ---- Persist a new version ----
     const { data: prev } = await db
       .from("deal_underwriting")
@@ -4012,6 +4178,10 @@ Deno.serve(async (req) => {
         risk_rating: riskRating,
         affordability_rating: affordabilityRating,
         ai_narrative: narrativeOut,
+        // Funder-facing cover note + the curated facts it was written from (both
+        // nullable/additive — rows written before 2026-10-01 simply have neither).
+        submission_paragraph: submissionParagraph,
+        submission_facts: submissionFacts,
         settings_snapshot: settings,
         // Record the models that ACTUALLY ran (resolved override), not the code defaults.
         extraction_model: extractionModel,
@@ -4084,6 +4254,10 @@ Deno.serve(async (req) => {
       risk_rating: riskRating,
       affordability_rating: affordabilityRating,
       ai_narrative: narrativeOut,
+      // NULL (not "") when the writer could not produce a usable paragraph, so the UI
+      // shows "not generated" rather than an empty box a closer might paste.
+      submission_paragraph: submissionParagraph,
+      submission_facts: submissionFacts,
       metrics: metricsOut,
       flags,
       assumptions,
