@@ -386,6 +386,50 @@ export interface UWProfile {
 }
 
 export interface UWMetrics {
+  /**
+   * The three added lenses (2026-10-01) — consolidation, term loan, and how a
+   * funder's desk will read the file. ADDITIVE: every run stored before that date
+   * has no `lenses` key at all, and any individual lens can be null when the judge
+   * had nothing to say, so every read must null-check. A null is NOT "no issue" —
+   * it means the model did not answer, which is why the UI says so explicitly
+   * rather than rendering an empty panel.
+   */
+  lenses?: {
+    consolidation_read?: string | null;
+    term_loan_read?: string | null;
+    funder_view?: string | null;
+  };
+  /**
+   * Code-computed consolidation economics (both halves of the trade: the monthly
+   * relief AND the factor premium). `applicable: false` is a real, earned answer
+   * (no positions / no estimable balance), not missing data.
+   */
+  consolidation_analysis?: {
+    applicable?: boolean;
+    reason?: string;
+    verdict?: string;
+    est_outstanding_mid?: number;
+    total_payback?: number;
+    premium_vs_paying_as_is?: number;
+    premium_pct?: number | null;
+    current_monthly_remittance?: number;
+    consolidated_term_months?: number | null;
+    consolidated_monthly_payment?: number | null;
+    monthly_relief?: number | null;
+    monthly_relief_pct_of_revenue?: number | null;
+    tradeoff?: string;
+    mechanism_note?: string;
+    caveat?: string;
+  };
+  /** Live desk COUNTS by product (never names). `status: "unreadable"` means the
+   *  lenders table could not be read — never render that as zero desks. */
+  network_capability?: {
+    status?: string;
+    live_funders_total?: number;
+    live_term_loan_desks?: number;
+    live_true_consolidation_desks?: number;
+    live_reverse_consolidation_desks?: number;
+  };
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
   revenue_quality_pct: number;
@@ -484,6 +528,16 @@ export interface DealUnderwriting {
   risk_rating: RiskRating | null;
   affordability_rating: AffordabilityRating | null;
   ai_narrative: string | null;
+  /**
+   * Funder-facing cover note, pasteable as-is. NULL on runs written before
+   * 2026-10-01, and NULL when the writer failed or its output was rejected by the
+   * compliance scan — never an empty string, so the UI can tell "not generated"
+   * from "generated and empty" and never shows a blank box a closer might send.
+   */
+  submission_paragraph: string | null;
+  /** The code-computed facts the paragraph was written from, so a human can check
+   *  it invented nothing. Additive/nullable. */
+  submission_facts: Record<string, unknown> | null;
   settings_snapshot: Record<string, unknown> | null;
   extraction_model: string | null;
   judge_model: string | null;
@@ -601,6 +655,31 @@ export async function saveUnderwritingContext(dealId: string, text: string): Pro
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
+/**
+ * ⚠ TWO TRAPS ON THIS TABLE. Read both before you render anything from it.
+ *
+ * ① A ZERO HERE IS USUALLY A PERMISSION BOUNDARY, NOT AN EMPTY TABLE.
+ *    `uw_settings_select` is `is_admin_or_super(auth.uid())`. Verified 2026-10-01
+ *    by querying as a processor (role=closer + closers.is_processor): she sees
+ *    0 rows; the service role sees 1. So for every closer, setter and processor
+ *    in the app this read returns nothing, and the row IS there.
+ *
+ *    It does not bite today because AIUnderwritingPanel never calls this — only
+ *    the super-admin settings page does, and the edge function reads the table
+ *    server-side under the service role. It WILL bite whoever adds a "which
+ *    model judged this?" or "what factor rate did we assume?" line to a
+ *    staff-facing surface: they will get a clean empty read and draw a blank
+ *    where the honest render is "you are not permitted to see this".
+ *    `settings_snapshot` on each `deal_underwriting` row is the staff-safe
+ *    source for what a given RUN actually used — prefer it.
+ *
+ * ② `updated_at` ON THIS TABLE IS NOT A CHANGE RECORD.
+ *    It read 2026-07-25 on 2026-10-01, on a row that had been written that same
+ *    day. Nothing maintains it. Do not order by it, do not show it as "last
+ *    changed", and do not use it to decide whether settings are stale — it is
+ *    the same defect as the `opened_at` column that was never written and still
+ *    printed "not opened" on every funder submission.
+ */
 export async function getUnderwritingSettings(): Promise<UnderwritingSettings | null> {
   const { data, error } = await supabase
     .from("underwriting_settings")

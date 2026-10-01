@@ -18,6 +18,7 @@ import {
   type UWCollectionActivity, type UWCollectionType,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
+import { PRODUCT_LABEL_SHORT, type ProductId } from "@/lib/lenderProducts";
 import { useUserProfile } from "../../context/UserProfileContext";
 import useIsProcessor from "@/hooks/useIsProcessor";
 import DealAssistant from "../admin/DealAssistant";
@@ -872,6 +873,24 @@ function ResultView({
   // "decision" always opens first: the reader's first question is always "can we
   // fund this and for how much", and she should never have to click to start.
   const [tab, setTab] = useState<TabKey>(initialTab);
+  const [submissionCopied, setSubmissionCopied] = useState(false);
+  const copySubmission = async (text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setSubmissionCopied(true);
+      setTimeout(() => setSubmissionCopied(false), 2000);
+    } catch {
+      // Clipboard can be blocked (permissions, insecure context). Say nothing
+      // misleading: the button simply does not flip to "Copied", and the text is
+      // on screen to select manually.
+      console.error("Failed to copy submission paragraph");
+    }
+  };
+  // Additive + nullable on BOTH levels: older runs have no `lenses` key, and any
+  // individual lens can be null when the judge did not answer.
+  const lenses = m.lenses;
+  const consolidation = m.consolidation_analysis;
 
   const perMonth = m.per_month ?? [];
   const activePositions = m.active_positions ?? [];
@@ -1173,12 +1192,82 @@ function ResultView({
       )}
 
       {/* ④ SUBMISSION — what do I say.
-          The underwriter's narrative is the closest thing we have to submission
-          copy today. underwriter-dimensions is adding a purpose-built submission
-          paragraph plus a funder's-eye read; both land in this tab, above the
-          narrative, so nothing here needs restructuring when they ship. */}
+          Order is deliberate, most-sendable first: the pasteable paragraph, then the
+          funder's-eye read of what is coming, then the two product lenses, then the
+          full internal read. Every block below is ADDITIVE and null-checked — runs
+          stored before 2026-10-01 have none of these keys and must still render. */}
       {tab === "submission" && (
         <div className="space-y-4 pt-1">
+          {/* THE paragraph. Funder-facing and pasteable with no editing. A NULL here
+              is never rendered as an empty box: a closer could mistake that for
+              finished copy and send nothing, so absence is stated outright. */}
+          {r.submission_paragraph ? (
+            <div className="bg-emerald-50/60 dark:bg-emerald-900/10 rounded-xl p-5 border border-emerald-200 dark:border-emerald-900/40">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                  <SparklesIcon className="w-4 h-4 text-emerald-600" /> Submission paragraph
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => void copySubmission(r.submission_paragraph ?? "")}
+                  className="shrink-0 text-xs font-semibold px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"
+                >
+                  {submissionCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
+                Paste as-is alongside the package. It discloses the adverse facts on purpose —
+                verified (not stated) revenue, and no other funder is named.
+              </p>
+              <p className="text-sm leading-relaxed text-gray-800 dark:text-gray-100 whitespace-pre-wrap">
+                {r.submission_paragraph}
+              </p>
+            </div>
+          ) : (
+            <TabEmpty
+              what="No submission paragraph on this run."
+              why="Either the run predates the feature, or the writer failed, or its output was rejected by the funder-facing compliance check. Re-run to generate one — do not read the absence as 'nothing worth saying'."
+            />
+          )}
+
+          {/* How it lands on their desk. Internal: tells the closer what is coming. */}
+          {lenses?.funder_view && (
+            <div className="bg-amber-50/60 dark:bg-amber-900/10 rounded-xl p-5 border border-amber-200 dark:border-amber-900/40">
+              <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-1">
+                <SparklesIcon className="w-4 h-4 text-amber-600" /> How the funder will read it
+              </h4>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
+                Internal — what they see first, stop on, and ask for. Do not send this.
+              </p>
+              <NarrativeText text={lenses.funder_view} />
+            </div>
+          )}
+
+          {/* Consolidation: the AI read sits on top of the code-computed trade, and
+              the numbers are shown beside it so the prose can be checked against
+              them rather than taken on trust. */}
+          {(lenses?.consolidation_read || consolidation?.applicable) && (
+            <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">Consolidation</h4>
+              {lenses?.consolidation_read && <NarrativeText text={lenses.consolidation_read} />}
+              {consolidation?.applicable && consolidation.tradeoff && (
+                <p className="mt-3 text-xs text-gray-600 dark:text-gray-300 border-t border-gray-200 dark:border-gray-700 pt-3">
+                  <span className="font-semibold">Computed:</span> {consolidation.tradeoff}
+                  {consolidation.caveat ? ` ${consolidation.caveat}` : ""}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Term loan. A term loan IS a loan, so lending language here is correct —
+              the MCA receivables rule applies to the MCA copy, not to this. */}
+          {lenses?.term_loan_read && (
+            <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">As a term loan</h4>
+              <NarrativeText text={lenses.term_loan_read} />
+            </div>
+          )}
+
           {r.ai_narrative ? (
             <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-xl p-5 border border-blue-100 dark:border-blue-900/40">
               <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-3">
@@ -1192,11 +1281,6 @@ function ResultView({
               why="The judge pass produces this. If the run is recent and this is empty, the judge call failed — re-run rather than reading the absence as 'nothing to say'."
             />
           )}
-          {/* Named here so the structure is self-documenting rather than implied. */}
-          <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            A purpose-built submission paragraph and a funder&apos;s-eye summary are being added to the
-            underwriter; they will appear here, above the read.
-          </p>
         </div>
       )}
 
@@ -1554,17 +1638,33 @@ const PAPER_MEANING: Record<string, string> = {
 const SIZE_BUCKET_LABEL: Record<string, string> = {
   micro: "Micro", small_mid: "Small–mid", mid_large: "Mid–large", jumbo: "Jumbo",
 };
-const PRODUCT_LABEL: Record<string, string> = {
-  mca: "MCA",
-  term_loan: "Term loan",
-  line_of_credit: "Line of credit",
-  sba_loan: "SBA",
-  real_estate_cre: "Real estate / CRE",
-  equipment_financing: "Equipment",
-  invoice_factoring: "Factoring",
-};
+// ── Product labels: the shared map, not a fifth copy ────────────────────────
+// This file held its own `PRODUCT_LABEL`, typed `Record<string, string>` rather
+// than `Record<ProductId, string>` — so unlike the two consolidated maps it was
+// invisible to the type system. A new product breaks the build until
+// lenderProducts.ts is updated; this copy just fell through to `humanize()`, and
+// it was already missing `consumer` and `startup_robs_401k`. The second of those
+// rendered on screen as "startup robs 401k".
+//
+// SHORT, not long, and that is a design decision rather than an accident of which
+// import was nearer. These are chips in a dense row ("Products in play"), and the
+// long map would push `sba_loan` to "SBA loan", `equipment_financing` to
+// "Equipment financing" and `invoice_factoring` to "Invoice factoring" — longer
+// text in the narrowest place it appears.
+//
+// It changes NO visible text today, which is the part worth knowing: across all
+// 142 stored runs only three product_signals have ever appeared — `mca`,
+// `invoice_factoring` and `equipment_financing` — and the short map renders those
+// as "MCA", "Factoring" and "Equipment", exactly what the local copy produced.
+// The other six values gain correct labels for the first time.
+//
+// `product_signals` is `string[]` off the model, so the lookup must still tolerate
+// a value outside the union. The guard keeps the fallback explicit instead of
+// casting the map to `Record<string, string>` and losing the exhaustiveness that
+// is the whole point of the shared definition.
 const humanize = (s: string) => s.replace(/_/g, " ");
-const productLabel = (s: string) => PRODUCT_LABEL[s] ?? humanize(s);
+const isProductId = (s: string): s is ProductId => s in PRODUCT_LABEL_SHORT;
+const productLabel = (s: string) => (isProductId(s) ? PRODUCT_LABEL_SHORT[s] : humanize(s));
 
 function MerchantProfileSection({ p }: { p: UWProfile }) {
   const tier = p.paper_tier;
