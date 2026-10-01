@@ -28,6 +28,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
+import { scrubLenderSecrets } from "../_shared/lenderSecrets.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -270,7 +271,14 @@ Deno.serve(async (req) => {
           .select("lender_id, method, to_email, required_stips, special_instructions, max_statement_months, portal_url, active")
           .in("lender_id", lenderIds),
       ]);
-      lenders = (lRes.data ?? []) as Row[];
+      // Scrub at the LOAD site, so nothing downstream can reach the prompt
+      // unscrubbed. `notes` and `submission_notes` are free text and carry our
+      // own shared-mailbox password on four funders; this function previously had
+      // no scrubber at all, and the credential was reaching the model for 2 of
+      // the 3 that carry it in submission_notes (Lendini at char 42, IOU at 86).
+      // The clip(…, 400) below hid it for the third by accident, at char 531 —
+      // which is luck, not a control. Scrub BEFORE clipping, always.
+      lenders = ((lRes.data ?? []) as unknown as Record<string, unknown>[]).map(scrubLenderSecrets) as unknown as Row[];
       programs = (pRes.data ?? []) as Row[];
       recipes = (rRes.data ?? []) as Row[];
     }

@@ -21,6 +21,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import { callLLM, resolveConfig } from "../_shared/llm.ts";
+import { scrubLenderSecrets } from "../_shared/lenderSecrets.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -86,52 +87,11 @@ const LENDER_FIELDS = [
 //   to travel. If you ever re-add either field here, restore a URL scrub with
 //   it — they were removed with one, not without.
 
-/**
- * STRIP CREDENTIALS BEFORE THE FUNDER ROW LEAVES OUR INFRASTRUCTURE.
- *
- * `submission_notes` and `notes` are free text the team keeps portal logins in,
- * and this function posts them to a third-party model API on every run. Ranking
- * a funder never requires a password, so the value is removed here rather than
- * relied on being absent — it is NOT absent: a shared-mailbox password is
- * currently sitting in those columns on several funders, pending rotation.
- *
- * Redacts the LINE, and says a line was redacted. Dropping it silently would
- * teach the model that a funder with withheld instructions simply has none,
- * which is the same substitution of absence-for-unreadable this codebase keeps
- * paying for. The rest of the note — stacking rules, contested terms, "do not
- * submit" warnings — is exactly what the model should see, so it survives.
- *
- * This reduces exposure. It does NOT undo it: a credential that has been
- * transmitted must be rotated, and hiding it afterwards proves nothing.
- */
-const SECRET_LINE_RE =
-  /(pass\s?word|passwd|\bpwd\b|\bpw\s*[:=]|login\s*[:=]|credential|user\s*(name)?\s*[:=].*\bpass)/i;
-
-// Measured against the live rows before shipping: the keyword pattern alone
-// caught only 2 of the 5 funders whose notes carry our shared mailbox. The
-// address is stored NEXT TO the password as a login pair more often than the
-// word "password" appears, so the address itself is the better tell.
-const SHARED_MAILBOX_RE = /send\.mfunding\.net/i;
-
-
-function scrubText(v: unknown): unknown {
-  if (typeof v !== "string" || !v) return v;
-  const hit = (line: string) => SECRET_LINE_RE.test(line) || SHARED_MAILBOX_RE.test(line);
-  if (!hit(v)) return v;
-  return v
-    .split(/\r?\n/)
-    .map((line) => (hit(line) ? "[credential line withheld — not sent to the model]" : line))
-    .join("\n");
-}
-
-
-function scrubLenderSecrets<T extends Record<string, unknown>>(l: T): T {
-  return {
-    ...l,
-    submission_notes: scrubText(l.submission_notes),
-    notes: scrubText(l.notes),
-  };
-}
+// Credential scrubbing moved to _shared/lenderSecrets.ts (one definition) when
+// deal-assistant turned out to send submission_notes to a model with no scrubber
+// at all. Behaviour here is unchanged — same two patterns, same line redaction.
+// Both patterns are load-bearing: the keyword catches Guidant, the mailbox
+// address catches IOU and Uplyft, and neither alone catches all four.
 
 // Human labels for the docs-on-file vocabulary (customer_documents.document_type
 // slugs). Mirrors FunderPicker / funderAvailability DOC_LABELS so the AI, the
