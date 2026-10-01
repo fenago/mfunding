@@ -81,7 +81,17 @@ import {
 interface SubSummary {
   id: string;
   lenderId: string;
-  lenderName: string;
+  /** Null when the funder record could not be READ, which is not the same as a
+   *  funder with no name. Renders as "funder record unreadable", never as a
+   *  fallback label — a row labelled "Funder" is a value we could not read,
+   *  printed as though it were a value. */
+  lenderName: string | null;
+  /** True when the funder lookup succeeded for this lender. Separate from
+   *  fundingSpeed being null, because 114 of 125 funders genuinely have no
+   *  quoted turnaround on file: without this flag "no quoted turnaround" and
+   *  "I am not allowed to look" print the same sentence, and only one of them
+   *  means the chase clock has nothing to measure against. */
+  funderReadable: boolean;
   fundingSpeed: string | null;
   status: string;
   submittedAt: string | null;
@@ -202,7 +212,17 @@ function FunderLine({
       <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${st.cls}`}>
         {st.emoji} {st.label}
       </span>
-      <span className="font-medium text-gray-800 dark:text-gray-100">{s.lenderName}</span>
+      {s.lenderName ? (
+        <span className="font-medium text-gray-800 dark:text-gray-100">{s.lenderName}</span>
+      ) : (
+        /* NOT "Funder". This cell used to fall back to that literal string, which
+           printed a value we could not read as though it were the value — the
+           same defect as every other one on this page. The row is still worth
+           showing: the delivery error below names the actual address. */
+        <span className="font-medium text-amber-700 dark:text-amber-400" title="This account cannot read the funder record, so the name is unavailable. It is not missing.">
+          ⚠ funder record unreadable
+        </span>
+      )}
       <span className={CHASE_TONE_CLS[tone]}>
         {s.submittedAt ? `sent ${relTime(s.submittedAt)}` : "never stamped"}
       </span>
@@ -267,7 +287,17 @@ function FunderLine({
       )}
       {/* No promise on file is UNKNOWN, not "on time" — say which it is. */}
       {awaiting && quoted == null && (
-        <span className="text-[10px] text-gray-400">no quoted turnaround on file</span>
+        s.funderReadable ? (
+          <span className="text-[10px] text-gray-400">no quoted turnaround on file</span>
+        ) : (
+          /* "No promise on file" is a FACT about the funder; "I could not read
+             the funder" is a fact about us. 114 of 125 funders genuinely have no
+             quoted turnaround, so the readable case is the common one and the
+             two must not share a sentence — the chase clock has nothing to
+             measure against here, and saying "none on file" would assert we
+             looked. */
+          <span className="text-[10px] text-amber-600 dark:text-amber-400">turnaround unknown — funder record unreadable</span>
+        )
       )}
 
       {/* The cheat sheet's two disclosures, on the row she is already reading.
@@ -437,8 +467,7 @@ export default function FunderChaseTab() {
       .select(
         "id, deal_id, lender_id, status, submitted_at, response_at, opened_at, open_count, " +
           "delivered_at, delivery_failed_at, delivery_error, offer_amount, factor_rate, " +
-          "daily_payment, weekly_payment, total_payback, response_data, " +
-          "lender:lenders!lender_id ( company_name, funding_speed )",
+          "daily_payment, weekly_payment, total_payback, response_data",
       );
     if (subErr) {
       setState({ kind: "error", message: `Submissions: ${subErr.message}` });
@@ -449,15 +478,54 @@ export default function FunderChaseTab() {
       return;
     }
 
+    // 1b) The funder's name and quoted turnaround, through public.funder_display
+    // — a two-column view over `lenders` gated by funder_lookup_allowed(). This
+    // used to be a `lender:lenders!lender_id (...)` embed, which required every
+    // reader of this board to be able to read the whole `lenders` row. That row
+    // carries submission recipes, commission structures and free-text notes —
+    // one of which holds a live uid:/pw: pair — so the board gets the two
+    // columns it renders and nothing else.
+    //
+    // UNREADABLE vs ABSENT, without a second probe query: lender_id is a FOREIGN
+    // KEY to lenders(id) (deal_submissions_lender_id_fkey), so every id here is
+    // guaranteed to exist. Zero rows back for ids we hold can therefore only
+    // mean the gate refused us — it can never mean "that funder is gone".
+    const lenderIds = [...new Set(
+      (subData as unknown as Record<string, unknown>[]).map((r) => r.lender_id as string).filter(Boolean),
+    )];
+    const funders = new Map<string, { name: string | null; speed: string | null }>();
+    let fundersReadable = true;
+    if (lenderIds.length > 0) {
+      // Chunked: `.in()` goes in the query STRING, and 125 UUIDs is a ~4.8KB URL
+      // — long enough for a proxy to answer 414 instead of the funder list.
+      // Same reason funderDisclosure chunks at 40.
+      for (let i = 0; i < lenderIds.length; i += 40) {
+        const { data, error } = await supabase
+          .from("funder_display")
+          .select("id, company_name, funding_speed")
+          .in("id", lenderIds.slice(i, i + 40));
+        if (error) { fundersReadable = false; break; }
+        for (const f of (data ?? []) as Record<string, unknown>[]) {
+          funders.set(f.id as string, {
+            name: (f.company_name as string | null) ?? null,
+            speed: (f.funding_speed as string | null) ?? null,
+          });
+        }
+      }
+      if (funders.size === 0) fundersReadable = false;
+    }
+
     // Group the LIVE ones by deal.
     const byDeal = new Map<string, SubSummary[]>();
     for (const r of subData as unknown as Record<string, unknown>[]) {
-      const lender = r.lender as { company_name?: string; funding_speed?: string | null } | null;
+      const f = funders.get(r.lender_id as string);
+      const readable = fundersReadable && !!f;
       const s: SubSummary = {
         id: r.id as string,
         lenderId: r.lender_id as string,
-        lenderName: lender?.company_name ?? "Funder",
-        fundingSpeed: lender?.funding_speed ?? null,
+        lenderName: readable ? (f!.name ?? null) : null,
+        funderReadable: readable,
+        fundingSpeed: readable ? f!.speed : null,
         status: r.status as string,
         submittedAt: (r.submitted_at as string | null) ?? null,
         responseAt: (r.response_at as string | null) ?? null,
@@ -901,7 +969,9 @@ export default function FunderChaseTab() {
                 <DeclineCloseOut
                   deal={g.deal}
                   rows={g.subs.map((x) => ({
-                    lenderName: x.lenderName,
+                    // The close-out writes a decline reason a human reads later,
+                    // so an unreadable funder must not silently become "null".
+                    lenderName: x.lenderName ?? "(funder record unreadable)",
                     status: x.status,
                     submittedAt: x.submittedAt,
                     responseAt: x.responseAt,

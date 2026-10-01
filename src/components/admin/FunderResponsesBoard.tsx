@@ -633,7 +633,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     try {
       const { data, error: qErr } = await supabase
         .from("deal_submissions")
-        .select("id, lender_id, status, submitted_at, response_at, delivered_at, delivery_failed_at, delivery_error, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, withdrawn_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
+        .select("id, lender_id, status, submitted_at, response_at, delivered_at, delivery_failed_at, delivery_error, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, withdrawn_at, response_type, response_summary, response_data")
         .eq("deal_id", deal.id);
       if (qErr) throw qErr;
       const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
@@ -644,7 +644,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         return {
           id: r.id as string,
           lenderId: r.lender_id as string,
-          lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
+          // Filled in below from public.funder_display — the two-column gated
+          // view — rather than from a `lenders` embed. Same reason as the chase
+          // tab: rendering a funder's name should not require reading its
+          // recipes, commissions and free-text notes.
+          lenderName: "",
           status: r.status as string,
           submittedAt: (r.submitted_at as string | null) ?? null,
           responseAt: (r.response_at as string | null) ?? null,
@@ -667,6 +671,28 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           requestedItems: items,
         };
       });
+
+      // Funder names from public.funder_display (company_name + funding_speed,
+      // gated by funder_lookup_allowed()). lender_id is a FOREIGN KEY to
+      // lenders(id), so an id we hold always exists — zero rows back can only
+      // mean the gate refused us, never "that funder is gone". So an unreadable
+      // name says so instead of falling back to the literal "Funder", which is
+      // a value we could not read printed as a value.
+      const ids = [...new Set(mapped.map((m) => m.lenderId).filter(Boolean))];
+      if (ids.length > 0) {
+        const { data: fd, error: fdErr } = await supabase
+          .from("funder_display").select("id, company_name").in("id", ids);
+        const byId = new Map<string, string | null>(
+          ((fd ?? []) as Array<Record<string, unknown>>).map(
+            (f) => [f.id as string, (f.company_name as string | null) ?? null],
+          ),
+        );
+        const readable = !fdErr && byId.size > 0;
+        for (const m of mapped) {
+          const name = readable ? byId.get(m.lenderId) ?? null : null;
+          m.lenderName = name ?? "⚠ funder record unreadable";
+        }
+      }
       setRows(mapped.filter(isLive));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load funder responses.");
