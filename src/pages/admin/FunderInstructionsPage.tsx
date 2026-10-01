@@ -63,7 +63,16 @@ interface Directive {
   resolved_at: string | null;
   resolution_note: string | null;
   deal_id: string | null;
-  lender: { company_name: string | null; submission_email: string | null } | null;
+  /** From the view: the destination submit-to-funders would resolve today. */
+  current_destination: string | null;
+  /**
+   * From the view, COMPUTED not stored. False when the recipe already does what
+   * this row asks — a funder onboarding email naming the inbox we already use.
+   * 9 of the 12 funders with a detected address instruction are in that state;
+   * showing them as outstanding work would make this page three-quarters noise.
+   */
+  needs_action: boolean;
+  company_name: string | null;
 }
 
 const KIND_LABEL: Record<Kind, string> = {
@@ -129,28 +138,31 @@ export default function FunderInstructionsPage() {
     setRows({ kind: "loading" });
     const statuses: Status[] = showResolved ? ["open", "applied", "dismissed"] : ["open"];
     const res = await supabase
-      .from("funder_directives")
+      // The VIEW, not the table: it carries current_destination and
+      // needs_action, resolved the same way the submit engine resolves them.
+      .from("funder_directives_actionable")
       .select(
         "id, lender_id, kind, status, summary, retired_email, new_email, evidence_quote, " +
         "matched_phrases, from_email, received_at, created_at, resolved_at, resolution_note, deal_id, " +
-        "lender:lenders!lender_id ( company_name, submission_email )",
+        "current_destination, needs_action, company_name",
       )
       .in("status", statuses)
+      .order("needs_action", { ascending: false })
       .order("status", { ascending: true })
       .order("received_at", { ascending: false, nullsFirst: false });
     const r = readResult<Directive[]>(res as never, []);
     setRows(r);
+    // The view already resolved the destination the same way the engine does,
+    // so the page no longer re-reads it per lender just to display it.
+    // resolveDest() stays for markApplied, which must re-read at CLICK time —
+    // the whole point there is to check the recipe as it is now, not as it was
+    // when the page loaded.
     if (r.kind === "ok") {
       const dests: Record<string, string | null> = {};
-      for (const id of new Set(r.value.map((d) => d.lender_id))) {
-        const d = await resolveDest(id);
-        // undefined (unreadable) is stored as undefined, NOT null — the row
-        // renders "could not read" rather than "no address on file".
-        if (d !== undefined) dests[id] = d;
-      }
+      for (const d of r.value) dests[d.lender_id] = d.current_destination;
       setLiveDest(dests);
     }
-  }, [showResolved, resolveDest]);
+  }, [showResolved]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -258,7 +270,8 @@ export default function FunderInstructionsPage() {
   }
 
   const list = rows.kind === "ok" ? rows.value : [];
-  const openCount = list.filter((d) => d.status === "open").length;
+  const openCount = list.filter((d) => d.status === "open" && d.needs_action).length;
+  const satisfiedCount = list.filter((d) => d.status === "open" && !d.needs_action).length;
 
   return (
     <div className="p-6 max-w-5xl">
@@ -305,14 +318,20 @@ export default function FunderInstructionsPage() {
       {rows.kind === "ok" && openCount === 0 && !showResolved && (
         <div className="rounded-lg border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 p-4">
           <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
-            No open funder instructions. The queue was read successfully.
+            Nothing needs doing. The queue was read successfully.
           </p>
+          {satisfiedCount > 0 && (
+            <p className="mt-1 text-[12px] text-emerald-700 dark:text-emerald-300">
+              {satisfiedCount} instruction{satisfiedCount === 1 ? " is" : "s are"} on file and already
+              satisfied by the current recipe — listed below for the record, not as work.
+            </p>
+          )}
         </div>
       )}
 
       <div className="space-y-4 mt-4">
         {list.map((d) => {
-          const name = d.lender?.company_name ?? "Funder";
+          const name = d.company_name ?? "Funder";
           const dest = Object.prototype.hasOwnProperty.call(liveDest, d.lender_id)
             ? liveDest[d.lender_id] : undefined;
           const stillRetired = !!d.retired_email && !!dest &&
@@ -323,7 +342,9 @@ export default function FunderInstructionsPage() {
           return (
             <div key={d.id}
               className={`rounded-xl border-2 bg-white dark:bg-gray-800 p-4 ${
-                stillRetired ? "border-rose-400" : isOpen ? "border-amber-300" : "border-gray-200 dark:border-gray-700"
+                stillRetired ? "border-rose-400"
+                  : isOpen && d.needs_action ? "border-amber-300"
+                  : "border-gray-200 dark:border-gray-700"
               }`}>
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
@@ -335,6 +356,14 @@ export default function FunderInstructionsPage() {
                     {!isOpen && (
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                         {d.status} {d.resolved_at ? `· ${fmt(d.resolved_at)}` : ""}
+                      </span>
+                    )}
+                    {/* Open but already complied with. Shown, not hidden — it is
+                        evidence, and it becomes work again the moment someone
+                        edits the recipe away from it. Just not counted as work. */}
+                    {isOpen && !d.needs_action && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                        already satisfied — recipe matches
                       </span>
                     )}
                   </div>

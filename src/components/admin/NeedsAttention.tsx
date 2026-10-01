@@ -37,9 +37,15 @@ export default function NeedsAttention() {
         .from("deal_submissions").select("id", { count: "exact", head: true })
         .not("response_at", "is", null)
         .eq("status", "submitted")));
+      // needs_action, not just open. The view compares each directive to the
+      // destination submit-to-funders would actually resolve, so a funder
+      // onboarding email naming the inbox we ALREADY use doesn't sit here
+      // asking for work that is done. 9 of 12 detected address instructions
+      // are that case; counting them would make this tile noise, and a tile
+      // that is mostly noise is one nobody reads.
       setDirectives(readCount(await supabase
-        .from("funder_directives").select("id", { count: "exact", head: true })
-        .eq("status", "open")));
+        .from("funder_directives_actionable").select("id", { count: "exact", head: true })
+        .eq("status", "open").eq("needs_action", true)));
     })();
   }, []);
 

@@ -122,6 +122,31 @@ const SUBJECT_OF_SUBMISSION: Array<[string, RegExp]> = [
   ["paperwork", /\bpaperwork\b/i],
 ];
 
+/**
+ * A GENERIC, PLURAL routing object — "submissions", "files", "deals" — as
+ * opposed to one specific file on one deal.
+ *
+ * THIS IS WHAT MAKES AN INSTRUCTION STANDING, and it took Instagreen Capital
+ * to show it. They asked three times for submissions to go to
+ * isabel@instagreencapital.com (2026-07-06 twice, 2026-08-13 "send submissions
+ * DIRECTLY to isabel@") and the detector caught ONE of the three, because the
+ * other two carried no temporal cue — no "effective immediately", no "going
+ * forward". They were simply standing facts about how this funder takes deals.
+ * Meanwhile our recipe sent to submit@, her CC address, for three months.
+ *
+ * The real difference between "please forward THE FILE to me" (one deal, not a
+ * recipe change) and "please send SUBMISSIONS to X" (a recipe change) is the
+ * generic plural object, not an adverb of time. Strict plural on purpose:
+ * `/\bfiles?\b/` matches "the file" and would pull every one-off back in.
+ */
+const GENERIC_PLURAL_OBJECT: Array<[string, RegExp]> = [
+  ["submissions (plural)", /\bsubmissions\b/i],
+  ["files (plural)", /\bfiles\b/i],
+  ["deals (plural)", /\bdeals\b/i],
+  ["applications (plural)", /\bapplications\b/i],
+  ["packages (plural)", /\bpackages\b/i],
+];
+
 /** A directive to route somewhere. */
 const SEND_VERB: Array<[string, RegExp]> = [
   ["send", /\bsend(?:ing)?\b/i],
@@ -240,6 +265,39 @@ function isOwnTemplate(s: string): boolean {
   return OWN_TEMPLATE_MARKERS.some((re) => re.test(s));
 }
 
+/**
+ * Corporate email-security banners. Never a routing instruction, and shaped
+ * exactly like one: a send verb, an address, and an imperative.
+ *
+ * Kapitus Partners, funder_replies a659527e, 2026-07-20 — an ISO onboarding
+ * questionnaire whose header carried
+ *
+ *   "This email originated from outside of Kapitus. If this message or
+ *    attachments are unusual or unexpected in your typical business
+ *    interactions please forward to cybersecurity@kapitus.com."
+ *
+ * The detector proposed `cybersecurity@kapitus.com` as Kapitus's submissions
+ * inbox. "forward" supplied the verb, the address supplied the destination, and
+ * the word "deals" came from the questionnaire 150 characters away — close
+ * enough for the ±160 window, nothing to do with the banner. Banners like this
+ * sit at the top of a large share of corporate mail, so without this guard the
+ * class recurs for every funder on a filtered tenant.
+ */
+const SECURITY_BANNER: RegExp[] = [
+  /originated from outside/i,
+  /\bexternal (?:sender|email)\b/i,
+  /\bphishing\b/i,
+  /\bcyber ?security\b/i,
+  /\bsuspicious\b/i,
+  /\bdo not click\b/i,
+  /\breport (?:it|this)\b/i,
+  /verify the sender/i,
+];
+
+function isSecurityBanner(s: string): boolean {
+  return SECURITY_BANNER.some((re) => re.test(s));
+}
+
 /** Collect the labels of every pattern in `set` that `s` matches. */
 function hits(s: string, set: Array<[string, RegExp]>): string[] {
   return set.filter(([, re]) => re.test(s)).map(([label]) => label);
@@ -313,12 +371,14 @@ export function detectDirectives(body: string): DetectedDirective[] {
     const win = text.slice(Math.max(0, at - WINDOW), at + raw.length + WINDOW);
     // Our own template quoted back is not the funder telling us anything.
     if (isOwnTemplate(win)) continue;
+    // Nor is their mail gateway's anti-phishing banner.
+    if (isSecurityBanner(win)) continue;
     if (!DESTINATION_PREP.test(text.slice(Math.max(0, at - 60), at))) continue;
     const verbs = hits(win, SEND_VERB);
     const subjects = hits(win, SUBJECT_OF_SUBMISSION);
     if (verbs.length === 0 || subjects.length === 0) continue;
 
-    const standing = hits(win, STANDING_CUE);
+    const standing = [...hits(win, STANDING_CUE), ...hits(win, GENERIC_PLURAL_OBJECT)];
     // Quote the sentence the address actually sits in — a window cut mid-word
     // is evidence a human can't read, and the whole point of the row is that a
     // human reads the funder's own line before changing anything.
@@ -365,7 +425,12 @@ export function detectDirectives(body: string): DetectedDirective[] {
       routingLabels.has("going forward") || routingLabels.has("from now on") ||
       routingLabels.has("all new") || routingLabels.has("update your records") ||
       routingLabels.has("new email") || routingLabels.has("in the future") ||
-      routingLabels.has("future submissions") || retired !== null;
+      routingLabels.has("future submissions") ||
+      // A generic plural object is standing on its own — no adverb of time
+      // required. See GENERIC_PLURAL_OBJECT: two of Instagreen's three requests
+      // had no temporal cue and were dropped for three months.
+      GENERIC_PLURAL_OBJECT.some(([label]) => routingLabels.has(label)) ||
+      retired !== null;
     if (isStanding && (newEmail || retired || ambiguousSide)) {
       out.push({
         kind: "submission_email_change",

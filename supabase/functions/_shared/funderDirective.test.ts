@@ -166,3 +166,48 @@ Deno.test("our own addresses are never proposed as a funder destination", () => 
     [],
   );
 });
+
+// ── Recall: a standing instruction needs no adverb of time ──────────────────
+
+Deno.test("Instagreen's two un-cued requests are flagged", () => {
+  // funder_replies 45843ed5 (2026-07-06) and f9a48560 (2026-08-13). Instagreen
+  // asked THREE times for submissions to go to isabel@instagreencapital.com and
+  // the detector originally caught ONE, because the other two carried no
+  // "effective immediately" / "going forward" cue — they were just standing
+  // facts about how the funder takes deals. Our recipe sent to submit@, her CC
+  // address, for three months.
+  const a = detect(
+    `Submission instructions Please send files to isabel@instagreencapital.com Cc submit@instagreencapital.com for faster processing`,
+  ).find((d) => d.kind === "submission_email_change");
+  assert(a, "a plural routing object is standing on its own");
+  assertEquals(a!.new_email, "isabel@instagreencapital.com");
+
+  const b = detect(
+    `Please send submissions directly to isabel@instagreencapital.com and CC submit@instagreencapital.com . I've also attached our current guidelines.`,
+  ).find((d) => d.kind === "submission_email_change");
+  assert(b);
+  assertEquals(b!.new_email, "isabel@instagreencapital.com");
+});
+
+Deno.test("a mail gateway's anti-phishing banner is not a submissions inbox", () => {
+  // funder_replies a659527e — Kapitus Partners, 2026-07-20. An ISO onboarding
+  // questionnaire whose security header got read as a routing instruction:
+  // "forward" was the verb, and "deals" came from the questionnaire 150
+  // characters away. It proposed cybersecurity@kapitus.com as their
+  // submissions inbox. Comment out isSecurityBanner's body and this goes red.
+  assertEquals(
+    kinds(
+      `Subject: Follow-Up: Kapitus ISO Partner Program This email originated from outside of Kapitus. If this message or attachments are unusual or unexpected in your typical business interactions please forward to cybersecurity@kapitus.com. Good afternoon, which lenders are you currently funding deals with?`,
+    ),
+    [],
+  );
+});
+
+Deno.test("a one-off singular file request still does not fire", () => {
+  // The recall widening is strict-plural on purpose. `/\bfiles?\b/` would have
+  // matched "the file" and pulled every one-deal request back into the queue.
+  assertEquals(
+    kinds(`Please send the file to me at jeffs@uplyftcapital.com so I can look at it today.`),
+    [],
+  );
+});

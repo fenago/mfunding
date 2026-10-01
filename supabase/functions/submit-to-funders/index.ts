@@ -960,8 +960,20 @@ Deno.serve(async (req) => {
     // Standing instructions resolved BEFORE the stips gate, so a funder with a
     // dead inbox still reports it even when the package is also short a doc.
     // Two separate reasons not to send must not hide each other.
-    const directives = directivesByLender.get(lenderId) ?? [];
     const directiveBlock = directiveBlockFor(lenderId, to);
+    // WARN ONLY ON WHAT IS NOT ALREADY DONE. A funder's onboarding email naming
+    // the submissions inbox we were set up from is a true directive and a
+    // useless warning — 9 of the 12 funders with a detected address instruction
+    // are in exactly that state. Warning on all of them would put a permanent
+    // amber banner on most previews, and a banner that is always there is one
+    // nobody reads: the same failure as the 'other' bucket, one layer out.
+    // Mirrors funder_directives_actionable.needs_action, computed against the
+    // destination THIS render resolved rather than a stored flag.
+    const directives = (directivesByLender.get(lenderId) ?? []).filter((d) => {
+      if (d.id === directiveBlock?.id) return false; // rendered as the block
+      if (d.kind !== "submission_email_change" || !d.new_email) return true;
+      return d.new_email.trim().toLowerCase() !== (to ?? "").trim().toLowerCase();
+    });
 
     // --- Stips guard: every required stip must be on file before we send.
     // voided_check NEVER blocks (a bank-portal screenshot satisfies it) — mirrors
