@@ -859,7 +859,14 @@ function Fold({
 // `submission_facts` absent entirely = a run from before the feature. That one
 // gets NO re-run prompt: re-running an old row is not what is wanted, and the row
 // will never have a paragraph.
-function NoParagraph({ facts }: { facts: Record<string, unknown> | null }) {
+function NoParagraph({
+  facts, nothingWasRead,
+}: {
+  facts: Record<string, unknown> | null;
+  /** The METRICS side's view of the same run. Used only to cross-check the
+   *  writer's own verdict — see the disagreement note below. */
+  nothingWasRead: boolean;
+}) {
   if (!facts) {
     return (
       <TabEmpty
@@ -872,6 +879,45 @@ function NoParagraph({ facts }: { facts: Record<string, unknown> | null }) {
   const reasons = Array.isArray(facts.writer_rejected_for)
     ? (facts.writer_rejected_for as unknown[]).filter((x): x is string => typeof x === "string")
     : [];
+
+  // ── NOTHING WAS READ ───────────────────────────────────────────────────────
+  // The most fundamental of the five, added 2026-10-01 after the same wrong-guard
+  // bug turned up on both sides of this feature in one afternoon: my earned-zero
+  // branches gated on a FAILURE COUNT, and the paragraph prompt reasoned from
+  // `documents_unreadable > 0`. Both read 0 on a run where nothing was read at
+  // all, so both would have called an unread file clean — mine on screen, theirs
+  // to a funder.
+  //
+  // It is NOT an error and NOT a compliance hold: the writer correctly declined to
+  // write anything, which is the only right answer when there is no evidence.
+  if (status === "nothing_was_read") {
+    return (
+      <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-4">
+        <div className="flex items-start gap-2">
+          <ExclamationTriangleIcon className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-bold text-red-900 dark:text-red-100">
+              No paragraph — no statement month was analysed
+            </h4>
+            <p className="text-sm text-red-800 dark:text-red-200 mt-1">
+              The writer <span className="font-semibold">refused to write one</span>, which is correct: there is
+              no evidence to describe. Nothing on this run is a finding. Fix the documents and re-run before
+              putting this file in front of a funder.
+            </p>
+            {/* The two sides of the same run, cross-checked. They agree by
+                construction, so a disagreement means one of them is wrong about
+                this file — the same discipline as the per-payer monthly sum. */}
+            {!nothingWasRead && (
+              <p className="mt-2 text-[11px] font-bold text-amber-700 dark:text-amber-300">
+                ⚠ The writer reports nothing was read, but this run records analysed statement months. The two
+                disagree about the same file — treat both as unverified and tell an engineer.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (status === "rejected_compliance") {
     return (
@@ -2112,7 +2158,7 @@ function ResultView({
               </p>
             </div>
           ) : (
-            <NoParagraph facts={r.submission_facts} />
+            <NoParagraph facts={r.submission_facts} nothingWasRead={nothingWasRead} />
           )}
 
           {/* The checkable half. The paragraph above is model-written prose about to
