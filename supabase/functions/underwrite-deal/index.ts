@@ -2786,6 +2786,75 @@ Deno.serve(async (req) => {
       };
     })();
 
+    // ── QUESTIONABLE REVENUE GROUPED BY PAYER (additive) ───────────────────────
+    // `questionable_revenue_by_source` keys on the raw descriptor, which splits ONE
+    // payer across several lines: on MF-2026-0013 "YOUR HEALTH QUOT" ($23,249),
+    // "YOUR HEALTH QUOT (YOUR HEALTH QUOTE)" ($7,469) and "YOUR HEALTH QUOTES
+    // (THIRD-PARTY PAYROLL ACH)" ($29,405) are one payer. Read as three sources that
+    // UNDERSTATES concentration, and concentration is the only reason anyone opens
+    // this list — a funder stripping "YOUR HEALTH QUOTES" strips all $60,123, not
+    // $29,405.
+    //
+    // The raw descriptors are NEVER discarded. Eye-matching them against the statement
+    // is what the list is for, so each payer carries its own variants alongside the
+    // grouped total; the UI groups on payer_key and still prints the raw text.
+    //
+    // UNITS ARE EXPLICIT because the old shape made them guessable and someone guessed
+    // wrong: `by_source` values are TOTALS over the months read while
+    // `questionable_revenue_monthly` is a monthly average, and stacking the two reads
+    // as one unit. `monthly` is divided HERE rather than in the UI so the basis cannot
+    // drift from the divisor — if months_covered ever changes meaning, this moves with
+    // it instead of a view silently keeping the old arithmetic.
+    const questionableByPayer = (() => {
+      // Parentheticals and punctuation are variant noise, not identity.
+      const keyOf = (raw: string): string =>
+        raw.replace(/\([^)]*\)/g, " ").replace(/[^A-Za-z0-9 ]+/g, " ")
+          .toUpperCase().replace(/\s+/g, " ").trim();
+      type Grp = {
+        payer_key: string; label: string; total: number;
+        descriptors: Array<{ descriptor: string; total: number }>;
+      };
+      const groups: Grp[] = [];
+      // Longest key first so a short variant merges INTO the fuller label, keeping the
+      // most informative name as the label rather than the most truncated one.
+      const entries = Object.entries(questionableBySource)
+        .map(([descriptor, total]) => ({ descriptor, total: round2(total), key: keyOf(descriptor) }))
+        .sort((a, b) => b.key.length - a.key.length);
+      for (const e of entries) {
+        // Merge only on a prefix of >= 8 characters. A short prefix over-merges
+        // ("AMERICAN" would swallow both AMERICAN EXPRESS and AMERICAN NATIONAL), and
+        // over-merging INFLATES apparent concentration — the opposite error and just as
+        // misleading. When in doubt the groups stay apart; the descriptors list makes
+        // any merge auditable either way.
+        const host = groups.find((g) => {
+          if (g.payer_key === e.key) return true;
+          const [short, long] = g.payer_key.length <= e.key.length
+            ? [g.payer_key, e.key] : [e.key, g.payer_key];
+          return short.length >= 8 && long.startsWith(short);
+        });
+        if (host) {
+          host.total = round2(host.total + e.total);
+          host.descriptors.push({ descriptor: e.descriptor, total: e.total });
+        } else {
+          groups.push({
+            payer_key: e.key || "UNATTRIBUTED",
+            label: e.descriptor,
+            total: e.total,
+            descriptors: [{ descriptor: e.descriptor, total: e.total }],
+          });
+        }
+      }
+      const basis = monthsCovered > 0 ? monthsCovered : null;
+      return groups
+        .map((g) => ({
+          ...g,
+          // null, never 0, when there is no basis to divide by — a monthly figure we
+          // cannot compute must not render as "$0/mo".
+          monthly: basis ? round2(g.total / basis) : null,
+        }))
+        .sort((a, b) => b.total - a.total);
+    })();
+
     const metrics = {
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
@@ -2815,6 +2884,13 @@ Deno.serve(async (req) => {
       questionable_revenue_by_source: Object.fromEntries(
         Object.entries(questionableBySource).map(([k, v]) => [k, round2(v)]),
       ),
+      // Values in `questionable_revenue_by_source` above are TOTALS over the months
+      // read, NOT monthly. Stated explicitly because it was guessed wrong once.
+      questionable_revenue_by_source_basis: "total_over_months_read",
+      questionable_revenue_basis_months: monthsCovered,
+      // Same money grouped by payer, raw descriptors kept, per-payer monthly computed
+      // from the basis above. See questionableByPayer.
+      questionable_revenue_by_payer: questionableByPayer,
       conservative_avg_monthly_revenue: conservativeAvgMonthlyRevenue,
       conservative_max_affordable_advance: conservativeMaxAffordableAdvance,
       net_retained_by_month: effPerMonthNet.map(round2),
