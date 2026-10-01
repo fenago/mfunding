@@ -1855,11 +1855,34 @@ Deno.serve(async (req) => {
         const cadence = funderCadence(fk);
         const maxCount = Math.max(...poss.map((p) => p.count));
         for (const pos of poss) {
-          const recurring = pos.count >= 2 || maxCount === 1;
+          // ── WHAT COUNTS AS A POSITION ────────────────────────────────────────
+          // Seen 2+ times in the month: unambiguously recurring.
+          //
+          // Seen ONCE: only a position when it is the funder's ONLY tranche, which
+          // is the real monthly-advance shape (one amount, once a month). The
+          // `maxCount === 1` allowance used to apply however many tranches a funder
+          // had, and that is what put three phantom advances on Spirit Drilling:
+          // "Intuit Financing" appeared as $942.18, $553.51 and $174.82, each ONCE,
+          // and all three were promoted to open advance positions totalling
+          // $334.10/day — a figure we then asserted to a funder holding the same
+          // statements. One funder, three different amounts, each once, is not three
+          // monthly advances; it is several different charges, which is exactly what
+          // Intuit looks like on a business statement (subscription, payroll fees,
+          // processing) and Intuit's financing arm writes TERM LOANS, not advances.
+          //
+          // A genuine weekly advance appears ~4x a month and a daily one ~20x, so
+          // neither is affected. Measured across the latest run of all 13 deals
+          // before changing this: exactly ONE funder matched multi-tranche-all-seen-
+          // once (this Intuit), accounting for exactly 3 of 51 positions and exactly
+          // $334.10/day, while 9 single-tranche-seen-once funders — the real monthly
+          // advances — are untouched. The blast radius is one deal by construction.
+          const recurring = pos.count >= 2 || (maxCount === 1 && poss.length === 1);
           if (!recurring) {
             positionAnomalies.push({
               funder: pos.funderDisplay, class: klass, amount: round2(pos.amount),
-              note: `single ${money(pos.amount)} debit in ${latestMonthLabel} beside ${pos.funderDisplay}'s recurring ${cadence} stream — a one-off charge or a stepped-up/catch-up payment, not a separate position`,
+              note: poss.length > 1 && maxCount === 1
+                ? `${money(pos.amount)} debit seen ONCE in ${latestMonthLabel}, one of ${poss.length} different ${pos.funderDisplay} amounts that each appear once — several distinct charges from one counterparty, NOT ${poss.length} monthly advances. Holder and nature unconfirmed: excluded from the position count and the remittance burden. Confirm with a payoff letter or contract before treating any of it as an advance.`
+                : `single ${money(pos.amount)} debit in ${latestMonthLabel} beside ${pos.funderDisplay}'s recurring ${cadence} stream — a one-off charge or a stepped-up/catch-up payment, not a separate position`,
             });
             continue;
           }
