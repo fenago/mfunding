@@ -540,9 +540,25 @@ function FunderCard({
   const catalogSub = clean(l.submission_email);
 
   // Every dialable line anywhere on the record, for the collapsed header.
-  const headerPhones = Array.from(
-    new Set([...primaryPhones, ...people.flatMap((p) => extractPhones(p.phone))]),
-  ).slice(0, 3);
+  //
+  // DEDUPE BY DIGITS, NOT BY THE FORMATTED STRING. The same line is written
+  // differently in different columns — Highland Hill's is "954-280-0359" on the
+  // lender row and "(954) 280-0359" inside `contacts` — so a Set of the raw
+  // strings kept BOTH. That shipped two buttons for one number, and because the
+  // "is this line flagged dead" test was also a string comparison, the second
+  // copy rendered as a healthy green Call for a line we know does not connect.
+  // Both halves of that bug are the same mistake, so both are keyed on digits.
+  const digitsOf = (n: string) => n.replace(/\D/g, "");
+  const warnDigits = new Set(primaryWarn ? primaryPhones.map(digitsOf) : []);
+  const headerPhones: { shown: string; warn: boolean }[] = [];
+  const seenDigits = new Set<string>();
+  for (const n of [...primaryPhones, ...people.flatMap((p) => extractPhones(p.phone))]) {
+    const d = digitsOf(n);
+    if (seenDigits.has(d)) continue;
+    seenDigits.add(d);
+    headerPhones.push({ shown: n, warn: warnDigits.has(d) });
+    if (headerPhones.length === 3) break;
+  }
   const headerEmail = primaryEmail ?? clean(people.find((p) => clean(p.email))?.email ?? null);
 
   const rels = relsOf(l);
@@ -586,8 +602,8 @@ function FunderCard({
 
         <span className="flex flex-wrap items-center gap-[6px] ml-auto">
           {headerPhones.length === 0 && <span className={NONE}>No phone on file</span>}
-          {headerPhones.map((n) => (
-            <CallButton key={n} number={n} warn={!!primaryWarn && primaryPhones.includes(n)} />
+          {headerPhones.map((h) => (
+            <CallButton key={h.shown} number={h.shown} warn={h.warn} />
           ))}
           {headerEmail && <MailButton email={headerEmail} />}
         </span>
