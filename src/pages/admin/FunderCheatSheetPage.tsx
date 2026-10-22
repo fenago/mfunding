@@ -18,6 +18,7 @@ import {
   progKey,
 } from "@/lib/funderDisclosure";
 import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
+import { FunderContactDirectory } from "@/components/admin/funder/FunderContactDirectory";
 import { LinkLine, Quoted } from "@/components/admin/funder/parts";
 import { FunderProgramBox } from "@/components/admin/funder/FunderProgramBox";
 import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
@@ -311,12 +312,19 @@ const matchesPositions = (l: LenderRow, f: PosFilter): boolean => {
 //     loan. Term loans, lines of credit, SBA and equipment financing ARE credit,
 //     so they use ordinary lending language. Neither vocabulary leaks.
 type ProductId = "mca" | "term_loan" | "line_of_credit" | "sba" | "equipment";
-const PRODUCT_TABS: { v: ProductId; label: string }[] = [
+// The contact directory is a tab on this page but it is NOT a product, and it
+// must never be treated as one: PRODUCT_SPEC, TAB_PRODUCT and ProductTabView
+// are all keyed by ProductId and would blow up or — worse — silently render an
+// MCA box under a non-product heading. So it rides alongside as its own id and
+// every product lookup keeps narrowing back to ProductId.
+type TabId = ProductId | "contacts";
+const PRODUCT_TABS: { v: TabId; label: string }[] = [
   { v: "mca", label: "MCA" },
   { v: "term_loan", label: "Term Loan" },
   { v: "line_of_credit", label: "Line of Credit" },
   { v: "sba", label: "SBA" },
   { v: "equipment", label: "Equipment" },
+  { v: "contacts", label: "Funder Contact" },
 ];
 // Tab id → the canonical product spelling used by `category->'products'`,
 // `deals.products_interested` and `lender_programs.product_type`. The tab ids
@@ -896,7 +904,7 @@ export default function FunderCheatSheetPage() {
   const [paper, setPaper] = useState<(typeof PAPER_FILTERS)[number]>("all");
   const [bucket, setBucket] = useState<"all" | BucketId>("all");
   const [positions, setPositions] = useState<PosFilter>("all");
-  const [tab, setTab] = useState<ProductId>("mca");
+  const [tab, setTab] = useState<TabId>("mca");
   const [prod, setProd] = useState<ProductData>({ state: "idle", rows: [], error: null });
   // Submission recipes — the "where the deal goes" half of every contact block.
   // Shared by the MCA cards and the credit tabs; merged as each tab loads.
@@ -1103,6 +1111,11 @@ export default function FunderCheatSheetPage() {
               today — your <b>{loading ? "…" : `${lenders.length}`} live vendors</b> plus{" "}
               <b>active referral partners</b>.
             </p>
+          ) : tab === "contacts" ? (
+            <p>
+              Every funder we are <b>live</b> with or have an <b>ISO application</b> in with, and every way to reach
+              them — names, direct lines, department inboxes, portals. <b>Tap a number to call it.</b>
+            </p>
           ) : (
             <p>
               The merchant doesn't want an advance. Here's who does{" "}
@@ -1127,7 +1140,9 @@ export default function FunderCheatSheetPage() {
           ))}
         </div>
 
-        {tab !== "mca" && (
+        {tab === "contacts" && <FunderContactDirectory />}
+
+        {tab !== "mca" && tab !== "contacts" && (
           <ProductTabView
             product={tab as Exclude<ProductId, "mca">}
             data={prod}
