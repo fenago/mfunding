@@ -37,6 +37,7 @@ import {
   telHref,
 } from "@/lib/funderDisclosure";
 import { CopyMini, Quoted } from "./parts";
+import { mustWrite } from "@/supabase/writes";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,17 @@ type WebRow = {
   source_url: string;
   found_at: string;
   verified_at: string | null;
+};
+
+// A note somebody on the team added after actually working this funder.
+type NoteRow = {
+  id: string;
+  lender_id: string;
+  body: string;
+  about_person: string | null;
+  created_by: string;
+  created_by_label: string | null;
+  created_at: string;
 };
 
 // Loaded / empty / failed — the only three states any read on this page ends
@@ -225,18 +237,31 @@ const NONE = `text-[12px] ${INK_FAINT} italic`;
 
 // The call button. Green, big enough for a thumb, and it is an <a href="tel:">
 // so it works from a phone and from a softphone on the desktop.
+//
+// ⚠ EVERY COLOUR ON THESE THREE BUTTONS CARRIES `!`, AND IT IS LOAD-BEARING.
+// This component mounts inside the cheat sheet's `.fcs` wrapper, whose
+// stylesheet contains the bare element rule `.fcs a{color:var(--accent-ink)}`.
+// That selector scores (0,1,1); a Tailwind utility like `text-white` scores
+// (0,1,0) and LOSES. The first version of this tab shipped with white-on-green
+// in the source and dark-green-on-green on the screen — tsc passed, the build
+// was green, and a grep of the bundle for `text-white` found it present. The
+// only thing that caught it was a human looking at the page.
+//
+// So: never express a colour on an <a> in here as a plain utility. The `!`
+// suffix is Tailwind v4's important modifier (v3's prefix form `!text-white`
+// does NOT compile here — check the emitted CSS, do not assume).
 const CALL =
   "inline-flex items-center gap-[5px] text-[12px] font-extrabold tracking-[0.02em] rounded-[7px] px-[10px] py-[5px] no-underline " +
-  "bg-[#1f8a5b] text-white hover:bg-[#176f49] " +
-  "dark:bg-[#54c68d] dark:text-[#08131c] dark:hover:bg-[#3fb77c] " +
+  "bg-[#157049] text-white! hover:bg-[#0f5536] " +
+  "dark:bg-[#54c68d] dark:text-[#08131c]! dark:hover:bg-[#3fb77c] " +
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c08a2d]";
 const CALL_WARN =
   "inline-flex items-center gap-[5px] text-[12px] font-extrabold tracking-[0.02em] rounded-[7px] px-[10px] py-[5px] no-underline " +
-  "bg-[#faf1dd] dark:bg-[#2c2413] text-[#b7791f] dark:text-[#dcab55] border border-[#b7791f] dark:border-[#dcab55] " +
+  "bg-[#faf1dd] dark:bg-[#2c2413] text-[#8a5a12]! dark:text-[#dcab55]! border border-[#b7791f] dark:border-[#dcab55] " +
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c08a2d]";
 const MAILBTN =
   "inline-flex items-center gap-[5px] text-[12px] font-bold rounded-[7px] px-[10px] py-[5px] no-underline " +
-  "bg-[#e7f0f9] dark:bg-[#122238] text-[#2f6fb0] dark:text-[#6aa6e0] hover:bg-[#d7e6f5] dark:hover:bg-[#182f4a] " +
+  "bg-[#e7f0f9] dark:bg-[#122238] text-[#1d4f85]! dark:text-[#6aa6e0]! hover:bg-[#d7e6f5] dark:hover:bg-[#182f4a] " +
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c08a2d]";
 
 // A call button plus the verbatim label it was extracted from.
@@ -306,12 +331,178 @@ function PersonRow({ p }: { p: ContactPerson & { note?: string | null; role?: st
   );
 }
 
+
+// ── Team notes ───────────────────────────────────────────────────────────────
+// What the person who actually rang the number found out. An append-only log,
+// not a shared textarea — see the migration comment for why.
+function TeamNotes({
+  lenderId,
+  notes,
+  readable,
+  me,
+  onAdded,
+  onDeleted,
+}: {
+  lenderId: string;
+  notes: NoteRow[];
+  readable: boolean;
+  me: { id: string; label: string } | null;
+  onAdded: (n: NoteRow) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const [body, setBody] = useState("");
+  const [about, setAbout] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    const text = body.trim();
+    if (text === "" || !me) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      // mustWrite, not a bare insert: supabase-js RETURNS errors rather than
+      // throwing, and an RLS-blocked write comes back as success with zero
+      // rows. A note that silently vanished would be worse than no notes at
+      // all — the author would believe the team had been told.
+      const rows = await mustWrite<NoteRow>(
+        "Add funder note",
+        supabase.from("funder_contact_notes").insert({
+          lender_id: lenderId,
+          body: text,
+          about_person: about.trim() === "" ? null : about.trim(),
+          created_by: me.id,
+          created_by_label: me.label,
+        }),
+      );
+      onAdded(rows[0]);
+      setBody("");
+      setAbout("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(id: string) {
+    try {
+      await mustWrite("Delete funder note", supabase.from("funder_contact_notes").delete().eq("id", id));
+      onDeleted(id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const FIELD =
+    `font-[inherit] text-[12.5px] ${INK} bg-white dark:bg-[#0e1a26] border ${LINE} rounded-[8px] px-[10px] py-[7px] w-full ` +
+    "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#c08a2d]";
+
+  return (
+    <div>
+      <div className={KEY}>What we have learned — team notes ({notes.length})</div>
+
+      {!readable ? (
+        <div className="text-[12px] font-bold text-[#b7791f] dark:text-[#dcab55]">
+          Team notes could not be read by your account. UNKNOWN, not empty.
+        </div>
+      ) : notes.length === 0 ? (
+        <div className={NONE}>Nothing added yet.</div>
+      ) : (
+        <div className="flex flex-col gap-[7px] mb-[10px]">
+          {notes.map((n) => (
+            <div
+              key={n.id}
+              className={`border-l-2 border-[#1f8a5b] dark:border-[#54c68d] pl-[10px] flex flex-col gap-[2px]`}
+            >
+              {clean(n.about_person) && (
+                <div className={`text-[11.5px] font-bold ${INK}`}>About: {clean(n.about_person)}</div>
+              )}
+              <div className={`text-[12.5px] ${INK} leading-[1.5] whitespace-pre-wrap`}>{n.body}</div>
+              <div className={`text-[10.5px] ${INK_FAINT} flex flex-wrap items-center gap-[8px]`}>
+                <span>
+                  {clean(n.created_by_label) ?? "author not recorded"} ·{" "}
+                  {new Date(n.created_at).toLocaleString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                {me?.id === n.created_by && (
+                  <button
+                    type="button"
+                    className={`font-[inherit] text-[10.5px] font-bold ${INK_FAINT} bg-transparent border-0 p-0 underline cursor-pointer`}
+                    onClick={() => void remove(n.id)}
+                  >
+                    delete
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {me ? (
+        <div className="flex flex-col gap-[6px] mt-[8px]">
+          <input
+            className={FIELD}
+            value={about}
+            onChange={(e) => setAbout(e.target.value)}
+            placeholder="Who is this about? (optional — e.g. Charles, or the submissions inbox)"
+            aria-label="Who this note is about"
+          />
+          <textarea
+            className={FIELD}
+            rows={2}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="What did you learn? e.g. 'Sean's line is dead — ask for Charles, he picks up after 3pm ET.'"
+            aria-label="Note"
+          />
+          <div className="flex flex-wrap items-center gap-[8px]">
+            <button
+              type="button"
+              disabled={saving || body.trim() === ""}
+              onClick={() => void save()}
+              className={
+                "font-[inherit] text-[12px] font-extrabold rounded-[7px] px-[12px] py-[6px] cursor-pointer border-0 " +
+                "bg-[#157049] text-white hover:bg-[#0f5536] disabled:opacity-40 disabled:cursor-not-allowed " +
+                "dark:bg-[#54c68d] dark:text-[#08131c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c08a2d]"
+              }
+            >
+              {saving ? "Saving…" : "Add note"}
+            </button>
+            <span className={`text-[11px] ${INK_FAINT}`}>
+              Saved against your name and visible to the whole team.
+            </span>
+          </div>
+          {err && (
+            <div className="text-[12px] font-bold text-[#c0433d] dark:text-[#e57b74]">
+              The note was NOT saved — {err}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className={NONE}>Sign-in not resolved, so there is nowhere to attribute a note. Reload the page.</div>
+      )}
+    </div>
+  );
+}
+
 // ── One funder, collapsed or open ────────────────────────────────────────────
 
 function FunderCard({
   l,
   web,
   webReadable,
+  notes,
+  notesReadable,
+  me,
+  onNoteAdded,
+  onNoteDeleted,
   profiles,
   open,
   onToggle,
@@ -319,6 +510,11 @@ function FunderCard({
   l: DirRow;
   web: WebRow[];
   webReadable: boolean;
+  notes: NoteRow[];
+  notesReadable: boolean;
+  me: { id: string; label: string } | null;
+  onNoteAdded: (n: NoteRow) => void;
+  onNoteDeleted: (id: string) => void;
   profiles: ProfileState;
   open: boolean;
   onToggle: () => void;
@@ -382,6 +578,12 @@ function FunderCard({
 
         {/* Call / email without opening the card. This is the whole point of
             the tab: the processor should not have to expand anything to dial. */}
+        {notes.length > 0 && (
+          <span className={CHIP_NEUTRAL} title={`${notes.length} team note${notes.length === 1 ? "" : "s"}`}>
+            📝 {notes.length}
+          </span>
+        )}
+
         <span className="flex flex-wrap items-center gap-[6px] ml-auto">
           {headerPhones.length === 0 && <span className={NONE}>No phone on file</span>}
           {headerPhones.map((n) => (
@@ -447,6 +649,15 @@ function FunderCard({
             )}
           </div>
 
+          <TeamNotes
+            lenderId={l.id}
+            notes={notes}
+            readable={notesReadable}
+            me={me}
+            onAdded={onNoteAdded}
+            onDeleted={onNoteDeleted}
+          />
+
           {/* Everyone else */}
           <div>
             <div className={KEY}>Other people on file ({others.length})</div>
@@ -510,7 +721,7 @@ function FunderCard({
                   <div className="flex flex-wrap items-baseline gap-[6px]">
                     <span className={`text-[11.5px] ${INK_FAINT} min-w-[62px]`}>Portal</span>
                     <a
-                      className="text-[12.5px] text-[#2f6fb0] dark:text-[#6aa6e0] break-all"
+                      className="text-[12.5px] text-[#1d4f85]! dark:text-[#6aa6e0]! break-all"
                       href={subPortal}
                       target="_blank"
                       rel="noreferrer"
@@ -558,7 +769,7 @@ function FunderCard({
                         ))}
                         {clean(w.url) && (
                           <a
-                            className="text-[12px] text-[#2f6fb0] dark:text-[#6aa6e0] break-all"
+                            className="text-[12px] text-[#1d4f85]! dark:text-[#6aa6e0]! break-all"
                             href={clean(w.url) as string}
                             target="_blank"
                             rel="noreferrer"
@@ -571,7 +782,7 @@ function FunderCard({
                         <div className={`text-[11.5px] ${INK_SOFT} leading-[1.45]`}>{clean(w.note)}</div>
                       )}
                       <a
-                        className={`text-[10.5px] ${INK_FAINT} underline break-all`}
+                        className="text-[10.5px] text-[#6b7d92]! dark:text-[#7d8ea0]! underline break-all"
                         href={w.source_url}
                         target="_blank"
                         rel="noreferrer"
@@ -591,7 +802,7 @@ function FunderCard({
               <span className={`text-[11.5px] ${INK_FAINT} min-w-[62px]`}>Website</span>
               {site ? (
                 <a
-                  className="text-[12.5px] text-[#2f6fb0] dark:text-[#6aa6e0] break-all"
+                  className="text-[12.5px] text-[#1d4f85]! dark:text-[#6aa6e0]! break-all"
                   href={site}
                   target="_blank"
                   rel="noreferrer"
@@ -619,6 +830,10 @@ type GapFilter = "all" | "no_phone" | "no_email" | "no_person";
 export function FunderContactDirectory() {
   const [rows, setRows] = useState<Load<DirRow[]>>({ s: "loading" });
   const [web, setWeb] = useState<Load<WebRow[]>>({ s: "loading" });
+  const [notes, setNotes] = useState<Load<NoteRow[]>>({ s: "loading" });
+  // Who is writing. Resolved once; a note cannot be attributed without it, and
+  // the insert policy checks created_by = auth.uid() server-side anyway.
+  const [me, setMe] = useState<{ id: string; label: string } | null>(null);
   const [profiles, setProfiles] = useState<ProfileState>({
     map: {},
     readable: true,
@@ -627,7 +842,11 @@ export function FunderContactDirectory() {
   });
 
   const [q, setQ] = useState("");
-  const [statusF, setStatusF] = useState<StatusFilter>("all");
+  // Defaults to LIVE. The funders you can actually submit to today are the ones
+  // anyone opening this tab needs first; the 47 with an application pending are
+  // a research list. The count line below always names the full population so
+  // the default never reads as "that's all there is".
+  const [statusF, setStatusF] = useState<StatusFilter>("live_vendor");
   const [relF, setRelF] = useState<string>("all");
   const [prodF, setProdF] = useState<string>("all");
   const [gapF, setGapF] = useState<GapFilter>("all");
@@ -662,20 +881,43 @@ export function FunderContactDirectory() {
         if (!cancelled) setProfiles(p);
 
         if (ids.length === 0) {
-          if (!cancelled) setWeb({ s: "ok", v: [] });
+          if (!cancelled) {
+            setWeb({ s: "ok", v: [] });
+            setNotes({ s: "ok", v: [] });
+          }
           return;
         }
-        const { data: wdata, error: werr } = await supabase
-          .from("funder_web_contacts")
-          .select("id, lender_id, kind, name, title, email, phone, url, note, source_url, found_at, verified_at")
-          .in("lender_id", ids)
-          .order("found_at", { ascending: false });
+        const [{ data: wdata, error: werr }, { data: ndata, error: nerr }, { data: auth }] = await Promise.all([
+          supabase
+            .from("funder_web_contacts")
+            .select("id, lender_id, kind, name, title, email, phone, url, note, source_url, found_at, verified_at")
+            .in("lender_id", ids)
+            .order("found_at", { ascending: false }),
+          supabase
+            .from("funder_contact_notes")
+            .select("id, lender_id, body, about_person, created_by, created_by_label, created_at")
+            .in("lender_id", ids)
+            .order("created_at", { ascending: false }),
+          supabase.auth.getUser(),
+        ]);
         if (cancelled) return;
-        if (werr) {
-          setWeb({ s: "fail", why: `Web-sourced contacts could not be read — ${werr.message}.` });
-          return;
+
+        setWeb(
+          werr
+            ? { s: "fail", why: `Web-sourced contacts could not be read — ${werr.message}.` }
+            : { s: "ok", v: (wdata ?? []) as WebRow[] },
+        );
+        setNotes(
+          nerr
+            ? { s: "fail", why: `Team notes could not be read — ${nerr.message}.` }
+            : { s: "ok", v: (ndata ?? []) as NoteRow[] },
+        );
+
+        const u = auth?.user;
+        if (u) {
+          const meta = (u.user_metadata ?? {}) as { full_name?: string; name?: string };
+          setMe({ id: u.id, label: meta.full_name ?? meta.name ?? u.email ?? "unknown" });
         }
-        setWeb({ s: "ok", v: (wdata ?? []) as WebRow[] });
       } catch (e) {
         if (cancelled) return;
         const why = e instanceof Error ? e.message : String(e);
@@ -683,6 +925,7 @@ export function FunderContactDirectory() {
           prev.s === "ok" ? prev : { s: "fail", why: `Could not read the funder catalog — ${why}.` },
         );
         setWeb((prev) => (prev.s === "ok" ? prev : { s: "fail", why: `Web-sourced contacts could not be read — ${why}.` }));
+        setNotes((prev) => (prev.s === "ok" ? prev : { s: "fail", why: `Team notes could not be read — ${why}.` }));
       }
     })();
     return () => {
@@ -699,6 +942,13 @@ export function FunderContactDirectory() {
     for (const w of web.v) (m[w.lender_id] ??= []).push(w);
     return m;
   }, [web]);
+
+  const notesByLender = useMemo(() => {
+    const m: Record<string, NoteRow[]> = {};
+    if (notes.s !== "ok") return m;
+    for (const n of notes.v) (m[n.lender_id] ??= []).push(n);
+    return m;
+  }, [notes]);
 
   // Filter options come from the DATA, not a hand-kept list, so a new
   // relationship or product spelling appears here the day it lands in the DB
@@ -721,15 +971,17 @@ export function FunderContactDirectory() {
     () =>
       list.map((l) => {
         const w = webByLender[l.id] ?? [];
+        const n = notesByLender[l.id] ?? [];
         const people = Array.isArray(l.contacts) ? l.contacts : [];
         const anyPhone =
           extractPhones(l.primary_contact_phone).length > 0 ||
           people.some((p) => extractPhones(p.phone).length > 0);
         const anyEmail = !!clean(l.primary_contact_email) || people.some((p) => clean(p.email));
         const anyPerson = !!clean(l.primary_contact_name) || people.some((p) => clean(p.name));
-        return { l, w, hay: haystack(l, w), anyPhone, anyEmail, anyPerson };
+        const noteText = n.map((x) => `${x.about_person ?? ""} ${x.body}`).join(" ").toLowerCase();
+        return { l, w, n, hay: `${haystack(l, w)} ${noteText}`, anyPhone, anyEmail, anyPerson };
       }),
-    [list, webByLender],
+    [list, webByLender, notesByLender],
   );
 
   const shown = useMemo(() => {
@@ -760,9 +1012,10 @@ export function FunderContactDirectory() {
         </h2>
         <p className={`text-[13px] ${INK_SOFT} leading-[1.55] mt-[6px] mb-0 max-w-[88ch]`}>
           Every funder we are live with or have an ISO application in with, and every way to reach them. Tap a number
-          to call it. Each card shows what we have <b>recorded</b>, kept separate from what a research pass{" "}
-          <b>found on the web</b> — the second kind is unverified and prints the page it came from, because a
-          plausible wrong number costs more than a gap.
+          to call it. Each card keeps three things apart: what we have <b>recorded</b>, what a research pass{" "}
+          <b>found on the web</b> (unverified, and it prints the page it came from, because a plausible wrong number
+          costs more than a gap), and <b>team notes</b> — what you learned on the phone. Add a note on any card and
+          the whole team sees it. Showing <b>live funders</b> by default; switch Status to see the rest.
         </p>
       </div>
 
@@ -836,19 +1089,19 @@ export function FunderContactDirectory() {
           {allOpen ? "Collapse all" : "Expand all"}
         </button>
 
-        {(q !== "" || statusF !== "all" || relF !== "all" || prodF !== "all" || gapF !== "all") && (
+        {(q !== "" || statusF !== "live_vendor" || relF !== "all" || prodF !== "all" || gapF !== "all") && (
           <button
             type="button"
             className={`font-[inherit] text-[12px] font-bold ${INK_SOFT} bg-transparent border-0 underline cursor-pointer`}
             onClick={() => {
               setQ("");
-              setStatusF("all");
+              setStatusF("live_vendor");
               setRelF("all");
               setProdF("all");
               setGapF("all");
             }}
           >
-            Clear filters
+            Reset filters
           </button>
         )}
       </div>
@@ -868,6 +1121,11 @@ export function FunderContactDirectory() {
           }
         >
           {profiles.error}
+        </div>
+      )}
+      {notes.s === "fail" && (
+        <div className="text-[12.5px] font-semibold text-[#b7791f] dark:text-[#dcab55] bg-[#faf1dd] dark:bg-[#2c2413] rounded-[8px] px-[12px] py-[9px]">
+          {notes.why}
         </div>
       )}
       {web.s === "fail" && (
@@ -912,6 +1170,15 @@ export function FunderContactDirectory() {
             l={d.l}
             web={d.w}
             webReadable={web.s !== "fail"}
+            notes={d.n}
+            notesReadable={notes.s !== "fail"}
+            me={me}
+            onNoteAdded={(n) =>
+              setNotes((prev) => (prev.s === "ok" ? { s: "ok", v: [n, ...prev.v] } : prev))
+            }
+            onNoteDeleted={(id) =>
+              setNotes((prev) => (prev.s === "ok" ? { s: "ok", v: prev.v.filter((x) => x.id !== id) } : prev))
+            }
             profiles={profiles}
             open={open.has(d.l.id)}
             onToggle={() =>
