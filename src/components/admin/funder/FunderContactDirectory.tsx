@@ -38,6 +38,27 @@ import {
 } from "@/lib/funderDisclosure";
 import { CopyMini, Quoted } from "./parts";
 import { mustWrite } from "@/supabase/writes";
+import {
+  CHIP_LIVE,
+  CHIP_NEUTRAL,
+  CHIP_WARN,
+  INK,
+  INK_FAINT,
+  INK_SOFT,
+  KEY,
+  LINE,
+  NONE,
+} from "./ink";
+import { FunderValidation } from "./FunderValidation";
+import {
+  type Endpoint,
+  type EndpointVerification,
+  type ValItem,
+  type ValPass,
+  digitsOf,
+  latestVerdictByEndpoint,
+  validationStale,
+} from "./validationUtil";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -223,17 +244,9 @@ const haystack = (l: DirRow, web: WebRow[]): string => {
   return `${text} ${text.replace(/\D/g, " ")}`.toLowerCase();
 };
 
-// ── Styling tokens (self-contained — see tw.ts for why) ──────────────────────
-const INK = "text-[#0f2942] dark:text-[#e8eef5]";
-const INK_SOFT = "text-[#40546b] dark:text-[#a9b8c8]";
-const INK_FAINT = "text-[#6b7d92] dark:text-[#7d8ea0]";
-const LINE = "border-[#dfe6ee] dark:border-[#23303f]";
-const CHIP = "text-[10.5px] font-bold rounded-[5px] px-[7px] py-[2px] whitespace-nowrap";
-const CHIP_NEUTRAL = `${CHIP} bg-[#eef2f7] dark:bg-[#1b2836] text-[#42566c] dark:text-[#a9b8c8]`;
-const CHIP_LIVE = `${CHIP} bg-[#e6f4ec] dark:bg-[#123024] text-[#1f8a5b] dark:text-[#54c68d]`;
-const CHIP_WARN = `${CHIP} bg-[#faf1dd] dark:bg-[#2c2413] text-[#b7791f] dark:text-[#dcab55]`;
-const KEY = `text-[9.5px] font-extrabold tracking-[0.09em] uppercase ${INK_FAINT} mb-[4px]`;
-const NONE = `text-[12px] ${INK_FAINT} italic`;
+// Styling tokens now live in ./ink so the validation and credential panels
+// share one copy. Two copies of a colour scale drift — one gets darkened for
+// contrast and the other does not.
 
 // The call button. Green, big enough for a thumb, and it is an <a href="tel:">
 // so it works from a phone and from a softphone on the desktop.
@@ -265,12 +278,17 @@ const MAILBTN =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c08a2d]";
 
 // A call button plus the verbatim label it was extracted from.
-function CallButton({ number, warn }: { number: string; warn: boolean }) {
+// `trouble` is the REASON this line is suspect, not a boolean, because the two
+// sources say different things: prose on the funder record, or a setter who
+// dialled it during a validation pass and reported back. A processor deciding
+// whether to try anyway needs to know which.
+function CallButton({ number, trouble }: { number: string; trouble: string | null }) {
+  const warn = trouble !== null;
   return (
     <a
       className={warn ? CALL_WARN : CALL}
       href={telHref(number)}
-      title={warn ? `${number} — flagged on the funder record as not connecting` : `Call ${number}`}
+      title={warn ? `${number} — ${trouble}` : `Call ${number}`}
     >
       <span aria-hidden="true">{warn ? "⚠" : "📞"}</span>
       {number}
@@ -289,7 +307,13 @@ function MailButton({ email }: { email: string }) {
 
 // One person. Name, title, and whatever of email/phone was recorded — each
 // absent field named out loud rather than left as whitespace.
-function PersonRow({ p }: { p: ContactPerson & { note?: string | null; role?: string | null } }) {
+function PersonRow({
+  p,
+  trouble,
+}: {
+  p: ContactPerson & { note?: string | null; role?: string | null };
+  trouble: (shown: string) => string | null;
+}) {
   const name = clean(p.name);
   const title = clean(p.title) ?? clean(p.role);
   const email = clean(p.email);
@@ -313,7 +337,7 @@ function PersonRow({ p }: { p: ContactPerson & { note?: string | null; role?: st
         {phones.length > 0 ? (
           phones.map((n) => (
             <span className="inline-flex items-center gap-[4px]" key={n}>
-              <CallButton number={n} warn={!!warn} />
+              <CallButton number={n} trouble={trouble(n) ?? (warn ? `flagged on the funder record: “${warn}”` : null)} />
               <CopyMini value={n} what="phone number" />
             </span>
           ))
@@ -504,6 +528,12 @@ function FunderCard({
   onNoteAdded,
   onNoteDeleted,
   profiles,
+  vitems,
+  vitemsReadable,
+  pass,
+  passReadable,
+  verdicts,
+  onPassChanged,
   open,
   onToggle,
 }: {
@@ -516,6 +546,12 @@ function FunderCard({
   onNoteAdded: (n: NoteRow) => void;
   onNoteDeleted: (id: string) => void;
   profiles: ProfileState;
+  vitems: ValItem[];
+  vitemsReadable: boolean;
+  pass: ValPass | null;
+  passReadable: boolean;
+  verdicts: Map<string, EndpointVerification>;
+  onPassChanged: (p: ValPass) => void;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -548,18 +584,53 @@ function FunderCard({
   // "is this line flagged dead" test was also a string comparison, the second
   // copy rendered as a healthy green Call for a line we know does not connect.
   // Both halves of that bug are the same mistake, so both are keyed on digits.
-  const digitsOf = (n: string) => n.replace(/\D/g, "");
   const warnDigits = new Set(primaryWarn ? primaryPhones.map(digitsOf) : []);
-  const headerPhones: { shown: string; warn: boolean }[] = [];
+
+  // Every distinct line on the record, keyed by digits. The first three go in
+  // the header; the whole set is offered to the validation panel so a setter
+  // can mark each one works/dead.
+  const allPhones: { shown: string; label: string | null }[] = [];
   const seenDigits = new Set<string>();
-  for (const n of [...primaryPhones, ...people.flatMap((p) => extractPhones(p.phone))]) {
-    const d = digitsOf(n);
-    if (seenDigits.has(d)) continue;
-    seenDigits.add(d);
-    headerPhones.push({ shown: n, warn: warnDigits.has(d) });
-    if (headerPhones.length === 3) break;
+  for (const p of [{ phone: l.primary_contact_phone, name: primaryName }, ...people.map((x) => ({ phone: x.phone, name: clean(x.name) }))]) {
+    for (const n of extractPhones(p.phone)) {
+      const d = digitsOf(n);
+      if (d === "" || seenDigits.has(d)) continue;
+      seenDigits.add(d);
+      allPhones.push({ shown: n, label: p.name ?? null });
+    }
   }
+
+  // A line is flagged amber if the funder record says so OR a setter has
+  // verified it as anything other than working. A verified verdict is newer
+  // evidence than the prose on the record, so it wins.
+  const phoneTrouble = (shown: string): string | null => {
+    const d = digitsOf(shown);
+    const v = verdicts.get(`phone:${d}`);
+    if (v && v.result !== "works") {
+      return `verified ${v.result.replace("_", " ")} on ${new Date(v.verified_at).toLocaleDateString()}`;
+    }
+    if (warnDigits.has(d)) return "flagged on the funder record as not connecting";
+    return null;
+  };
+
+  const headerPhones = allPhones.slice(0, 3).map((p) => ({ shown: p.shown, trouble: phoneTrouble(p.shown) }));
   const headerEmail = primaryEmail ?? clean(people.find((p) => clean(p.email))?.email ?? null);
+
+  const allEmails: { shown: string; label: string | null }[] = [];
+  const seenEmails = new Set<string>();
+  for (const e of [{ email: primaryEmail, name: primaryName }, ...people.map((x) => ({ email: clean(x.email), name: clean(x.name) }))]) {
+    const addr = clean(e.email);
+    if (!addr) continue;
+    const k = addr.toLowerCase();
+    if (seenEmails.has(k)) continue;
+    seenEmails.add(k);
+    allEmails.push({ shown: addr, label: e.name ?? null });
+  }
+
+  const endpoints: Endpoint[] = [
+    ...allPhones.map((p) => ({ kind: "phone" as const, shown: p.shown, label: p.label })),
+    ...allEmails.map((e) => ({ kind: "email" as const, shown: e.shown, label: e.label })),
+  ];
 
   const rels = relsOf(l);
   const live = l.status === "live_vendor";
@@ -600,10 +671,31 @@ function FunderCard({
           </span>
         )}
 
+        {/* Validation state, visible without opening the card — and the DATE,
+            because "validated" with no date is the claim that rots. */}
+        {!passReadable ? (
+          <span className={CHIP_WARN} title="The validation table could not be read by your account.">
+            Validation unknown
+          </span>
+        ) : pass?.is_complete ? (
+          <span
+            className={validationStale(pass) ? CHIP_WARN : CHIP_LIVE}
+            title={`Validated on ${pass.validated_on} by ${clean(pass.validated_by_label) ?? "someone not recorded"}`}
+          >
+            ✓ {pass.validated_on}
+          </span>
+        ) : pass ? (
+          <span className={CHIP_WARN} title="A validation pass was started but never marked complete.">
+            Validating…
+          </span>
+        ) : (
+          <span className={CHIP_NEUTRAL}>Not validated</span>
+        )}
+
         <span className="flex flex-wrap items-center gap-[6px] ml-auto">
           {headerPhones.length === 0 && <span className={NONE}>No phone on file</span>}
           {headerPhones.map((h) => (
-            <CallButton key={h.shown} number={h.shown} warn={h.warn} />
+            <CallButton key={h.shown} number={h.shown} trouble={h.trouble} />
           ))}
           {headerEmail && <MailButton email={headerEmail} />}
         </span>
@@ -657,6 +749,7 @@ function FunderCard({
                   phone: l.primary_contact_phone,
                   title: null,
                 }}
+                trouble={phoneTrouble}
               />
             ) : (
               <div className={NONE}>
@@ -664,6 +757,16 @@ function FunderCard({
               </div>
             )}
           </div>
+
+          <FunderValidation
+            lenderId={l.id}
+            items={vitems}
+            itemsReadable={vitemsReadable}
+            latestPass={pass}
+            endpoints={endpoints}
+            me={me}
+            onPassChanged={onPassChanged}
+          />
 
           <TeamNotes
             lenderId={l.id}
@@ -682,7 +785,7 @@ function FunderCard({
             ) : (
               <div className="flex flex-col gap-[9px]">
                 {others.map((p, i) => (
-                  <PersonRow key={`${clean(p.email) ?? clean(p.phone) ?? i}`} p={p} />
+                  <PersonRow key={`${clean(p.email) ?? clean(p.phone) ?? i}`} p={p} trouble={phoneTrouble} />
                 ))}
               </div>
             )}
@@ -781,7 +884,7 @@ function FunderCard({
                       <div className="flex flex-wrap items-center gap-[6px]">
                         {clean(w.email) && <MailButton email={clean(w.email) as string} />}
                         {phones.map((n) => (
-                          <CallButton key={n} number={n} warn={false} />
+                          <CallButton key={n} number={n} trouble={phoneTrouble(n)} />
                         ))}
                         {clean(w.url) && (
                           <a
@@ -842,11 +945,23 @@ function FunderCard({
 
 type StatusFilter = "all" | "live_vendor" | "application_submitted";
 type GapFilter = "all" | "no_phone" | "no_email" | "no_person";
+type ValFilter = "all" | "todo" | "done" | "stale" | "started";
 
 export function FunderContactDirectory() {
   const [rows, setRows] = useState<Load<DirRow[]>>({ s: "loading" });
   const [web, setWeb] = useState<Load<WebRow[]>>({ s: "loading" });
   const [notes, setNotes] = useState<Load<NoteRow[]>>({ s: "loading" });
+  // The validation checklist template, loaded ONCE for the whole tab. 76 cards
+  // each fetching 43 template rows would be 3,268 rows to render one page.
+  const [vitems, setVitems] = useState<Load<ValItem[]>>({ s: "loading" });
+  // Newest validation pass per lender, so the collapsed row can show the date
+  // without opening anything.
+  const [passes, setPasses] = useState<Record<string, ValPass>>({});
+  // Separate from the map, because an empty map means two different things:
+  // nobody has validated anything, or your account cannot read the table.
+  const [passesReadable, setPassesReadable] = useState(true);
+  // Endpoint verdicts for the whole book — these recolour the call buttons.
+  const [verifs, setVerifs] = useState<EndpointVerification[]>([]);
   // Who is writing. Resolved once; a note cannot be attributed without it, and
   // the insert policy checks created_by = auth.uid() server-side anyway.
   const [me, setMe] = useState<{ id: string; label: string } | null>(null);
@@ -866,6 +981,7 @@ export function FunderContactDirectory() {
   const [relF, setRelF] = useState<string>("all");
   const [prodF, setProdF] = useState<string>("all");
   const [gapF, setGapF] = useState<GapFilter>("all");
+  const [valF, setValF] = useState<ValFilter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -900,10 +1016,18 @@ export function FunderContactDirectory() {
           if (!cancelled) {
             setWeb({ s: "ok", v: [] });
             setNotes({ s: "ok", v: [] });
+            setVitems({ s: "ok", v: [] });
           }
           return;
         }
-        const [{ data: wdata, error: werr }, { data: ndata, error: nerr }, { data: auth }] = await Promise.all([
+        const [
+          { data: wdata, error: werr },
+          { data: ndata, error: nerr },
+          { data: auth },
+          { data: idata, error: ierr },
+          { data: pdata, error: perr },
+          { data: vdata, error: verr },
+        ] = await Promise.all([
           supabase
             .from("funder_web_contacts")
             .select("id, lender_id, kind, name, title, email, phone, url, note, source_url, found_at, verified_at")
@@ -915,6 +1039,25 @@ export function FunderContactDirectory() {
             .in("lender_id", ids)
             .order("created_at", { ascending: false }),
           supabase.auth.getUser(),
+          supabase
+            .from("funder_validation_items")
+            .select("key, section, label, help, answer_type, choices, product, is_required, sort")
+            .eq("is_active", true)
+            .order("sort"),
+          // Newest pass per lender. Ordered newest-first and collapsed below;
+          // Postgres has no DISTINCT ON through PostgREST, and 76 funders'
+          // passes is a small enough set to fold client-side.
+          supabase
+            .from("funder_validations")
+            .select("id, lender_id, validated_on, is_complete, validated_by, validated_by_label, outcome, summary, created_at")
+            .in("lender_id", ids)
+            .order("validated_on", { ascending: false })
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("funder_contact_verifications")
+            .select("id, lender_id, endpoint_kind, endpoint_value, endpoint_label, result, reaches, note, verified_at")
+            .in("lender_id", ids)
+            .order("verified_at", { ascending: false }),
         ]);
         if (cancelled) return;
 
@@ -928,6 +1071,21 @@ export function FunderContactDirectory() {
             ? { s: "fail", why: `Team notes could not be read — ${nerr.message}.` }
             : { s: "ok", v: (ndata ?? []) as NoteRow[] },
         );
+        setVitems(
+          ierr
+            ? { s: "fail", why: `The validation checklist could not be read — ${ierr.message}.` }
+            : { s: "ok", v: (idata ?? []) as ValItem[] },
+        );
+        // A failed read here must NOT look like "nobody has validated anything"
+        // — that would turn an unreadable table into a work order to re-call 76
+        // funders. Leave the map empty and let the card say UNKNOWN instead.
+        if (!perr) {
+          const newest: Record<string, ValPass> = {};
+          for (const p of (pdata ?? []) as ValPass[]) if (!newest[p.lender_id]) newest[p.lender_id] = p;
+          setPasses(newest);
+        }
+        setPassesReadable(!perr);
+        if (!verr) setVerifs((vdata ?? []) as EndpointVerification[]);
 
         const u = auth?.user;
         if (u) {
@@ -952,6 +1110,10 @@ export function FunderContactDirectory() {
   // Memoised because a fresh `[]` on every render would re-run every useMemo
   // below it — the filter work is cheap but the churn is pointless.
   const list = useMemo(() => (rows.s === "ok" ? rows.v : []), [rows]);
+  // The newest verdict per endpoint, across the whole book. A number proved
+  // dead in August is still dead in October, so this is keyed on the endpoint
+  // and not scoped to the current validation pass.
+  const verdicts = useMemo(() => latestVerdictByEndpoint(verifs), [verifs]);
   const webByLender = useMemo(() => {
     const m: Record<string, WebRow[]> = {};
     if (web.s !== "ok") return m;
@@ -1009,10 +1171,21 @@ export function FunderContactDirectory() {
       if (gapF === "no_phone" && d.anyPhone) return false;
       if (gapF === "no_email" && d.anyEmail) return false;
       if (gapF === "no_person" && d.anyPerson) return false;
+
+      // Validation state. Only meaningful when the table is readable — if it
+      // is not, every funder would look unvalidated and the setter would be
+      // sent to re-call all 76.
+      if (valF !== "all" && passesReadable) {
+        const p = passes[d.l.id] ?? null;
+        if (valF === "todo" && p !== null) return false;
+        if (valF === "started" && !(p !== null && !p.is_complete)) return false;
+        if (valF === "done" && !p?.is_complete) return false;
+        if (valF === "stale" && !(p?.is_complete && validationStale(p))) return false;
+      }
       if (needle !== "" && !d.hay.includes(needle)) return false;
       return true;
     });
-  }, [decorated, q, statusF, relF, prodF, gapF]);
+  }, [decorated, q, statusF, relF, prodF, gapF, valF, passes, passesReadable]);
 
   const allOpen = shown.length > 0 && shown.every((d) => open.has(d.l.id));
 
@@ -1097,6 +1270,21 @@ export function FunderContactDirectory() {
           <option value="no_person">Missing: no named human</option>
         </select>
 
+        <select
+          className={SELECT}
+          value={valF}
+          onChange={(e) => setValF(e.target.value as ValFilter)}
+          aria-label="Filter by validation state"
+          disabled={!passesReadable}
+          title={passesReadable ? undefined : "The validation table could not be read by your account."}
+        >
+          <option value="all">Validation — all</option>
+          <option value="todo">Not validated yet</option>
+          <option value="started">Started, not finished</option>
+          <option value="done">Validated</option>
+          <option value="stale">Validated over 6 months ago</option>
+        </select>
+
         <button
           type="button"
           className={`font-[inherit] text-[12px] font-bold ${INK_SOFT} bg-transparent border ${LINE} rounded-[8px] px-[10px] py-[6px] cursor-pointer hover:bg-[#eef2f7] dark:hover:bg-[#1b2836]`}
@@ -1105,7 +1293,7 @@ export function FunderContactDirectory() {
           {allOpen ? "Collapse all" : "Expand all"}
         </button>
 
-        {(q !== "" || statusF !== "live_vendor" || relF !== "all" || prodF !== "all" || gapF !== "all") && (
+        {(q !== "" || statusF !== "live_vendor" || relF !== "all" || prodF !== "all" || gapF !== "all" || valF !== "all") && (
           <button
             type="button"
             className={`font-[inherit] text-[12px] font-bold ${INK_SOFT} bg-transparent border-0 underline cursor-pointer`}
@@ -1115,6 +1303,7 @@ export function FunderContactDirectory() {
               setRelF("all");
               setProdF("all");
               setGapF("all");
+              setValF("all");
             }}
           >
             Reset filters
@@ -1196,6 +1385,12 @@ export function FunderContactDirectory() {
               setNotes((prev) => (prev.s === "ok" ? { s: "ok", v: prev.v.filter((x) => x.id !== id) } : prev))
             }
             profiles={profiles}
+            vitems={vitems.s === "ok" ? vitems.v : []}
+            vitemsReadable={vitems.s !== "fail"}
+            pass={passes[d.l.id] ?? null}
+            passReadable={passesReadable}
+            verdicts={verdicts}
+            onPassChanged={(p) => setPasses((prev) => ({ ...prev, [p.lender_id]: p }))}
             open={open.has(d.l.id)}
             onToggle={() =>
               setOpen((prev) => {
