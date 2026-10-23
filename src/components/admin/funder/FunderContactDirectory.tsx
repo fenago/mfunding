@@ -33,6 +33,7 @@ import {
   type ProfileState,
   PHONE_RE,
   clean,
+  loadDocs,
   loadProfiles,
   telHref,
 } from "@/lib/funderDisclosure";
@@ -50,6 +51,7 @@ import {
   NONE,
 } from "./ink";
 import { FunderValidation } from "./FunderValidation";
+import { type FunderDoc, type PortalCred, FunderDocs, FunderPortalAccess } from "./FunderPortalAccess";
 import {
   type Endpoint,
   type EndpointVerification,
@@ -533,6 +535,12 @@ function FunderCard({
   pass,
   passReadable,
   verdicts,
+  creds,
+  credsReadable,
+  docs,
+  docsReadable,
+  isOps,
+  roleUnknown,
   onPassChanged,
   open,
   onToggle,
@@ -551,6 +559,12 @@ function FunderCard({
   pass: ValPass | null;
   passReadable: boolean;
   verdicts: Map<string, EndpointVerification>;
+  creds: PortalCred[];
+  credsReadable: boolean;
+  docs: FunderDoc[];
+  docsReadable: boolean;
+  isOps: boolean;
+  roleUnknown: boolean;
   onPassChanged: (p: ValPass) => void;
   open: boolean;
   onToggle: () => void;
@@ -758,6 +772,10 @@ function FunderCard({
             )}
           </div>
 
+          <FunderPortalAccess creds={creds} readable={credsReadable} canEdit={isOps} roleUnknown={roleUnknown} />
+
+          <FunderDocs lenderId={l.id} docs={docs} readable={docsReadable} me={me} />
+
           <FunderValidation
             lenderId={l.id}
             items={vitems}
@@ -962,6 +980,15 @@ export function FunderContactDirectory() {
   const [passesReadable, setPassesReadable] = useState(true);
   // Endpoint verdicts for the whole book — these recolour the call buttons.
   const [verifs, setVerifs] = useState<EndpointVerification[]>([]);
+  const [creds, setCreds] = useState<Load<PortalCred[]>>({ s: "loading" });
+  const [docs, setDocs] = useState<{ byLender: Record<string, FunderDoc[]>; readable: boolean }>({
+    byLender: {},
+    readable: true,
+  });
+  // Affordance only — the server raises 42501 regardless. `is_ops_staff` is
+  // role in (admin, super_admin, employee).
+  const [isOps, setIsOps] = useState(false);
+  const [roleUnknown, setRoleUnknown] = useState(false);
   // Who is writing. Resolved once; a note cannot be attributed without it, and
   // the insert policy checks created_by = auth.uid() server-side anyway.
   const [me, setMe] = useState<{ id: string; label: string } | null>(null);
@@ -1027,6 +1054,7 @@ export function FunderContactDirectory() {
           { data: idata, error: ierr },
           { data: pdata, error: perr },
           { data: vdata, error: verr },
+          { data: cdata, error: cerr },
         ] = await Promise.all([
           supabase
             .from("funder_web_contacts")
@@ -1058,6 +1086,11 @@ export function FunderContactDirectory() {
             .select("id, lender_id, endpoint_kind, endpoint_value, endpoint_label, result, reaches, note, verified_at")
             .in("lender_id", ids)
             .order("verified_at", { ascending: false }),
+          supabase
+            .from("funder_portal_credentials")
+            .select("id, lender_id, label, portal_url, username, secret_id, mfa_note, login_note, last_confirmed_on")
+            .in("lender_id", ids)
+            .order("label"),
         ]);
         if (cancelled) return;
 
@@ -1086,11 +1119,42 @@ export function FunderContactDirectory() {
         }
         setPassesReadable(!perr);
         if (!verr) setVerifs((vdata ?? []) as EndpointVerification[]);
+        setCreds(
+          cerr
+            ? { s: "fail", why: `Portal logins could not be read — ${cerr.message}.` }
+            : { s: "ok", v: (cdata ?? []) as PortalCred[] },
+        );
+
+        // `loadDocs` already collapses unreadable-vs-empty correctly, and it
+        // must: a setter reads zero rows with NO error, so a bare `?? []` here
+        // would print "nothing on file" at every funder.
+        const dstate = await loadDocs(ids);
+        if (!cancelled) {
+          setDocs({
+            byLender: Object.fromEntries(
+              Object.entries(dstate.byLender).map(([k, v]) => [k, v as unknown as FunderDoc[]]),
+            ),
+            readable: dstate.readable,
+          });
+        }
 
         const u = auth?.user;
         if (u) {
           const meta = (u.user_metadata ?? {}) as { full_name?: string; name?: string };
           setMe({ id: u.id, label: meta.full_name ?? meta.name ?? u.email ?? "unknown" });
+          // If this read FAILS we must not silently fall through to "not ops"
+          // — that hides the password editor from someone entitled to it with
+          // no explanation. Unreadable is reported, not assumed.
+          const { data: prof, error: perr2 } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", u.id)
+            .maybeSingle();
+          const role = perr2 ? null : (prof as { role?: string } | null)?.role;
+          if (!cancelled) {
+            setIsOps(role === "admin" || role === "super_admin" || role === "employee");
+            if (perr2) setRoleUnknown(true);
+          }
         }
       } catch (e) {
         if (cancelled) return;
@@ -1390,6 +1454,12 @@ export function FunderContactDirectory() {
             pass={passes[d.l.id] ?? null}
             passReadable={passesReadable}
             verdicts={verdicts}
+            creds={creds.s === "ok" ? creds.v.filter((c) => c.lender_id === d.l.id) : []}
+            credsReadable={creds.s !== "fail"}
+            docs={docs.byLender[d.l.id] ?? []}
+            docsReadable={docs.readable}
+            isOps={isOps}
+            roleUnknown={roleUnknown}
             onPassChanged={(p) => setPasses((prev) => ({ ...prev, [p.lender_id]: p }))}
             open={open.has(d.l.id)}
             onToggle={() =>
