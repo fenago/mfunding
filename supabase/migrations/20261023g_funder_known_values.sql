@@ -65,48 +65,80 @@ begin
   rec_rows as (
     select r.id as lid, e.key as fk, e.value as val from rec r, jsonb_each_text(r.kv) e
   ),
-  -- Newest document fact per (lender, field). Documents outrank the record.
-  doc as (
-    select distinct on (f.lender_id, f.field_key)
-      f.lender_id as lid, f.field_key as fk, f.value as val,
-      f.source_file, f.quote, f.confidence
+  -- One row per (lender, field) — but AGGREGATED, not picked.
+  --
+  -- The first version used `distinct on (lender_id, field_key)` and that was
+  -- wrong in a way that would have misled a setter on the phone. Most funders
+  -- with several facts for one field are not contradicting themselves, they
+  -- are describing DIFFERENT PRODUCTS: UCS's minimum FICO is 475 on MCA, 575
+  -- on term, 650 on SBA and 675 on CRE. Picking one and labelling it "Min
+  -- FICO" presents the MCA number as universal.
+  --
+  -- So every version is kept and labelled with its product. Where two versions
+  -- share a product and still differ — Mantis's signed agreement says 10% and
+  -- their flyer says 12% — both appear side by side with the file each came
+  -- from, which is the only honest rendering of a funder contradicting itself.
+  doc_raw as (
+    select f.lender_id as lid,
+           case f.field_key
+             when 'min_monthly_revenue'         then 'box_min_monthly_revenue'
+             when 'min_time_in_business_months' then 'box_min_time_in_business'
+             when 'min_fico'                    then 'box_min_fico'
+             when 'min_funding_amount'          then 'box_min_funding_amount'
+             when 'max_funding_amount'          then 'box_max_funding_amount'
+             when 'max_positions'               then 'box_max_positions'
+             when 'first_position_only'         then 'box_first_position_only'
+             when 'excluded_states'             then 'box_restricted_states'
+             when 'excluded_industries'         then 'box_restricted_industries'
+             when 'commission_payment_timing'   then 'payment_timing'
+             when 'application_form_required'   then 'signed_app_own_form'
+             when 'submission_email'            then 'submission_email_confirmed'
+             when 'submission_portal'           then 'portal_url_confirmed'
+             when 'submission_channel'          then 'submit_channel'
+             else f.field_key end as fk,
+           f.value as dval, f.product, f.source_file as dfile, f.quote as dquote,
+           f.confidence as dconf,
+           row_number() over (
+             partition by f.lender_id, f.field_key
+             order by case f.confidence when 'high' then 0 when 'medium' then 1 else 2 end,
+                      f.extracted_at desc
+           ) as rn,
+           count(*) over (partition by f.lender_id, f.field_key) as n
     from public.funder_doc_facts f
     where f.lender_id = any(p_lender_ids)
-    order by f.lender_id, f.field_key,
-             case f.confidence when 'high' then 0 when 'medium' then 1 else 2 end,
-             f.extracted_at desc
   ),
-  -- Document field names are not always the panel's item keys.
   doc_mapped as (
-    select d.lid, case d.fk
-             when 'min_monthly_revenue'        then 'box_min_monthly_revenue'
-             when 'min_time_in_business_months' then 'box_min_time_in_business'
-             when 'min_fico'                   then 'box_min_fico'
-             when 'min_funding_amount'         then 'box_min_funding_amount'
-             when 'max_funding_amount'         then 'box_max_funding_amount'
-             when 'max_positions'              then 'box_max_positions'
-             when 'first_position_only'        then 'box_first_position_only'
-             when 'excluded_states'            then 'box_restricted_states'
-             when 'excluded_industries'        then 'box_restricted_industries'
-             when 'commission_payment_timing'  then 'payment_timing'
-             when 'application_form_required'  then 'signed_app_own_form'
-             when 'submission_email'           then 'submission_email_confirmed'
-             when 'submission_portal'          then 'portal_url_confirmed'
-             when 'submission_channel'         then 'submit_channel'
-             else d.fk end as fk,
-           d.val, d.source_file, d.quote, d.confidence
-    from doc d
+    select lid, fk,
+      string_agg(
+        case when n > 1 and product is not null then upper(product) || ': ' || dval
+             when n > 1 then dval
+             else dval end,
+        '  ·  ' order by product nulls first, dval
+      ) as val,
+      -- Name every file it came from; a value a setter cannot trace is a value
+      -- she cannot defend on the call.
+      (select string_agg(distinct d2.dfile, ', ') from doc_raw d2
+        where d2.lid = doc_raw.lid and d2.fk = doc_raw.fk) as source_file,
+      max(case when rn = 1 then dquote end) as dquote,
+      min(case dconf when 'high' then 'high' when 'medium' then 'medium' else 'low' end) as dconf,
+      max(n) as versions
+    from doc_raw
+    group by lid, fk
   )
   select
     coalesce(dm.lid, rr.lid),
     coalesce(dm.fk, rr.fk),
     coalesce(dm.val, rr.val),
     case when dm.val is not null then dm.source_file else 'our funder record' end,
-    dm.quote,
-    coalesce(dm.confidence, 'medium'),
+    dm.dquote,
+    coalesce(dm.dconf, 'medium'),
     case
-      when dm.val is not null and rr.val is not null and btrim(lower(dm.val)) <> btrim(lower(rr.val))
+      -- Only claim a disagreement when the document gives ONE value. A list of
+      -- per-product figures is not "a disagreement" with a single record field.
+      when dm.val is not null and dm.versions = 1 and rr.val is not null
+           and btrim(lower(dm.val)) <> btrim(lower(rr.val))
       then 'our record says ' || rr.val
+      when dm.versions > 1 then dm.versions || ' versions in their documents — read them before quoting'
     end
   from rec_rows rr
   full outer join doc_mapped dm on dm.lid = rr.lid and dm.fk = rr.fk
