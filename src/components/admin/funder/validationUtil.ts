@@ -23,8 +23,32 @@ export type ValItem = {
   answer_type: AnswerType;
   choices: string[] | null;
   product: string | null;
-  is_required: boolean;
+  /**
+   * `ask`     — only a human on the call can answer it.
+   * `confirm` — we already hold a value; she confirms or corrects it.
+   *
+   * There is deliberately no `is_required`. It was dropped from the table, not
+   * defaulted to false: "required" assumes the person filling the field owns
+   * the data, and here the FUNDER owns it. If they decline to discuss their
+   * clawback policy the setter has not failed, and an asterisk saying she has
+   * is simply false.
+   */
+  kind: "ask" | "confirm";
   sort: number;
+};
+
+/** One thing we already believe about a funder, and where it came from. */
+export type KnownValue = {
+  lender_id: string;
+  field_key: string;
+  value: string;
+  /** Either a document filename or the literal "our funder record". */
+  source: string;
+  /** Verbatim sentence from the document, when a document is the source. */
+  quote: string | null;
+  confidence: "high" | "medium" | "low";
+  /** Set when a document disagrees with our record — e.g. "our record says $20,000". */
+  disagrees: string | null;
 };
 
 export type ValPass = {

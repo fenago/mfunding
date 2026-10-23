@@ -36,6 +36,7 @@ import {
   type EndpointVerification,
   type ValCheck,
   type ValItem,
+  type KnownValue,
   type ValPass,
   daysSinceValidated,
   endpointKey,
@@ -128,7 +129,6 @@ function ItemRow({
         />
         <label htmlFor={inputId} className={`text-[12.5px] ${INK} leading-[1.45] cursor-pointer`}>
           {item.label}
-          {item.is_required && <span className="text-[#b7791f] dark:text-[#dcab55] font-bold"> *</span>}
         </label>
       </div>
 
@@ -253,6 +253,117 @@ function EndpointBlock({
   );
 }
 
+// ── One thing we already hold, confirmed or corrected ───────────────────────
+//
+// This is the row that replaced most of the checklist. We are not asking her
+// to find out Cashable's minimum revenue; we are telling her we think it is
+// $30,000 and asking whether that is still true. Confirming writes the value
+// we showed, correcting writes what the funder actually said — so `value`
+// always holds the funder's answer and a later diff against the record is a
+// real diff, not a guess about what the tick meant.
+function ConfirmRow({
+  item,
+  known,
+  check,
+  disabled,
+  onAnswer,
+}: {
+  item: ValItem;
+  known: KnownValue;
+  check: ValCheck | undefined;
+  disabled: boolean;
+  onAnswer: (value: string) => void;
+}) {
+  const [correcting, setCorrecting] = useState(false);
+  const [draft, setDraft] = useState("");
+  const answered = check?.checked === true;
+  const answer = check?.value ?? null;
+  const changed = answered && answer !== null && answer.trim() !== known.value.trim();
+  const fromDoc = known.source !== "our funder record";
+
+  return (
+    <div className={`py-[7px] border-t ${LINE} first:border-t-0 flex flex-col gap-[4px]`}>
+      <div className="flex flex-wrap items-baseline gap-[8px]">
+        <span className={`text-[12px] ${INK_FAINT}`}>{item.label}</span>
+        <span className={`text-[13px] font-bold ${INK} tabular-nums`}>{known.value}</span>
+        {answered &&
+          (changed ? (
+            <span className={CHIP_WARN}>they say: {answer}</span>
+          ) : (
+            <span className={CHIP_LIVE}>confirmed</span>
+          ))}
+      </div>
+
+      <div className={`text-[10.5px] ${INK_FAINT} leading-[1.4]`}>
+        {fromDoc ? <>from <b>{known.source}</b></> : <>from our funder record</>}
+        {known.confidence === "low" && " · read with low confidence"}
+      </div>
+
+      {known.quote && (
+        <div className={`text-[11px] ${INK_SOFT} leading-[1.45] border-l-2 ${LINE} pl-[8px] italic`}>
+          “{known.quote}”
+        </div>
+      )}
+
+      {known.disagrees && (
+        <div className="text-[11px] font-bold text-[#b7791f] dark:text-[#dcab55] leading-[1.4]">
+          The document and our record disagree — {known.disagrees}. Ask which is current.
+        </div>
+      )}
+
+      {correcting ? (
+        <div className="flex flex-wrap items-center gap-[6px]">
+          <input
+            className={`${FIELD} max-w-[320px]`}
+            value={draft}
+            disabled={disabled}
+            placeholder="What did they actually say?"
+            onChange={(e) => setDraft(e.target.value)}
+            aria-label={`Correct ${item.label}`}
+          />
+          <button
+            type="button"
+            className={BTN_QUIET}
+            disabled={disabled || draft.trim() === ""}
+            onClick={() => {
+              onAnswer(draft.trim());
+              setCorrecting(false);
+              setDraft("");
+            }}
+          >
+            Save
+          </button>
+          <button type="button" className={BTN_QUIET} onClick={() => setCorrecting(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-[5px]">
+          <button
+            type="button"
+            className={BTN_QUIET + (answered && !changed ? " ring-2 ring-[#c08a2d] ring-offset-1" : "")}
+            disabled={disabled}
+            onClick={() => onAnswer(known.value)}
+          >
+            Still right
+          </button>
+          <button
+            type="button"
+            className={BTN_QUIET + (changed ? " ring-2 ring-[#c08a2d] ring-offset-1" : "")}
+            disabled={disabled}
+            onClick={() => {
+              setDraft(answer && changed ? answer : "");
+              setCorrecting(true);
+            }}
+          >
+            Different
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── The panel ────────────────────────────────────────────────────────────────
 
 export function FunderValidation({
@@ -261,6 +372,7 @@ export function FunderValidation({
   itemsReadable,
   latestPass,
   endpoints,
+  known,
   me,
   onPassChanged,
 }: {
@@ -269,13 +381,13 @@ export function FunderValidation({
   itemsReadable: boolean;
   latestPass: ValPass | null;
   endpoints: Endpoint[];
+  known: KnownValue[];
   me: { id: string; label: string } | null;
   onPassChanged: (p: ValPass) => void;
 }) {
   const [pass, setPass] = useState<ValPass | null>(latestPass);
   const [checks, setChecks] = useState<ValCheck[]>([]);
   const [verifs, setVerifs] = useState<EndpointVerification[]>([]);
-  const [open, setOpen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -316,19 +428,25 @@ export function FunderValidation({
     return m;
   }, [checks]);
 
-  const sections = useMemo(() => {
-    const m = new Map<string, ValItem[]>();
-    for (const it of [...items].sort((a, b) => a.sort - b.sort)) {
-      const arr = m.get(it.section);
-      if (arr) arr.push(it);
-      else m.set(it.section, [it]);
-    }
-    return [...m.entries()];
-  }, [items]);
+  const askItems = useMemo(
+    () => items.filter((i) => i.kind === "ask").sort((a, b) => a.sort - b.sort),
+    [items],
+  );
 
-  const required = useMemo(() => items.filter((i) => i.is_required), [items]);
-  const doneCount = checks.filter((c) => c.checked).length;
-  const doneRequired = required.filter((i) => byKey.get(i.key)?.checked).length;
+  // Confirm rows exist only where we actually hold something. A funder we know
+  // little about shows three; Cashable shows fifteen. Nobody ticks an empty
+  // box, which is what 43 fixed checkboxes forced.
+  const confirmRows = useMemo(() => {
+    const byField = new Map(known.map((k) => [k.field_key, k]));
+    return items
+      .filter((i) => i.kind === "confirm" && byField.has(i.key))
+      .sort((a, b) => a.sort - b.sort)
+      .map((i) => ({ item: i, known: byField.get(i.key) as KnownValue }));
+  }, [items, known]);
+
+  const conflicts = confirmRows.filter((r) => r.known.disagrees !== null).length;
+  const askDone = askItems.filter((i) => byKey.get(i.key)?.checked).length;
+  const confirmDone = confirmRows.filter((r) => byKey.get(r.item.key)?.checked).length;
 
   const flash = () => setSavedAt(Date.now());
 
@@ -476,7 +594,7 @@ export function FunderValidation({
           <span className={CHIP_NEUTRAL}>Never validated</span>
         )}
         <span className={`text-[11px] ${INK_FAINT} tabular-nums`}>
-          {doneCount} of {items.length} confirmed · {doneRequired} of {required.length} required
+          {askDone} of {askItems.length} asked · {confirmDone} of {confirmRows.length} confirmed
         </span>
         {savedAt !== null && (
           <span className="text-[11px] font-bold text-[#1f8a5b] dark:text-[#54c68d]">saved</span>
@@ -533,49 +651,58 @@ export function FunderValidation({
         <EndpointBlock endpoints={endpoints} verifications={verifs} disabled={locked} onVerify={(e, r) => void verify(e, r)} />
       </div>
 
-      {/* The checklist. */}
-      <div className="flex flex-col gap-[2px]">
-        {sections.map(([name, its]) => {
-          const isOpen = open.has(name);
-          const sectionDone = its.filter((i) => byKey.get(i.key)?.checked).length;
-          return (
-            <div key={name} className={`border-t ${LINE} pt-[6px]`}>
-              <button
-                type="button"
-                className="w-full flex items-center justify-between gap-[8px] bg-transparent border-0 p-0 cursor-pointer text-left"
-                onClick={() =>
-                  setOpen((s) => {
-                    const n = new Set(s);
-                    if (n.has(name)) n.delete(name);
-                    else n.add(name);
-                    return n;
-                  })
-                }
-                aria-expanded={isOpen}
-              >
-                <span className={`text-[12px] font-extrabold ${INK_SOFT}`}>
-                  {isOpen ? "▾" : "▸"} {name}
-                </span>
-                <span className={`text-[11px] ${INK_FAINT} tabular-nums`}>
-                  {sectionDone}/{its.length}
-                </span>
-              </button>
-              {isOpen && (
-                <div className="pl-[2px] pb-[6px]">
-                  {its.map((it) => (
-                    <ItemRow
-                      key={it.key}
-                      item={it}
-                      check={byKey.get(it.key)}
-                      disabled={locked}
-                      onChange={(patch) => void saveItem(it, patch)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+      {/* ── Ask them ─────────────────────────────────────────────────────
+          Eight questions. Only things a human on the call can answer, or that
+          change often enough that the record cannot be trusted. Everything a
+          document or our own record can answer moved to the confirm block
+          below — we were asking a setter to phone and ask a funder's minimum
+          revenue while holding it for 51 of 76. */}
+      <div className={`border-t ${LINE} pt-[8px]`}>
+        <div className={KEY}>Ask them</div>
+        {askItems.length === 0 ? (
+          <div className={NONE}>No questions configured.</div>
+        ) : (
+          askItems.map((it) => (
+            <ItemRow
+              key={it.key}
+              item={it}
+              check={byKey.get(it.key)}
+              disabled={locked}
+              onChange={(patch) => void saveItem(it, patch)}
+            />
+          ))
+        )}
+      </div>
+
+      {/* ── Confirm what we hold ──────────────────────────────────────────── */}
+      <div className={`border-t ${LINE} pt-[8px] mt-[10px]`}>
+        <div className="flex flex-wrap items-center gap-[8px] mb-[2px]">
+          <div className={`${KEY} mb-0`}>What we already hold — still right?</div>
+          {conflicts > 0 && (
+            <span className={CHIP_WARN}>
+              {conflicts} {conflicts === 1 ? "disagreement" : "disagreements"} between a document and our record
+            </span>
+          )}
+        </div>
+        {confirmRows.length === 0 ? (
+          <div className={NONE}>
+            We hold nothing structured on this funder yet, so there is nothing to confirm. Whatever she learns goes in
+            the questions above.
+          </div>
+        ) : (
+          <div>
+            {confirmRows.map(({ item, known: k }) => (
+              <ConfirmRow
+                key={item.key}
+                item={item}
+                known={k}
+                check={byKey.get(item.key)}
+                disabled={locked}
+                onAnswer={(value) => void saveItem(item, { checked: true, value })}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <div className={`text-[11px] ${INK_FAINT} mt-[8px] leading-[1.45]`}>

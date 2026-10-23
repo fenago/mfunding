@@ -56,6 +56,7 @@ import {
   type Endpoint,
   type EndpointVerification,
   type ValItem,
+  type KnownValue,
   type ValPass,
   digitsOf,
   latestVerdictByEndpoint,
@@ -535,6 +536,7 @@ function FunderCard({
   pass,
   passReadable,
   verdicts,
+  known,
   creds,
   credsReadable,
   docs,
@@ -559,6 +561,7 @@ function FunderCard({
   pass: ValPass | null;
   passReadable: boolean;
   verdicts: Map<string, EndpointVerification>;
+  known: KnownValue[];
   creds: PortalCred[];
   credsReadable: boolean;
   docs: FunderDoc[];
@@ -782,6 +785,7 @@ function FunderCard({
             itemsReadable={vitemsReadable}
             latestPass={pass}
             endpoints={endpoints}
+            known={known}
             me={me}
             onPassChanged={onPassChanged}
           />
@@ -980,6 +984,11 @@ export function FunderContactDirectory() {
   const [passesReadable, setPassesReadable] = useState(true);
   // Endpoint verdicts for the whole book — these recolour the call buttons.
   const [verifs, setVerifs] = useState<EndpointVerification[]>([]);
+  // What we already believe about every funder, assembled server-side from the
+  // record, lender_programs and the funder's own documents. A DEFINER helper
+  // rather than a widened SELECT: lender_programs is ops/processor-only and
+  // carries 46 columns, of which the panel needs about fifteen.
+  const [known, setKnown] = useState<KnownValue[]>([]);
   const [creds, setCreds] = useState<Load<PortalCred[]>>({ s: "loading" });
   const [docs, setDocs] = useState<{ byLender: Record<string, FunderDoc[]>; readable: boolean }>({
     byLender: {},
@@ -1069,7 +1078,7 @@ export function FunderContactDirectory() {
           supabase.auth.getUser(),
           supabase
             .from("funder_validation_items")
-            .select("key, section, label, help, answer_type, choices, product, is_required, sort")
+            .select("key, section, label, help, answer_type, choices, product, kind, sort")
             .eq("is_active", true)
             .order("sort"),
           // Newest pass per lender. Ordered newest-first and collapsed below;
@@ -1119,6 +1128,8 @@ export function FunderContactDirectory() {
         }
         setPassesReadable(!perr);
         if (!verr) setVerifs((vdata ?? []) as EndpointVerification[]);
+        const kv = await supabase.rpc("funder_known_values", { p_lender_ids: ids });
+        if (!cancelled && !kv.error) setKnown((kv.data ?? []) as KnownValue[]);
         setCreds(
           cerr
             ? { s: "fail", why: `Portal logins could not be read — ${cerr.message}.` }
@@ -1178,6 +1189,11 @@ export function FunderContactDirectory() {
   // dead in August is still dead in October, so this is keyed on the endpoint
   // and not scoped to the current validation pass.
   const verdicts = useMemo(() => latestVerdictByEndpoint(verifs), [verifs]);
+  const knownByLender = useMemo(() => {
+    const m: Record<string, KnownValue[]> = {};
+    for (const k of known) (m[k.lender_id] ??= []).push(k);
+    return m;
+  }, [known]);
   const webByLender = useMemo(() => {
     const m: Record<string, WebRow[]> = {};
     if (web.s !== "ok") return m;
@@ -1454,6 +1470,7 @@ export function FunderContactDirectory() {
             pass={passes[d.l.id] ?? null}
             passReadable={passesReadable}
             verdicts={verdicts}
+            known={knownByLender[d.l.id] ?? []}
             creds={creds.s === "ok" ? creds.v.filter((c) => c.lender_id === d.l.id) : []}
             credsReadable={creds.s !== "fail"}
             docs={docs.byLender[d.l.id] ?? []}
