@@ -539,6 +539,7 @@ function FunderCard({
   known,
   creds,
   credsReadable,
+  onCredsChanged,
   docs,
   docsReadable,
   isOps,
@@ -564,6 +565,7 @@ function FunderCard({
   known: KnownValue[];
   creds: PortalCred[];
   credsReadable: boolean;
+  onCredsChanged: (next: PortalCred[]) => void;
   docs: FunderDoc[];
   docsReadable: boolean;
   isOps: boolean;
@@ -775,7 +777,15 @@ function FunderCard({
             )}
           </div>
 
-          <FunderPortalAccess creds={creds} readable={credsReadable} canEdit={isOps} roleUnknown={roleUnknown} />
+          <FunderPortalAccess
+            lenderId={l.id}
+            creds={creds}
+            readable={credsReadable}
+            canEdit={isOps}
+            roleUnknown={roleUnknown}
+            recordedPortalUrl={subPortal ?? null}
+            onCredsChanged={onCredsChanged}
+          />
 
           <FunderDocs lenderId={l.id} docs={docs} readable={docsReadable} me={me} />
 
@@ -1473,6 +1483,13 @@ export function FunderContactDirectory() {
             known={knownByLender[d.l.id] ?? []}
             creds={creds.s === "ok" ? creds.v.filter((c) => c.lender_id === d.l.id) : []}
             credsReadable={creds.s !== "fail"}
+            onCredsChanged={(next) =>
+              setCreds((prev) =>
+                prev.s === "ok"
+                  ? { s: "ok", v: [...prev.v.filter((c) => c.lender_id !== d.l.id), ...next] }
+                  : prev,
+              )
+            }
             docs={docs.byLender[d.l.id] ?? []}
             docsReadable={docs.readable}
             isOps={isOps}
