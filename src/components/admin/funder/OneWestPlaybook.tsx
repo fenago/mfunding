@@ -360,6 +360,17 @@ export function OneWestPlaybook() {
                 </>
               ),
             },
+            {
+              k: "One number to ignore",
+              v: (
+                <span className="fp-miss">
+                  Our stored MCA program row for 1 West says <b>time in business: 1 month</b>. No 1 West document
+                  says that — every source says 3 months or 1 year. Treat it as a data entry error and do not
+                  quote it. That same row leaves approval min/max, points, positions, NSF and negative-day limits
+                  all blank, which is why this section reads from their documents instead.
+                </span>
+              ),
+            },
           ]}
         />
       </Sec>
@@ -408,6 +419,16 @@ export function OneWestPlaybook() {
               ),
             },
             {
+              k: "The app can send it for you",
+              v: (
+                <>
+                  Unlike Bitty, 1 West's stored submission recipe is <b>active</b> — method email to
+                  partnersubs@1west.com, cc Michael Bernier and the owner, attaching the application and bank
+                  statements, capped at <b>4 statement months</b>. The app will assemble a 1 West package today.
+                </>
+              ),
+            },
+            {
               k: "Delivery is proven",
               v: <>5 of 5 sends to partnersubs@1west.com drew a reply. The address works; it was last assessed 2026-10-01 and should be re-checked if it ever changes.</>,
             },
@@ -429,17 +450,37 @@ export function OneWestPlaybook() {
               v: <><b>Ria Khan</b>, Funding Specialist — ria.khan@1west.com · (956) 818-8335. Intake replies also come from Payton Bailey and Pankaj Pandey on the ISO Relations team.</>,
             },
             {
-              k: "Address",
-              v: <>33 S Wood Ave, Iselin NJ 08830</>,
+              k: "Address & main line",
+              v: <>33 S Wood Ave, Iselin NJ 08830 · published main line (888) 881-9378 · customerservice@1west.com. Neither published endpoint has been verified by us.</>,
             },
             {
               k: "Terms we're bound by",
               v: (
                 <>
-                  Non-exclusive both ways. <b>New York</b> governing law and <b>New York arbitration</b> — note the
-                  difference from Bitty's Florida courts. No authority to bind them, no use of their brand without
-                  written consent, and <b>we may not charge the merchant a fee</b>.
+                  Non-exclusive both ways (¶6). <b>New York</b> law and <b>New York arbitration</b> (¶14) — note
+                  the difference from Bitty's Florida courts. No authority to bind them (¶5), no brand use without
+                  written consent (¶9), <b>no compensation of any kind from the merchant</b> (¶4), terminable at
+                  will on written notice (¶13).
                 </>
+              ),
+            },
+            {
+              k: "What is NOT in it",
+              v: (
+                <>
+                  <b>No clawback clause and no non-circumvention clause in either copy.</b> That is a real
+                  advantage and the cleanest contrast with Bitty, whose §6(e) reclaims the whole commission on a
+                  single bounced ACH. Once a 1 West file pays us, it stays paid.
+                </>
+              ),
+            },
+            {
+              k: "Portal login",
+              v: (
+                <span className="fp-miss">
+                  A “Broker portal” credential row exists for 1 West but it is <b>empty</b> — no username, no
+                  stored password. There is no login to hand anybody. Everything goes by email today.
+                </span>
               ),
             },
           ]}

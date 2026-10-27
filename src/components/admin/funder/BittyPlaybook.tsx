@@ -257,15 +257,22 @@ export function BittyPlaybook() {
 
       {/* ── 1. status ── */}
       <Sec n={1} title="Where this relationship actually stands" sub="read this before you quote anybody">
-        <Alert tone="stop" title="The referral agreement is NOT executed">
+        <Alert tone="stop" title="Nothing in this packet is executed by either party">
           <p>
-            The Bitty Referral Agreement v6 dated 10/27/2026 is prepared and initialled <b>EL</b> on its interior
-            pages, but <b>page 12 carries no signature from either party</b> — ours or Bitty's. The ACH
-            authorization and the ISO application behind it are blank.
+            The Bitty Referral Agreement v6 dated 10/27/2026 carries <b>EL</b> initials on pages 3–11 only, and{" "}
+            <b>Bitty's initials slot is blank on all eleven</b>. On the execution block at page 12, our side has
+            “Agentic Voice Inc.”, “Dr. Ernesto Lee” and the date <b>typed</b> — but{" "}
+            <b>both signature lines are blank</b>, and Bitty's entire column is empty. They have not countersigned
+            or even typed their name.
           </p>
           <p>
-            Until it is signed and counter-signed, every rate and commission figure on this tab is a{" "}
-            <b>published offer, not a contractual entitlement</b>. Their own sell sheet says terms are “subject to
+            Behind it, the <b>ACH authorization (p.13) is wholly unfilled</b> — no bank, no account number, no
+            routing — and the <b>ISO application (p.14) is wholly unfilled</b>: no legal name, EIN, entity type,
+            address, deal volumes or owner block. Verified by rendering the pages, not by reading extracted text.
+          </p>
+          <p>
+            So there is <b>no Bitty relationship in force</b>. Every rate and commission figure on this tab is a{" "}
+            <b>published offer, not a contractual entitlement</b> — their own sell sheet says terms are “subject to
             change and to a fully executed ISO agreement.”
           </p>
         </Alert>
@@ -447,8 +454,20 @@ export function BittyPlaybook() {
               ),
             },
             {
+              k: "They can change the deal",
+              v: (
+                <>
+                  Bitty can amend the guidelines, the pricing and the compensation unilaterally, and submitting a
+                  file after a change is deemed acceptance of it. <b>The agreement contradicts itself on whether
+                  we get told:</b> §17 says amendment is “by written notice to ISO”, while §6(c) says Bitty may
+                  amend compensation <b>“without prior notice to or consent from ISO.”</b> Worth resolving in
+                  writing — it decides whether our commission can move without us hearing about it.
+                </>
+              ),
+            },
+            {
               k: "Governing law",
-              v: <>Florida, with the prevailing party recovering fees. Unilateral amendment: Bitty can change the guidelines and the compensation schedule by notice, and submitting a file after a change is deemed acceptance (§17).</>,
+              v: <>Florida courts, prevailing party recovers fees. <b>No non-circumvention and no non-solicit period anywhere in the 15 pages</b> — searched for all of them. Unusual, and in our favour.</>,
             },
           ]}
         />
@@ -534,10 +553,11 @@ export function BittyPlaybook() {
           note="Start typing to check an industry against Bitty's published list before you promise the merchant anything."
         />
         <div className="fp-foot">
-          <b>One honest caveat.</b> Bitty's guide prints counts of 59 preferred and 53 standard; the text we
-          extracted from the PDF yields <b>{PREFERRED.length}</b> and <b>{STANDARD.length}</b>. Three rows did not
-          survive extraction, so a near-miss on those two lists is worth checking against the PDF itself. The{" "}
-          <b>prohibited list is complete at all 14</b> — the list where being wrong actually costs us.
+          <b>Their guide miscounts its own lists — these are complete.</b> The badge over the preferred column says
+          “59 industries” but only <b>{PREFERRED.length}</b> are printed on the page; the standard badge says “53”
+          and only <b>{STANDARD.length}</b> are printed. Verified twice, against both the extracted text and a
+          170-dpi render of page 2 — nothing was lost on our side, Bitty's headline numbers are simply wrong.
+          Prohibited is correct at all <b>14</b>. Every industry above is one they actually printed.
         </div>
       </Sec>
 
