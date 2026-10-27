@@ -19,6 +19,9 @@ import {
 } from "@/lib/funderDisclosure";
 import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
 import { FunderContactDirectory } from "@/components/admin/funder/FunderContactDirectory";
+import { BittyPlaybook } from "@/components/admin/funder/BittyPlaybook";
+import { OneWestPlaybook } from "@/components/admin/funder/OneWestPlaybook";
+import { PlaybookStyles } from "@/components/admin/funder/playbook";
 import { LinkLine, Quoted } from "@/components/admin/funder/parts";
 import { FunderProgramBox } from "@/components/admin/funder/FunderProgramBox";
 import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
@@ -317,13 +320,25 @@ type ProductId = "mca" | "term_loan" | "line_of_credit" | "sba" | "equipment";
 // are all keyed by ProductId and would blow up or — worse — silently render an
 // MCA box under a non-product heading. So it rides alongside as its own id and
 // every product lookup keeps narrowing back to ProductId.
-type TabId = ProductId | "contacts";
+// Two tabs on this page are neither a product nor the contact directory:
+// the per-funder PLAYBOOKS for the funders we are concentrating on. They
+// answer the opposite question to the product tabs — not "who takes this
+// deal" but "we picked this funder, what do I collect and what kills it".
+// Like `contacts`, they must never be narrowed to a ProductId: every product
+// lookup below keeps crossing back through PRODUCT_SPEC / TAB_PRODUCT, and a
+// playbook id reaching one of those would either throw or, worse, quietly
+// render an MCA credit box under a funder heading.
+type TabId = ProductId | "contacts" | "bitty" | "onewest";
+const isProductTab = (t: TabId): t is Exclude<ProductId, "mca"> =>
+  t !== "mca" && t !== "contacts" && t !== "bitty" && t !== "onewest";
 const PRODUCT_TABS: { v: TabId; label: string }[] = [
   { v: "mca", label: "MCA" },
   { v: "term_loan", label: "Term Loan" },
   { v: "line_of_credit", label: "Line of Credit" },
   { v: "sba", label: "SBA" },
   { v: "equipment", label: "Equipment" },
+  { v: "bitty", label: "Bitty ★" },
+  { v: "onewest", label: "1 West ★" },
   { v: "contacts", label: "Funder Contact" },
 ];
 // Tab id → the canonical product spelling used by `category->'products'`,
@@ -1013,7 +1028,9 @@ export default function FunderCheatSheetPage() {
   // four credit tabs and there is nothing tab-specific to cancel. A failure
   // resets the ref so the next visit (or the Try again button) retries.
   useEffect(() => {
-    if (tab === "mca" || creditLoad.current !== "idle") return;
+    // Playbook tabs render from their funder's own documents, not from the
+    // shared credit-product catalog — opening one must not kick off that read.
+    if (!isProductTab(tab) || creditLoad.current !== "idle") return;
     creditLoad.current = "running";
     const cancelled = () => !alive.current;
     setProd((p) => ({ ...p, state: "loading" }));
@@ -1116,6 +1133,12 @@ export default function FunderCheatSheetPage() {
               Every funder we are <b>live</b> with or have an <b>ISO application</b> in with, and every way to reach
               them — names, direct lines, department inboxes, portals. <b>Tap a number to call it.</b>
             </p>
+          ) : tab === "bitty" || tab === "onewest" ? (
+            <p>
+              A funder we are going <b>deep</b> on. Everything their own documents say about the credit box, the
+              money and the mechanics — plus the <b>checklist</b> of what to collect from the merchant before this
+              file goes out.
+            </p>
           ) : (
             <p>
               The merchant doesn't want an advance. Here's who does{" "}
@@ -1142,9 +1165,16 @@ export default function FunderCheatSheetPage() {
 
         {tab === "contacts" && <FunderContactDirectory />}
 
-        {tab !== "mca" && tab !== "contacts" && (
+        {(tab === "bitty" || tab === "onewest") && (
+          <>
+            <PlaybookStyles />
+            {tab === "bitty" ? <BittyPlaybook /> : <OneWestPlaybook />}
+          </>
+        )}
+
+        {isProductTab(tab) && (
           <ProductTabView
-            product={tab as Exclude<ProductId, "mca">}
+            product={tab}
             data={prod}
             profiles={profiles}
             docs={docs}
