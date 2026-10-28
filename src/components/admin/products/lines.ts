@@ -71,7 +71,10 @@ export type ProductLine = {
   /** Shown as a banner when the line cannot be fully worked yet. */
   warning?: { tone: "stop" | "warn"; title: string; body: string };
   primary: FunderSlot;
-  secondary: FunderSlot;
+  /** Absent where no second funder genuinely exists. Never invent one. */
+  secondary?: FunderSlot;
+  /** Required when `secondary` is absent — says WHY, in words. */
+  noSecondary?: string;
   checklist: LineCheck[];
   /** Bitty is the only funder whose price we set, so only it gets a calculator. */
   calculator?: boolean;
@@ -493,4 +496,104 @@ const TERM: ProductLine = {
   ],
 };
 
-export const LINES: ProductLine[] = [MICRO, MCA, TERM];
+// ── 4 ── GIG ─────────────────────────────────────────────────────────────────
+// The only line whose funder we have never spoken to. It is here because the
+// link works and the borrower is one no other line can serve — not because
+// the relationship is real. Everything unknown about it is printed.
+const GIG: ProductLine = {
+  id: "gig",
+  tab: "Gig",
+  name: "Momentum Gig",
+  vocab: "advance",
+  range: "up to $15,000 new · $20,000 repeat",
+  tagline: "The self-employed borrower every other line turns away.",
+  whoFor:
+    "A 1099 contractor, sole proprietor, rideshare or delivery driver, or creator with 3 months of self-employed income. No FICO requirement and a PERSONAL bank account is accepted — this is the only line that can say either of those.",
+  warning: {
+    tone: "warn",
+    title: "This line works, but we do not know what it pays",
+    body:
+      "Giggle's referral link is live and attribution is verified. But we hold NO agreement, NO commission rate, NO named contact, and we have never exchanged a single email with them. Zero files have gone through. Treat this as a tested link with unknown economics, not a funder relationship — and get a rate in writing before you build a campaign on it.",
+  },
+  primary: {
+    role: "Primary",
+    name: "Giggle Finance",
+    lenderId: "7f0397ba-6367-43de-8c77-113c016a9477",
+    liveToday: true,
+    liveNote: "Live vendor. Referral link works today — but it is the ONLY route; nothing is packaged or submitted.",
+    routes: [
+      {
+        kind: "selfserve",
+        value: "https://flash.gigglefinance.com/frontend/home?flash_channel_id=679&flash_campaign_id=128&plid=146720",
+        note: "SEND THIS ONE. Our record flags it as the link to give a merchant",
+      },
+      {
+        kind: "selfserve",
+        value: "https://partners.gigglefinance.com/agentic-voice-inc/ernesto-lee",
+        note: "Softer co-branded intro page; its “Let’s Get Funded” button forwards to the link above",
+      },
+    ],
+    box: [
+      { k: "Funding", v: "Up to $15,000 new · $20,000 on a repeat. Minimum NOT published" },
+      { k: "Time in business", v: "3 months of 1099 or business income" },
+      { k: "Credit", v: "NO FICO REQUIREMENT — “credit score is not a factor”; they judge banking history" },
+      { k: "Revenue", v: "$2,500/mo · $3,000+ sitting in the account · 4+ deposits last month" },
+      { k: "Account type", v: "PERSONAL bank accounts accepted — unique on this shelf" },
+      { k: "Who does NOT qualify", v: "W-2-only earners" },
+      { k: "Excluded states", v: "NEW YORK, CALIFORNIA and OREGON — do not send" },
+      { k: "Documents", v: "None. Online application plus a bank-account connection" },
+    ],
+    pricing: [
+      { k: "Shape", v: "Revenue-based advance, weekly payments that adjust with fluctuating income" },
+      { k: "Speed", v: "Funded in minutes" },
+      { k: "Factor / cost / term", v: "NOT RECORDED — we have never captured what this costs the borrower" },
+    ],
+    pay: {
+      headline: "UNKNOWN",
+      basis:
+        "Our record says only “commission on funded deals plus ongoing renewal commission, tracked to plid=146720 — no rate published.” No points, no percentage, no structure has ever been recorded.",
+      timing: "Not recorded.",
+    },
+    agreement: {
+      state: "none",
+      note: "Zero documents on file — this is “no document”, not “signed on one side”. There is nothing to counter-sign and nothing that fixes a commission rate.",
+    },
+    track:
+      "Zero submissions, zero referrals recorded, and NO email from Giggle has ever been received. The only entry is an internal research note from 2026-07-29.",
+    evidence: [
+      "lenders.commission_notes — the referral link and the attribution warning, verbatim",
+      "gigglefinance.com terms / FAQ / who-qualifies / partnerships, read 2026-08-11 (first-party, confidence high)",
+    ],
+    gaps: [
+      "What they pay us — entirely unrecorded. The single blocking question",
+      "Cost to the borrower: factor, fees and term all unrecorded, so we cannot explain the product honestly",
+      "Minimum funding amount not published",
+      "No agreement, no named contact, no email ever exchanged",
+      "Our own record disagrees with itself on the URL — see the warning below",
+    ],
+    contacts: [],
+  },
+  noSecondary:
+    "There is no second gig funder in the network yet. Rather than pad this line with a funder that cannot serve a 1099 borrower, the slot is left open. The nearest candidate is Fundo — the lowest recorded box we hold at $500–$10,000, 3 months, $1,500/mo — but it sits at `application_submitted`, portal-only, with no submission profile and no documents, so it is a lead to open, not a funder to route to.",
+  checklist: [
+    { id: "g-type", group: "Qualify", label: "They earn 1099 or self-employed income — NOT W-2 only", hard: true, why: "A W-2-only earner does not qualify, full stop. This is the first question." },
+    { id: "g-state", group: "Qualify", label: "They are NOT in New York, California or Oregon", hard: true, why: "Excluded, corroborated twice. Note this removes Sacramento — one of our six target markets — from this line entirely." },
+    { id: "g-tib", group: "Qualify", label: "3 months of 1099 or business income", hard: true },
+    { id: "g-rev", group: "Qualify", label: "$2,500/mo income, $3,000+ in the account, 4+ deposits last month", hard: true, why: "The balance and deposit-count tests are as real as the income test — they underwrite the bank connection, not a statement." },
+    { id: "g-amt", group: "Qualify", label: "They need $15,000 or less", hard: true, why: "$15,000 new, $20,000 only on a repeat. Above that, this is the wrong line." },
+    { id: "g-credit", group: "Qualify", label: "You have NOT asked about their credit score", why: "Credit is not a factor here. Asking creates an objection the funder does not have." },
+    { id: "g-bank", group: "Set expectations", label: "They can connect a bank account on the spot", hard: true, why: "There are no bank statements to collect. The bank connection IS the underwriting, and it funds in minutes." },
+    { id: "g-link", group: "Send it", label: "You sent the FULL flash.gigglefinance.com link with every parameter intact", hard: true, why: "Attribution is the plid=146720 parameter and nothing else. A shortener, a link preview or a merchant retyping it silently costs us the commission — and the application still works, which is what makes it easy to miss." },
+    { id: "g-nocopy", group: "Send it", label: "You did NOT shorten, retype or paste it into a tool that rewrites links", hard: true, why: "Same reason. Send it in a channel that preserves query strings exactly." },
+    { id: "g-log", group: "After", label: "You logged the referral against the deal yourself", hard: true, why: "Nothing comes back from Giggle — no email, no portal notification, no submission record. If you do not log it, there is no trace it happened." },
+  ],
+  openQuestions: [
+    "What do they actually pay us, and when? Nothing is recorded, so every Gig referral today is unpriced.",
+    "Get any written partner agreement — we hold zero documents.",
+    "Get a named contact. We have never spoken to a human at Giggle.",
+    "What does this cost the borrower? We cannot describe the product honestly without the factor and term.",
+    "Fix the URL inconsistency: the record's own “send this one” link differs from the two fields the app surfaces.",
+  ],
+};
+
+export const LINES: ProductLine[] = [MICRO, MCA, TERM, GIG];

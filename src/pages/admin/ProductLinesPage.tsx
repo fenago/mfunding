@@ -177,7 +177,7 @@ function LineView({ line }: { line: ProductLine }) {
               {line.vocab === "advance" ? "Advance · never call it a loan" : line.vocab === "credit" ? "Credit · lending language" : "Mixed"}
             </span>
             <span className="fp-idchip">{line.primary.name}</span>
-            <span className="fp-idchip">{line.secondary.name}</span>
+            {line.secondary ? <span className="fp-idchip">{line.secondary.name}</span> : null}
           </div>
         </div>
       </div>
@@ -195,9 +195,24 @@ function LineView({ line }: { line: ProductLine }) {
         ) : null}
       </Sec>
 
-      <Sec n={2} title="The two funders behind it" sub="primary first — mapped back to the record and the documents">
+      <Sec
+        n={2}
+        title={line.secondary ? "The two funders behind it" : "The funder behind it"}
+        sub="mapped back to the record and the documents"
+      >
         <Slot slot={line.primary} />
-        <Slot slot={line.secondary} />
+        {line.secondary ? (
+          <Slot slot={line.secondary} />
+        ) : (
+          // A line with one funder says so in words. Padding the slot with a
+          // funder that cannot serve this borrower would read as cover and
+          // send somebody down a dead end mid-call.
+          <div style={{ marginTop: 14 }}>
+            <Alert tone="warn" title="No secondary funder on this line">
+              <p>{line.noSecondary}</p>
+            </Alert>
+          </div>
+        )}
       </Sec>
 
       {line.calculator ? (
