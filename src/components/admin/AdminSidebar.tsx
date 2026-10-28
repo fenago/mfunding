@@ -49,6 +49,7 @@ import {
   HeartIcon,
   BeakerIcon,
   PuzzlePieceIcon,
+  Squares2X2Icon,
   ShareIcon,
   CircleStackIcon,
   UserCircleIcon,
@@ -96,6 +97,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/docs", // 📚 how the business + the product work — closers read the functional set
   "/admin/strategy", // 💡 sales doctrine — closers NEED the training
   "/admin/cheat-sheet", // 🎯 Funder Cheat Sheet — deal-matching reference, every staff role
+  "/admin/products", // 🧾 Momentum Product Lines — what we sell + the funder behind each
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/closer-docs", // 📝 their onboarding paperwork — they have to read + e-sign it
   "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
@@ -174,6 +176,9 @@ const navGroups: NavGroup[] = [
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
       // (closers included) + lens: the reference they work off on every submission.
       { name: "Funder Cheat Sheet", path: "/admin/cheat-sheet", icon: PuzzlePieceIcon, roles: OPS },
+      // Product Lines — what we sell. Sits next to the cheat sheet on purpose:
+      // a closer picks the PRODUCT first and the funder second.
+      { name: "Product Lines", path: "/admin/products", icon: Squares2X2Icon, roles: OPS },
       // My Profile — self-service name/address/1099 edit. Kept in Daily so a pure
       // setter sees a single clean group; also reachable from the user card below.
       { name: "My Profile", path: "/admin/my-profile", icon: UserCircleIcon, roles: OPS },
@@ -472,6 +477,7 @@ export default function AdminSidebar() {
       // call, so it's on the setter's short list alongside the Setter Guide.
       item.path !== "/admin/call-script" &&
       item.path !== "/admin/cheat-sheet" &&
+      item.path !== "/admin/products" &&
       item.path !== "/admin/calendar" &&
       item.path !== "/admin/setter-performance"
     )

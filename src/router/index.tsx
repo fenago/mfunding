@@ -109,6 +109,7 @@ const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDi
 const FunderMatrixPage = lazyWithReload(() => import("../pages/admin/FunderMatrixPage.tsx"));
 const LenderCatalogPage = lazyWithReload(() => import("../pages/admin/LenderCatalogPage.tsx"));
 const FunderCheatSheetPage = lazyWithReload(() => import("../pages/admin/FunderCheatSheetPage.tsx"));
+const ProductLinesPage = lazyWithReload(() => import("../pages/admin/ProductLinesPage.tsx"));
 const EmailPage = lazyWithReload(() => import("../pages/admin/EmailPage.tsx"));
 const ColdEmailPlannerPage = lazyWithReload(() => import("../pages/admin/ColdEmailPlannerPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
@@ -555,6 +556,15 @@ export const routes: RouteObject[] = [
               {
                 path: "cheat-sheet",
                 element: <FunderCheatSheetPage />,
+              },
+              // Momentum Product Lines — what WE sell, and the primary +
+              // secondary funder behind each line. Same audience and the same
+              // NO-extra-guard reasoning as the cheat sheet: a closer picks the
+              // product before they pick the funder, so AdminProtectedRoute's
+              // isStaff check is exactly right and merchants never reach it.
+              {
+                path: "products",
+                element: <ProductLinesPage />,
               },
               // How the Dialing Machine Works — the Lists → VibeReach → WAVV →
               // Revenue Playbook one-pager. Setters (role `closer`) read it as
