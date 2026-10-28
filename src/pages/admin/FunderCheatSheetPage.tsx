@@ -20,6 +20,7 @@ import {
 import { FunderContactBlock } from "@/components/admin/funder/FunderContactBlock";
 import { FunderContactDirectory } from "@/components/admin/funder/FunderContactDirectory";
 import { BittyPlaybook } from "@/components/admin/funder/BittyPlaybook";
+import { ProductShelf } from "@/components/admin/funder/ProductShelf";
 import { OneWestPlaybook } from "@/components/admin/funder/OneWestPlaybook";
 import { PlaybookStyles } from "@/components/admin/funder/playbook";
 import { LinkLine, Quoted } from "@/components/admin/funder/parts";
@@ -328,10 +329,12 @@ type ProductId = "mca" | "term_loan" | "line_of_credit" | "sba" | "equipment";
 // lookup below keeps crossing back through PRODUCT_SPEC / TAB_PRODUCT, and a
 // playbook id reaching one of those would either throw or, worse, quietly
 // render an MCA credit box under a funder heading.
-type TabId = ProductId | "contacts" | "bitty" | "onewest";
+type TabId = ProductId | "contacts" | "bitty" | "onewest" | "shelf";
+const NON_PRODUCT_TABS = ["mca", "contacts", "bitty", "onewest", "shelf"] as const;
 const isProductTab = (t: TabId): t is Exclude<ProductId, "mca"> =>
-  t !== "mca" && t !== "contacts" && t !== "bitty" && t !== "onewest";
+  !(NON_PRODUCT_TABS as readonly string[]).includes(t);
 const PRODUCT_TABS: { v: TabId; label: string }[] = [
+  { v: "shelf", label: "Our Products" },
   { v: "mca", label: "MCA" },
   { v: "term_loan", label: "Term Loan" },
   { v: "line_of_credit", label: "Line of Credit" },
@@ -1133,6 +1136,11 @@ export default function FunderCheatSheetPage() {
               Every funder we are <b>live</b> with or have an <b>ISO application</b> in with, and every way to reach
               them — names, direct lines, department inboxes, portals. <b>Tap a number to call it.</b>
             </p>
+          ) : tab === "shelf" ? (
+            <p>
+              What <b>we</b> sell, as opposed to what the market offers. Five products, each one bound to a funder
+              who has actually agreed to fund it — plus the ladder for deciding which one a merchant gets.
+            </p>
           ) : tab === "bitty" || tab === "onewest" ? (
             <p>
               A funder we are going <b>deep</b> on. Everything their own documents say about the credit box, the
@@ -1165,10 +1173,10 @@ export default function FunderCheatSheetPage() {
 
         {tab === "contacts" && <FunderContactDirectory />}
 
-        {(tab === "bitty" || tab === "onewest") && (
+        {(tab === "bitty" || tab === "onewest" || tab === "shelf") && (
           <>
             <PlaybookStyles />
-            {tab === "bitty" ? <BittyPlaybook /> : <OneWestPlaybook />}
+            {tab === "shelf" ? <ProductShelf /> : tab === "bitty" ? <BittyPlaybook /> : <OneWestPlaybook />}
           </>
         )}
 

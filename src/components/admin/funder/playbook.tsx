@@ -163,6 +163,47 @@ export const PLAYBOOK_CSS = `
 
 .fcs .fp-foot{margin-top:22px;font-size:12px;color:var(--ink-faint);line-height:1.6;max-width:84ch}
 .fcs .fp-foot b{color:var(--ink-soft)}
+
+/* ── product cards ── */
+.fcs .fp-pcard{border:1px solid var(--line);border-left-width:5px;border-radius:var(--radius);
+  background:var(--panel);box-shadow:var(--shadow);overflow:hidden;margin-top:14px}
+.fcs .fp-pcard.adv{border-left-color:var(--a)}
+.fcs .fp-pcard.loan{border-left-color:var(--b)}
+.fcs .fp-pcard.spec{border-left-color:var(--c)}
+.fcs .fp-ptop{padding:15px 18px;border-bottom:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:10px 16px;align-items:baseline;justify-content:space-between}
+.fcs .fp-pname{font-size:17px;font-weight:800;letter-spacing:-.01em}
+.fcs .fp-pkind{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+  border-radius:5px;padding:3px 8px;margin-left:9px;vertical-align:2px}
+.fcs .fp-pcard.adv .fp-pkind{background:var(--a-bg);color:var(--a)}
+.fcs .fp-pcard.loan .fp-pkind{background:var(--b-bg);color:var(--b)}
+.fcs .fp-pcard.spec .fp-pkind{background:var(--c-bg);color:var(--c)}
+.fcs .fp-prange{font-size:17px;font-weight:800;white-space:nowrap;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.fcs .fp-pvia{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-pline{padding:11px 18px;font-size:13px;line-height:1.55;border-top:1px solid var(--line-soft)}
+.fcs .fp-pline:first-of-type{border-top:0}
+.fcs .fp-plk{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-faint);display:block;margin-bottom:3px}
+.fcs .fp-pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:0}
+.fcs .fp-pgrid > .fp-pline{border-top:1px solid var(--line-soft);border-right:1px solid var(--line-soft)}
+.fcs .fp-pitch{padding:13px 18px;background:var(--line-soft);font-size:13px;line-height:1.6;font-style:italic;
+  color:var(--ink-soft);border-top:1px solid var(--line-soft)}
+.fcs .fp-pitch b{font-style:normal;color:var(--ink)}
+
+/* ── routing ladder ── */
+.fcs .fp-ladder{counter-reset:rung}
+.fcs .fp-rung{display:flex;gap:13px;padding:13px 18px;border-top:1px solid var(--line-soft);
+  font-size:13.5px;line-height:1.55;align-items:flex-start}
+.fcs .fp-rung:first-child{border-top:0}
+.fcs .fp-rnum{counter-increment:rung;flex:0 0 auto;width:23px;height:23px;border-radius:50%;
+  background:var(--accent);color:#fff;font-size:11.5px;font-weight:800;display:inline-flex;
+  align-items:center;justify-content:center;margin-top:1px}
+.fcs .fp-rung.stopr .fp-rnum{background:var(--d)}
+.fcs .fp-rnum::before{content:counter(rung)}
+.fcs .fp-rq{font-weight:700;display:block}
+.fcs .fp-ra{color:var(--ink-soft);font-size:12.5px;margin-top:2px;display:block}
+.fcs .fp-ra b{color:var(--ink)}
 `;
 
 export function PlaybookStyles() {
