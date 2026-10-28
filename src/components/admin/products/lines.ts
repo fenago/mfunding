@@ -154,8 +154,17 @@ const MICRO: ProductLine = {
     liveToday: true,
     liveNote: "Live vendor, submission recipe ACTIVE. Can submit today.",
     routes: [
-      { kind: "email", value: "submissions@trueadvancefunding.com" },
-      { kind: "portal", value: "https://apply.trueadvancefunding.com" },
+      {
+        kind: "email",
+        value: "submissions@trueadvancefunding.com",
+        note: "THE route. Delivery proven — 2 sends, 2 replies",
+      },
+      {
+        kind: "portal",
+        value: "https://apply.trueadvancefunding.com",
+        note:
+          "⚠ DO NOT SEND A MERCHANT HERE. Bare host, no ISO code, no query string — anyone who applies through it is untracked and we are paid nothing. Whether it is even merchant-facing is unrecorded",
+      },
     ],
     box: [
       { k: "Funding", v: "$2,000 – $200,000 — the only other funder reaching $2,000" },
@@ -574,7 +583,7 @@ const GIG: ProductLine = {
     contacts: [],
   },
   noSecondary:
-    "There is no second gig funder in the network yet. Rather than pad this line with a funder that cannot serve a 1099 borrower, the slot is left open. The nearest candidate is Fundo — the lowest recorded box we hold at $500–$10,000, 3 months, $1,500/mo — but it sits at `application_submitted`, portal-only, with no submission profile and no documents, so it is a lead to open, not a funder to route to.",
+    "Confirmed: there is no second gig funder in the book. Only three of 110 lenders mention gig, 1099 or self-employed borrowers at all. FUNDO holds the lowest box we have anywhere — $500–$10,000, 3 months, $1,500/mo — but our partner application has been DEAD FOR 90 DAYS: emailed support@fundo.com on 2026-07-29, and the only thing back was a Zendesk ticket-closed survey on 2026-08-12, which is not an approval. Their portal is post-approval only, so there is no way in until they let us in. Chasing (866) 393-8636 is the single action that would give this line a second funder. DAVID ALLEN CAPITAL has a literal gig product but our record says AVOID — an MLM-style agent-recruiting marketplace where agents earn 3–4% against our 8 points, never contacted. UPLYFT matched only on a stray substring and is a $5K–$5M workhorse, not a gig funder. Until Fundo answers, Giggle is a single point of failure for this entire line.",
   checklist: [
     { id: "g-type", group: "Qualify", label: "They earn 1099 or self-employed income — NOT W-2 only", hard: true, why: "A W-2-only earner does not qualify, full stop. This is the first question." },
     { id: "g-state", group: "Qualify", label: "They are NOT in New York, California or Oregon", hard: true, why: "Excluded, corroborated twice. Note this removes Sacramento — one of our six target markets — from this line entirely." },
@@ -593,6 +602,7 @@ const GIG: ProductLine = {
     "Get a named contact. We have never spoken to a human at Giggle.",
     "What does this cost the borrower? We cannot describe the product honestly without the factor and term.",
     "Fix the URL inconsistency: the record's own “send this one” link differs from the two fields the app surfaces.",
+    "Chase Fundo on (866) 393-8636 — our partner application has sat dead for 90 days and they are the only possible second funder for this line.",
   ],
 };
 
