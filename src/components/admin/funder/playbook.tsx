@@ -204,6 +204,34 @@ export const PLAYBOOK_CSS = `
 .fcs .fp-rq{font-weight:700;display:block}
 .fcs .fp-ra{color:var(--ink-soft);font-size:12.5px;margin-top:2px;display:block}
 .fcs .fp-ra b{color:var(--ink)}
+
+/* ── spread calculator ── */
+.fcs .fp-calc{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;
+  border-bottom:1px solid var(--line);background:var(--line-soft)}
+.fcs .fp-field{padding:11px 16px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:5px}
+.fcs .fp-field label{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-field input,.fcs .fp-field select{font:inherit;font-size:14px;font-weight:700;color:var(--ink);
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 9px;width:100%;
+  font-variant-numeric:tabular-nums}
+.fcs .fp-field input:focus,.fcs .fp-field select:focus{outline:2px solid var(--accent);outline-offset:1px}
+.fcs .fp-field .fp-hint{font-size:11px;color:var(--ink-faint);line-height:1.4}
+.fcs .fp-out{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:0}
+.fcs .fp-ocell{padding:14px 16px;border-right:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft)}
+.fcs .fp-ocell.hero{background:var(--a-bg)}
+.fcs .fp-ocell.bad{background:var(--d-bg)}
+.fcs .fp-ocell.cost{background:var(--c-bg)}
+.fcs .fp-ok2{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-ov{font-size:22px;font-weight:800;margin-top:4px;letter-spacing:-.02em;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.fcs .fp-ocell.hero .fp-ov{color:var(--a)}
+.fcs .fp-ocell.bad .fp-ov{color:var(--d)}
+.fcs .fp-ocell.cost .fp-ov{color:var(--c)}
+.fcs .fp-on{font-size:11.5px;color:var(--ink-soft);margin-top:4px;line-height:1.45}
+.fcs .fp-capbar{padding:11px 16px;font-size:13px;line-height:1.5;border-bottom:1px solid var(--line)}
+.fcs .fp-capbar.ok{background:var(--a-bg);color:var(--a)}
+.fcs .fp-capbar.over{background:var(--d-bg);color:var(--d)}
+.fcs .fp-capbar.zero{background:var(--c-bg);color:var(--c)}
+.fcs .fp-capbar b{font-weight:800}
 `;
 
 export function PlaybookStyles() {

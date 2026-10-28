@@ -13,6 +13,7 @@
 // documents are silent say so in words.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Alert, type CheckItem, Checklist, IndustryFinder, Quote, Rows, Sec } from "./playbook";
+import { BittySpreadCalc } from "./BittySpreadCalc";
 
 const TIERS = [
   { n: "Premier", cls: "t1", factor: "1.39", term: "69 wks", comm: "12%", fico: "675+", rev: "$15K/mo" },
@@ -343,6 +344,10 @@ export function BittyPlaybook() {
             you are owed. Sell at the buy rate and you earn <b>nothing</b> on a funded deal.
           </p>
         </Alert>
+
+        <div style={{ marginTop: 12 }}>
+          <BittySpreadCalc />
+        </div>
 
         <div className="fp-panel" style={{ marginTop: 12 }}>
           <div className="fp-math">

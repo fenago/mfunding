@@ -22,6 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import type { ReactNode } from "react";
 import { Alert, Rows, Sec } from "./playbook";
+import { BittySpreadCalc } from "./BittySpreadCalc";
 
 type Kind = "adv" | "loan" | "spec";
 
@@ -254,8 +255,17 @@ export function ProductShelf() {
         </div>
       </Sec>
 
-      {/* ── 2. the shelf ── */}
-      <Sec n={2} title="The five products" sub="each one bound to a single funder">
+      {/* ── 2. price it ── */}
+      <Sec
+        n={2}
+        title="Price a Micro deal"
+        sub="the only product on this shelf whose margin we choose"
+      >
+        <BittySpreadCalc />
+      </Sec>
+
+      {/* ── 3. the shelf ── */}
+      <Sec n={3} title="The five products" sub="each one bound to a single funder">
         {PRODUCTS.map((p) => (
           <div className={`fp-pcard ${p.kind}`} key={p.id}>
             <div className="fp-ptop">
@@ -291,7 +301,7 @@ export function ProductShelf() {
       </Sec>
 
       {/* ── 3. routing ── */}
-      <Sec n={3} title="Which product — the ladder" sub="work it in order, stop at the first yes">
+      <Sec n={4} title="Which product — the ladder" sub="work it in order, stop at the first yes">
         <div className="fp-panel fp-ladder">
           <div className="fp-rung">
             <span className="fp-rnum" />
@@ -367,7 +377,7 @@ export function ProductShelf() {
       </Sec>
 
       {/* ── 4. language ── */}
-      <Sec n={4} title="How each product is allowed to be described" sub="this is a compliance rule, not a style preference">
+      <Sec n={5} title="How each product is allowed to be described" sub="this is a compliance rule, not a style preference">
         <div className="fp-two">
           <div className="fp-gate pass">
             <h4>Micro & Working Capital — never say "loan"</h4>
@@ -416,7 +426,7 @@ export function ProductShelf() {
       </Sec>
 
       {/* ── 5. the edges ── */}
-      <Sec n={5} title="What this shelf does NOT cover" sub="say it out loud so nobody sells it">
+      <Sec n={6} title="What this shelf does NOT cover" sub="say it out loud so nobody sells it">
         <Rows
           items={[
             {
