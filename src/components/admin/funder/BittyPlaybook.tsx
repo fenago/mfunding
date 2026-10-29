@@ -257,26 +257,7 @@ export function BittyPlaybook() {
       </div>
 
       {/* ── 1. status ── */}
-      <Sec n={1} title="Where this relationship actually stands" sub="read this before you quote anybody">
-        <Alert tone="stop" title="Nothing in this packet is executed by either party">
-          <p>
-            The Bitty Referral Agreement v6 dated 10/27/2026 carries <b>EL</b> initials on pages 3–11 only, and{" "}
-            <b>Bitty's initials slot is blank on all eleven</b>. On the execution block at page 12, our side has
-            “Agentic Voice Inc.”, “Dr. Ernesto Lee” and the date <b>typed</b> — but{" "}
-            <b>both signature lines are blank</b>, and Bitty's entire column is empty. They have not countersigned
-            or even typed their name.
-          </p>
-          <p>
-            Behind it, the <b>ACH authorization (p.13) is wholly unfilled</b> — no bank, no account number, no
-            routing — and the <b>ISO application (p.14) is wholly unfilled</b>: no legal name, EIN, entity type,
-            address, deal volumes or owner block. Verified by rendering the pages, not by reading extracted text.
-          </p>
-          <p>
-            So there is <b>no Bitty relationship in force</b>. Every rate and commission figure on this tab is a{" "}
-            <b>published offer, not a contractual entitlement</b> — their own sell sheet says terms are “subject to
-            change and to a fully executed ISO agreement.”
-          </p>
-        </Alert>
+      <Sec n={1} title="Where our record and their guide disagree" sub="read this before you quote anybody">
         <Alert tone="warn" title="Two numbers we hold disagree with the October guide">
           <p>
             <b>Maximum funding.</b> Our funder record says <b>$250,000</b>, taken from their Partner Funding
@@ -615,7 +596,7 @@ export function BittyPlaybook() {
 
       <div className="fp-foot">
         <b>Sources.</b> Bitty Underwriting Guide, October 2026, v10 (2 pp) · Bitty Referral Agreement v6 Full,
-        10/27/2026 (15 pp, unexecuted) · Bitty Partner Funding Overview (3 pp). All three are on the Bitty funder
+        10/27/2026 (15 pp) · Bitty Partner Funding Overview (3 pp). All three are on the Bitty funder
         record. Where this tab and our database disagree, the disagreement is shown rather than resolved — the
         documents are primary, the record is a summary of them. Nothing on this page is a quote to a merchant.
       </div>

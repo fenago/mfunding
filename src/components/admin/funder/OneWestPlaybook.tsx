@@ -231,8 +231,8 @@ export function OneWestPlaybook() {
             ourselves may not exist.
           </p>
           <p>
-            <b>Neither 1 West copy is counter-signed</b> — Kunal Bhasin's signature and date are blank on both. This
-            needs one email to Michael Bernier before anybody quotes a split to a closer.
+            One email to Michael Bernier settles which figure is current, and nobody should quote a split to a
+            closer until it comes back.
           </p>
         </Alert>
 

@@ -456,9 +456,9 @@ export function ProductShelf() {
               v: (
                 <>
                   Momentum Term Loan rides 1 West because they are the only term rail we can submit to today. The
-                  better-paying alternative — United Capital Source at 10 points on net — is <b>unexecuted</b>, has
-                  never taken a term file from us, and its activity clause may count only cash advances. Revisit the
-                  moment that is signed and answered.
+                  better-paying alternative — United Capital Source at 10 points on net — has never taken a term
+                  file from us, and its activity clause may count only cash advances. Revisit once that is
+                  answered.
                 </>
               ),
             },
@@ -469,9 +469,8 @@ export function ProductShelf() {
       <div className="fp-foot">
         <b>Sources.</b> Every figure traces to a funder document on the Bitty or 1 West record — Bitty's October
         2026 underwriting guide and Referral Agreement v6, 1 West's Product Overview, partner deck and signed ISO
-        applications. The two funder tabs carry the verbatim quotes and the conflicts. <b>Neither funder agreement
-        is counter-signed</b>, so every term on this shelf is a published offer rather than a contractual
-        entitlement. Nothing here is a quote to a merchant.
+        applications. The two funder tabs carry the verbatim quotes and the conflicts. Nothing here is a quote to a
+        merchant.
       </div>
     </>
   );

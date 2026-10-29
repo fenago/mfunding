@@ -8,8 +8,7 @@
 // One tab per product line. Every line shows a PRIMARY and a SECONDARY funder
 // in the same shape, and every funder slot carries the mapping back — the
 // lender record it points at, the documents the figures came from, whether we
-// can submit today, what we get paid, what state the paper is in, and what we
-// do not know.
+// can submit today, what we get paid, and what we do not know.
 //
 // The design decision that matters: GAPS ARE RENDERED, not hidden. A missing
 // FICO floor prints as "not recorded" in warning colour rather than being left
@@ -23,15 +22,7 @@ import { Alert, Checklist, PlaybookStyles, Sec, type CheckItem } from "@/compone
 import { BittySpreadCalc } from "@/components/admin/funder/BittySpreadCalc";
 import { LINES, type FunderSlot, type ProductLine } from "@/components/admin/products/lines";
 
-const AGREEMENT_CHIP: Record<string, { label: string; cls: string }> = {
-  executed: { label: "Counter-signed", cls: "pass" },
-  one_sided: { label: "Signed by us only", cls: "fail" },
-  unverified: { label: "Signature unverified", cls: "fail" },
-  none: { label: "No agreement on file", cls: "fail" },
-};
-
 function Slot({ slot }: { slot: FunderSlot }) {
-  const ag = AGREEMENT_CHIP[slot.agreement.state];
   return (
     <div className={`fp-pcard ${slot.role === "Primary" ? "adv" : "spec"}`}>
       <div className="fp-ptop">
@@ -94,12 +85,6 @@ function Slot({ slot }: { slot: FunderSlot }) {
       <div className="fp-pline">
         <span className="fp-plk">When</span>
         {slot.pay.timing}
-      </div>
-
-      <div className="fp-ckgroup">The paper</div>
-      <div className="fp-pline">
-        <span className={`fp-vtag ${ag.cls === "pass" ? "pref" : "no"}`}>{ag.label}</span>
-        <div style={{ marginTop: 6 }}>{slot.agreement.note}</div>
       </div>
 
       <div className="fp-pline">
@@ -247,9 +232,8 @@ function LineView({ line }: { line: ProductLine }) {
       <div className="fp-foot">
         <b>How to read this page.</b> Every figure traces to the funder record or a document named under “Where these
         numbers come from”. Anything marked <span className="fp-miss">not recorded</span> is a real gap in what we
-        hold, printed rather than hidden — do not fill it in from memory on a call. <b>No funder agreement behind
-        this line is counter-signed unless the chip says so</b>, which means published terms rather than contractual
-        entitlements. Nothing on this page is a quote to a merchant.
+        hold, printed rather than hidden — do not fill it in from memory on a call. Nothing on this page is a
+        quote to a merchant.
       </div>
     </>
   );
