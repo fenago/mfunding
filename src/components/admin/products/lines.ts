@@ -469,7 +469,8 @@ const TERM: ProductLine = {
     liveNote: "Live vendor, recipe ACTIVE, five product rows. Can submit today.",
     routes: [{ kind: "email", value: "deals@gokapital.com" }],
     portal: [],
-    portalNote: "No portal recorded on the funder record and none found. Submissions go to the deals inbox by email.",
+    portalNote:
+      "No portal login. Submissions go to the deals inbox by email. Note our funder record says “Your affiliate link for online applications can be found here: Ernesto Lee” — the words survived the paste and the URL did not, so a GoKapital affiliate link may exist and we do not hold it. Worth one email.",
     box: [
       { k: "Term loan", v: "$10,000 – $350,000 · 1–5 years · monthly · 660 FICO · 24 months TIB · $250,000/yr" },
       { k: "Line of credit", v: "$5,000 – $350,000 · 12–36 months per draw · weekly · 650 FICO · 36 months TIB · $15,000/mo · $5,000 average daily balance" },
@@ -496,6 +497,7 @@ const TERM: ProductLine = {
     ],
     gaps: [
       "Commission payment timing unrecorded",
+      "A GoKapital affiliate link for online applications is referred to on our record but the URL itself was lost — we may be leaving self-serve volume untracked",
       "Term pays a QUARTER of UCS — route term files to UCS unless UCS declines",
     ],
     contacts: [],
