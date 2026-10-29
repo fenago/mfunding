@@ -80,7 +80,7 @@ function Slot({ slot, creds, allEmpty }: { slot: FunderSlot; creds: CredState; a
       <div className="fp-ckgroup">What the merchant pays</div>
       <div className="fp-rows">
         {slot.pricing.map((p) => (
-          <Row key={p.k} k={p.k} v={p.v} />
+          <Row key={p.k} k={p.k} v={p.v} missing={p.missing} />
         ))}
       </div>
 

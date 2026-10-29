@@ -50,8 +50,8 @@ export type FunderSlot = {
   portalNote?: string;
   /** Credit box — what they will look at. */
   box: { k: string; v: string; missing?: boolean }[];
-  /** What the merchant pays. */
-  pricing: { k: string; v: string }[];
+  /** What the merchant pays. Same missing-field treatment as the credit box. */
+  pricing: { k: string; v: string; missing?: boolean }[];
   pay: { headline: string; basis: string; timing: string };
   /** Submission history, stated plainly including zeros. */
   track: string;
@@ -691,24 +691,29 @@ const RELIEF: ProductLine = {
       { k: "Shape", v: "Attorney-led renegotiation of the advances the merchant ALREADY has, with their current funders" },
       { k: "New borrowing", v: "None. Nothing is added to the balance sheet" },
       { k: "Upfront cost", v: "No upfront fees — their own ISO page, verbatim" },
-      { k: "How the fee is paid", v: "Built into the restructured payments. Do not describe it as free" },
+      { k: "How the fee is paid", v: "VCF’s own words: “built into your new lower weekly payment, inclusive of our fee from day one, and fully disclosed in a written, no-obligation proposal.” Pay-as-you-go, no enrolment fee. Do NOT describe it as free" },
+      { k: "What VCF charges", v: "They publish no fee schedule on purpose — “every business we help is different”", missing: true },
     ],
     pay: {
-      headline: "3 – 7% of debt restructured — our share UNCONFIRMED",
+      headline: "7% of the debt restructured — all of it, no split",
       basis:
-        "Our funder record holds the free-text string “3-7%” and nothing that says what moves it between the two ends. Our own unit-economics page models the top of that range with OUR SHARE SET TO 100% as an explicit assumption flagged “confirm in the Partner Agreement” — while the bank-loan program on that same page states a 50/50 split per that agreement. So the agreement was read for one program and not the other. Until somebody reads it for this one, treat the per-file number as unverified.",
-      timing: "Recurring over 12–24 months as the merchant performs, not a lump sum at closing. A merchant who drops out mid-program stops paying us.",
+        "Partner Agreement §3 names one number and does not share it: “For any Debt Restructuring/Debt Settlement cases successfully closed, Referral will receive a fee of seven percent (7%) of the amount of debt being restructured.” Flat 7%, no tier, no Schedule A, and no split with VCF — unlike the bank program in the very next sentence, which does state a 50/50. On a $150,000 book of debt that is $10,500 to us, from a merchant no other line in this book can serve. ⚠ Our funder record says “3-7%”; the agreement does not. Trust the agreement and fix the record.",
+      timing:
+        "§3 says “successfully closed” and is SILENT on when and how. The “recurring over 12–24 months” figure our playbook and our economics page both use appears nowhere in the agreement — we wrote it. Ask VCF before you tell a closer when they get paid.",
     },
     track:
       "ZERO. Not one deal has ever carried deal_type = vcf, nothing has ever been submitted to them, and nothing has ever been funded or serviced — despite a built pipeline, an intake function, a call playbook and a unit-economics calculator all standing ready. Every number on this card is what we were told or what they publish. None of it is something we have seen happen.",
     evidence: [
       "lenders.description — the onboarding email from Ferne Kornfeld, verbatim",
+      "Partner Agreement (PA_-_W9_-_Revised.pdf) §3, p.2 — the compensation clause, quoted above verbatim. Five pages, no Schedule A, no rate table",
       "VCF ISO partner page (go.valuecapitalfunding.com) — attorney-led, $50K qualifier, no FICO, no collateral, no upfront fees",
+      "valuecapitalfunding.com/pricing-and-fees/, modified 2026-08-27 — how the merchant pays, and their refusal to publish a schedule",
       "lenders.category — our 2026-08-11 web extraction, which already flags not_a_funder: true",
     ],
     gaps: [
-      "Whether our 3–7% is the whole fee or a split with VCF — the single most valuable unanswered question on this line",
-      "What moves the rate between 3% and 7%",
+      "WHEN the 7% is paid, and whether it arrives in one payment or over the life of the program. The agreement does not say, and the 12–24 month figure in our own playbook is not sourced from it",
+      "What VCF itself charges the merchant — they deliberately publish no fee schedule, so we cannot sanity-check our 7% against their take",
+      "Our lender_programs row for VCF is entirely null and marked inactive, so nothing in the app can match a merchant to this product automatically",
       "Positions, revenue floor, time in business and excluded states are all unpublished by them",
       "Whether a restructuring touches a funder we have a non-interference clause with — UCS carries 24 months and LCF carries one too. This is a lawyer question, not a closer question",
     ],
@@ -736,25 +741,28 @@ const RELIEF: ProductLine = {
       { k: "Time in business", v: "ISO page 2+ years · merchant site says 1 year" },
       { k: "Revenue", v: "ISO page $250,000/yr · merchant site says $100,000/yr. Positive net income on both" },
       { k: "Amount", v: "ISO page: minimum $100,000, no maximum stated · merchant site: up to $350,000" },
-      { k: "States", v: "not recorded", missing: true },
+      { k: "States", v: "All 50 — both pages agree, and neither names an excluded state" },
+      { k: "Ownership", v: "51%+ US-citizen owned" },
+      { k: "Excluded industries", v: "Transportation, logistics and cannabis. Both pages agree" },
     ],
     pricing: [
       { k: "Shape", v: "A 3–10 year bank or bank-style term loan whose purpose is to pay the MCA lenders off directly. Their words: not SBA, not an MCA" },
       { k: "Rate", v: "ISO page 15–22% APR · merchant site says 13–22%" },
       { k: "Term", v: "3 – 10 years" },
       { k: "Speed", v: "ISO page: decision 1–3 days, close 2–3 weeks · merchant site: pre-approval 3–4 days, funds 10–14 days" },
+      { k: "Merchant’s fee", v: "A one-time success fee in points on a sliding scale by loan size, invoiced AFTER funding and usually paid from the proceeds. Their words: “not rolled into the loan balance, and never charged upfront.” The percentage is not published" },
     ],
     pay: {
       headline: "~2% net to us",
       basis:
-        "Up to 4% total compensation, split 50/50 — and unlike the restructuring program, that split IS stated in the Partner Agreement rather than assumed.",
-      timing: "Not recorded.",
+        "Partner Agreement §3: “For the FDIC Bank Financing Program, funded transactions will pay 50% of the comp paid to VCF to the Referral.” So our half floats with whatever VCF earns — we do not set it and we do not see it. The ~2% net comes from the up-to-4% total on their ISO partner page, which §3 cites by link.",
+      timing: "Not stated in the agreement.",
     },
     track: "ZERO, same as the restructuring program. No file has ever been sent.",
     evidence: [
       "VCF ISO bank-term-loan page (go.valuecapitalfunding.com/isobanktermloans) — the ISO column above",
       "valuecapitalfunding.com/mca-debt-refinancing/, modified 2026-09-04 — the merchant column above",
-      "Partner Agreement — the 50/50 split on this program",
+      "Partner Agreement (PA_-_W9_-_Revised.pdf) §3, p.2 — the 50/50 on this program, verbatim",
     ],
     gaps: [
       "Their two public pages contradict each other on four fields. Nobody has asked them which is current",
@@ -782,8 +790,9 @@ const RELIEF: ProductLine = {
     { id: "r-expect", group: "Before you submit", label: "The merchant knows we are paid as a recurring share over 12–24 months", hard: true, why: "It shapes how you follow up. If they drop out of the program, our money stops too." },
   ],
   openQuestions: [
-    "Is our 3–7% the whole fee or a split with VCF? Our own economics page assumes 100% and flags it as unconfirmed. One read of the Partner Agreement settles it.",
-    "What moves the rate between 3% and 7%?",
+    "When does the 7% actually arrive — one payment or spread over the program? §3 is silent, and the 12–24 month figure we use internally came from us, not from them.",
+    "Fix lenders.commission_structure: it says “3-7%” and the agreement says a flat 7%.",
+    "Fill in the lender_programs row — every field is null and it is marked inactive, so no merchant can be matched to this product by the app.",
     "Ask VCF which of their two published boxes is current — their merchant site and their ISO page disagree on time in business, revenue, maximum amount and APR.",
     "Counsel question, one sentence: does helping a merchant renegotiate an advance held by a funder we have a non-interference clause with (UCS, 24 months; LCF) breach that clause?",
     "Which bank actually makes the term loan?",
