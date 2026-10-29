@@ -17,6 +17,19 @@
 //     lines of credit are credit and use ordinary lending language.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A portal we log into, as opposed to a route a file goes out on.
+ * `unverified` means the URL came from a scrape of the funder's own site and
+ * nobody here has opened it — it is shown, and labelled, rather than hidden,
+ * because a closer who cannot find a login assumes none exists.
+ */
+export type PortalRef = {
+  url: string;
+  label: string;
+  note?: string;
+  unverified?: boolean;
+};
+
 export type SubmitRoute = {
   kind: "email" | "portal" | "selfserve";
   value: string;
@@ -31,6 +44,10 @@ export type FunderSlot = {
   liveToday: boolean;
   liveNote: string;
   routes: SubmitRoute[];
+  /** Broker/ISO portals we log into. Empty array where there is genuinely none. */
+  portal: PortalRef[];
+  /** Required when `portal` is empty — says so in words rather than rendering nothing. */
+  portalNote?: string;
   /** Credit box — what they will look at. */
   box: { k: string; v: string; missing?: boolean }[];
   /** What the merchant pays. */
@@ -100,6 +117,13 @@ const MICRO: ProductLine = {
     routes: [
       { kind: "portal", value: "broker.bittyadvance.com", note: "Manual entry marked preferred; API fastest; auto-email fallback" },
     ],
+    portal: [
+      {
+        url: "https://broker.bittyadvance.com",
+        label: "Bitty broker portal",
+        note: "The submission route as well as the login. Manual entry is the method they mark preferred.",
+      },
+    ],
     box: [
       { k: "Funding", v: "$2,000 – $100,000" },
       { k: "Time in business", v: "12 months on every priced tier (6 is only the auto-decline floor)" },
@@ -140,7 +164,7 @@ const MICRO: ProductLine = {
   secondary: {
     role: "Secondary",
     name: "True Advance Funding",
-    lenderId: "",
+    lenderId: "ba3d03cc-6342-433d-a919-fb48cb009265",
     liveToday: true,
     liveNote: "Live vendor, submission recipe ACTIVE. Can submit today.",
     routes: [
@@ -154,6 +178,20 @@ const MICRO: ProductLine = {
         value: "https://apply.trueadvancefunding.com",
         note:
           "⚠ DO NOT SEND A MERCHANT HERE. Bare host, no ISO code, no query string — anyone who applies through it is untracked and we are paid nothing. Whether it is even merchant-facing is unrecorded",
+      },
+    ],
+    portal: [
+      {
+        url: "https://portal.trueadvance.biz",
+        label: "ISO login portal",
+        note: "Scraped from their own site and recorded as the ISO login. Nobody here has opened it, so try it before you rely on it.",
+        unverified: true,
+      },
+      {
+        url: "https://new.trueadvance.biz/iso",
+        label: "ISO / partner application",
+        note: "Four-step onboarding form, not a login.",
+        unverified: true,
       },
     ],
     box: [
@@ -240,6 +278,9 @@ const MCA: ProductLine = {
       { kind: "email", value: "submissions@thelcfgroup.com", note: "LCF entity — $25K minimum, 3mo TIB" },
       { kind: "email", value: "submissions@reliantfunding.com", note: "Reliant entity — $10K minimum, 6mo TIB, 6–10 pts recorded" },
     ],
+    portal: [],
+    portalNote:
+      "No broker portal and no login. Everything with LCF goes by email. The one approval we have ever had did put the offer behind a “View Offers” link in their reply — that is a per-deal link in the email, not an account you can log into, and nobody opened it.",
     box: [
       { k: "Funding", v: "$10,000 – $300,000 (Reliant) · $25,000 – $300,000 (LCF)" },
       { k: "Time in business", v: "6 months (Reliant) · 3 months (LCF)" },
@@ -291,6 +332,14 @@ const MCA: ProductLine = {
     routes: [
       { kind: "email", value: "partnersubs@1west.com", note: "Brokered route — application + LAST 4 MONTHS of statements" },
       { kind: "selfserve", value: "https://apply.1west.com/?iso=a10PZ00000socCfYAI", note: "Send this to the merchant directly — our ISO code is embedded in the link" },
+    ],
+    portal: [
+      {
+        url: "https://apply.1west.com/accounts/login/",
+        label: "Account log-in",
+        note: "From their own contact page. Not yet opened by anyone here. Note our submission profile points at www.1west.com, which is the marketing site, not a portal — ignore it.",
+        unverified: true,
+      },
     ],
     box: [
       { k: "Funding", v: "$2,500 – $2,000,000 short-term" },
@@ -373,6 +422,8 @@ const TERM: ProductLine = {
     liveToday: true,
     liveNote: "Live vendor, recipe ACTIVE. Can submit today.",
     routes: [{ kind: "email", value: "isosubmissions@unitedcapitalsource.com" }],
+    portal: [],
+    portalNote: "No portal recorded on the funder record and none found. Submissions go to the ISO inbox by email.",
     box: [
       { k: "Term loan", v: "$5,000 – $10,000,000 · 3 months to 10 years · daily, weekly or monthly" },
       { k: "Line of credit", v: "$1,000 – $1,000,000 · up to 36 months · weekly or monthly" },
@@ -413,10 +464,12 @@ const TERM: ProductLine = {
   secondary: {
     role: "Secondary",
     name: "GoKapital",
-    lenderId: "",
+    lenderId: "e5516b47-9167-4236-895c-0a108f0f7352",
     liveToday: true,
     liveNote: "Live vendor, recipe ACTIVE, five product rows. Can submit today.",
     routes: [{ kind: "email", value: "deals@gokapital.com" }],
+    portal: [],
+    portalNote: "No portal recorded on the funder record and none found. Submissions go to the deals inbox by email.",
     box: [
       { k: "Term loan", v: "$10,000 – $350,000 · 1–5 years · monthly · 660 FICO · 24 months TIB · $250,000/yr" },
       { k: "Line of credit", v: "$5,000 – $350,000 · 12–36 months per draw · weekly · 650 FICO · 36 months TIB · $15,000/mo · $5,000 average daily balance" },
@@ -504,6 +557,13 @@ const GIG: ProductLine = {
         note: "Softer co-branded intro page; its “Let’s Get Funded” button forwards to the link above",
       },
     ],
+    portal: [
+      {
+        url: "https://partners.gigglefinance.com/agentic-voice-inc/ernesto-lee",
+        label: "Our co-branded partner page",
+        note: "A page about us, not an account. There is no Giggle login — nothing is ever submitted, so there is nothing to log in and look at.",
+      },
+    ],
     box: [
       { k: "Funding", v: "Up to $15,000 new · $20,000 on a repeat. Minimum NOT published" },
       { k: "Time in business", v: "3 months of 1099 or business income" },
@@ -536,7 +596,7 @@ const GIG: ProductLine = {
       "Cost to the borrower: factor, fees and term all unrecorded, so we cannot explain the product honestly",
       "Minimum funding amount not published",
       "No named contact and no email ever exchanged — nothing that fixes a commission rate",
-      "Our own record disagrees with itself on the URL — see the warning below",
+      "Our own record disagrees with itself on the URL: the funder record and the submission profile both hold the short gigglefinance.com/?plid=146720 form, which is NOT the full flash link above that the same record says to send",
     ],
     contacts: [],
   },

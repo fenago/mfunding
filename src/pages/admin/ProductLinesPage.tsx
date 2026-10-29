@@ -16,13 +16,15 @@
 // complete and a closer then quotes a figure we never had. Several funders
 // here have holes in exactly the fields a closer would assume are filled.
 // ─────────────────────────────────────────────────────────────────────────────
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import supabase from "@/supabase";
 import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
 import { Alert, Checklist, PlaybookStyles, Sec, type CheckItem } from "@/components/admin/funder/playbook";
 import { BittySpreadCalc } from "@/components/admin/funder/BittySpreadCalc";
 import { LINES, type FunderSlot, type ProductLine } from "@/components/admin/products/lines";
+import { PortalLogin, type CredState, type PortalCredRow } from "@/components/admin/products/PortalLogin";
 
-function Slot({ slot }: { slot: FunderSlot }) {
+function Slot({ slot, creds, allEmpty }: { slot: FunderSlot; creds: CredState; allEmpty: boolean }) {
   return (
     <div className={`fp-pcard ${slot.role === "Primary" ? "adv" : "spec"}`}>
       <div className="fp-ptop">
@@ -58,6 +60,15 @@ function Slot({ slot }: { slot: FunderSlot }) {
           </div>
         ))}
       </div>
+
+      <PortalLogin
+        lenderId={slot.lenderId}
+        funderName={slot.name}
+        portal={slot.portal}
+        portalNote={slot.portalNote}
+        creds={creds}
+        allEmpty={allEmpty}
+      />
 
       <div className="fp-ckgroup">Credit box — what they will look at</div>
       <div className="fp-rows">
@@ -141,7 +152,10 @@ function Row({ k, v, missing }: { k: string; v: string; missing?: boolean }) {
   );
 }
 
-function LineView({ line }: { line: ProductLine }) {
+function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
+  // RLS hands an unauthorised reader an empty list rather than an error, so a
+  // page-wide zero is the one signal we have that the emptiness may not be real.
+  const allEmpty = creds.s === "ok" && creds.rows.length === 0;
   const checks: CheckItem[] = line.checklist.map((c) => ({
     id: c.id,
     group: c.group,
@@ -185,9 +199,9 @@ function LineView({ line }: { line: ProductLine }) {
         title={line.secondary ? "The two funders behind it" : "The funder behind it"}
         sub="mapped back to the record and the documents"
       >
-        <Slot slot={line.primary} />
+        <Slot slot={line.primary} creds={creds} allEmpty={allEmpty} />
         {line.secondary ? (
-          <Slot slot={line.secondary} />
+          <Slot slot={line.secondary} creds={creds} allEmpty={allEmpty} />
         ) : (
           // A line with one funder says so in words. Padding the slot with a
           // funder that cannot serve this borrower would read as cover and
@@ -242,6 +256,30 @@ function LineView({ line }: { line: ProductLine }) {
 export default function ProductLinesPage() {
   const [tab, setTab] = useState(LINES[0].id);
   const line = LINES.find((l) => l.id === tab) ?? LINES[0];
+  const [creds, setCreds] = useState<CredState>({ s: "load" });
+
+  // One query for every funder on every line, rather than one per card. The
+  // password is NOT in this select — `secret_id` is a vault pointer and the
+  // plaintext only comes back from the audited RPC.
+  useEffect(() => {
+    let cancelled = false;
+    const ids = LINES.flatMap((l) => [l.primary.lenderId, l.secondary?.lenderId ?? ""]).filter(Boolean);
+    void (async () => {
+      const { data, error } = await supabase
+        .from("funder_portal_credentials")
+        .select("id, lender_id, label, portal_url, username, secret_id, mfa_note, login_note, last_confirmed_on")
+        .in("lender_id", ids)
+        .order("label");
+      if (cancelled) return;
+      // A failure must stay distinguishable from an empty result all the way
+      // to the screen; collapsing them here is how "no login on file" gets
+      // printed over a login that exists.
+      setCreds(error ? { s: "fail", why: error.message } : { s: "ok", rows: (data ?? []) as PortalCredRow[] });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="fcs">
@@ -280,13 +318,21 @@ export default function ProductLinesPage() {
           ))}
         </div>
 
-        <LineView line={line} />
+        <LineView line={line} creds={creds} />
       </div>
     </div>
   );
 }
 
 const EXTRA_CSS = `
+.fcs .fp-unver{display:inline-block;margin-left:6px;padding:0 5px;border-radius:4px;background:var(--c-bg);color:var(--c);font-size:9.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;vertical-align:1px}
+.fcs .fp-pnote{margin-top:3px;font-size:12px;color:var(--ink-soft);line-height:1.5}
+.fcs .fp-secret{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 6px;border-radius:5px;background:var(--chip);border:1px solid var(--line-soft)}
+.fcs .fp-pbtn{font:inherit;font-size:12px;font-weight:700;padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+.fcs .fp-pbtn:hover:not(:disabled){border-color:var(--accent);color:var(--accent-ink)}
+.fcs .fp-pbtn:disabled{opacity:.55;cursor:default}
+.fcs .fp-phint{font-size:11.5px;color:var(--ink-faint)}
+.fcs .fp-perr{font-size:11.5px;font-weight:700;color:var(--d)}
 .fcs .fp-link{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
 .fcs .fp-link:hover{border-bottom-color:var(--accent)}
 .fcs .fp-evid{margin:0;padding-left:18px;font-size:12.5px;color:var(--ink-soft);line-height:1.6}
