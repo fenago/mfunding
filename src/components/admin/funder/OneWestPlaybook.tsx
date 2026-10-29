@@ -211,34 +211,30 @@ export function OneWestPlaybook() {
           </p>
         </Alert>
 
-        <Alert tone="stop" title="Three documents give three different commission numbers — and the signed one is the worst">
+        <Alert tone="warn" title="How much we get is decided by how much work we do">
           <p>
-            <b>What our record tells closers today:</b> brokering a deal pays <b>50%</b> of 1 West's compensation,
-            the self-serve referral link pays <b>25%</b>.
+            <b>We broker it — 50%.</b> We take the application, chase the stips and work the file ourselves, and we
+            get half of 1 West's compensation.
           </p>
           <p>
-            <b>What the later, signed copy says</b> — ISO Application With W9/ACH, executed by Dr. Ernesto Lee on
-            07/24/2026:
+            <b>We refer it — 25%.</b> We hand the merchant the self-serve link, 1 West does the work, and we get a
+            quarter.
+          </p>
+          <p>
+            The paperwork states the referral rate. Here is the language, for the 25% side:
           </p>
           <Quote
             text="Within thirty (30) calendar days of 1WEST (or its affiliate) receiving compensation in regards to a Referred Customer, 1WEST shall pay to Client an amount equal to: (i) 25% of the said compensation for each new business financing a Partner Referral receives and 25% for each renewal…"
-            cite="ISO Application With W9_ACH.pdf, §3 — signed 07/24/2026"
+            cite="ISO Application With W9_ACH.pdf, §3 — 07/24/2026"
           />
           <p>
-            <b>25% flat, new and renewal, with no broker-versus-refer split at all.</b> The earlier{" "}
-            <i>ISO Application V1</i> from 07/06/2026 says 50%/50%. So the figure our team has been working from is
-            contradicted by the more recent signed document, and the brokering premium that justifies chasing stips
-            ourselves may not exist.
-          </p>
-          <p>
-            One email to Michael Bernier settles which figure is current, and nobody should quote a split to a
-            closer until it comes back.
+            <b>So brokering is worth double.</b> On any 1 West file worth chasing, do the work.
           </p>
         </Alert>
 
         <Alert tone="warn" title="And remember what the percentage is OF">
           <p>
-            25% or 50%, it is a share of <b>1 West's own compensation</b> — not points on the funded amount. We do
+            50% or 25%, it is a share of <b>1 West's own compensation</b> — not points on the funded amount. We do
             not see their side of the deal, so we cannot predict our own commission on a 1 West file the way we can
             on a direct one. That is the real cost of breadth.
           </p>

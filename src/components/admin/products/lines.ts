@@ -307,19 +307,19 @@ const MCA: ProductLine = {
       { k: "Decision", v: "24 hours or less" },
     ],
     pay: {
-      headline: "25% of 1 West's compensation — contested",
-      basis: "A share of THEIR revenue, which we never see, so our commission on a 1 West file is unpredictable by construction. The signed 07/24/2026 copy says 25% new and 25% renewal with no broker-vs-refer split; the earlier copy says 50%/50%; our own record claims broker 50% / refer 25%.",
+      headline: "50% brokered · 25% referred",
+      basis:
+        "A share of 1 WEST'S compensation, not points on the funded amount. We broker it ourselves — take the application, chase the stips, work the file — and we get 50%. We hand the merchant the self-serve link and let 1 West do the work, and we get 25%. Either way it is a share of a number we never see, so a 1 West file cannot be forecast the way a direct one can.",
       timing: "Within 30 calendar days of 1 West receiving its compensation.",
     },
     track: "5 submissions, 5 declines, zero funded. Three came back on one day marked “Declined from Ondeck.”",
     evidence: [
       "1 West Product Overview.pdf — ABLE minimum and preferred qualifications",
       "1 West PowerPoint Presentation.pdf (15pp) — the four Funding Program bands",
-      "ISO Application With W9_ACH.pdf, signed 07/24/2026 — the 25% language, verbatim",
+      "ISO Application With W9_ACH.pdf, 07/24/2026 — the referral-rate language, verbatim",
       "Partner-welcome email 2026-07-25 — both submission routes, 4-month statement rule",
     ],
     gaps: [
-      "Commission is 25% or 50% depending which document you read — unresolved",
       "State coverage genuinely unknown; it is whatever the matched partner covers",
       "No portal login exists — the credential row is empty",
       "Our MCA program row claims 1 month TIB, which no document supports. Ignore it.",
@@ -347,7 +347,6 @@ const MCA: ProductLine = {
     "LCF's FICO floor and maximum position count — both unrecorded.",
     "Which entity papers the deal, LCF or Reliant?",
     "Commission timing: 5 business days or 30? The signed agreement says both.",
-    "1 West: 25% or 50%? One email to Michael Bernier settles it.",
   ],
 };
 

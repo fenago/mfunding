@@ -92,8 +92,8 @@ const PRODUCTS: Product[] = [
         k: "What we earn",
         v: (
           <>
-            A share of <b>1 West's</b> compensation, which we never see —{" "}
-            <b>25% per the signed agreement</b>, 50% per our record. Paid within 30 days of 1 West being paid.
+            A share of <b>1 West's</b> compensation, which we never see — <b>50% if we broker it, 25% if we
+            just refer it</b>. Paid within 30 days of 1 West being paid.
           </>
         ),
       },
@@ -131,7 +131,7 @@ const PRODUCTS: Product[] = [
       },
       {
         k: "What we earn",
-        v: <>Same 25%-of-their-compensation share as every 1 West product, within 30 days of them collecting.</>,
+        v: <>Same share of their compensation as every 1 West product — 50% brokered, 25% referred — within 30 days of them collecting.</>,
       },
       { k: "Honest caveat", v: <>Priced as cents-on-the-dollar, not an APR. It is a fixed-term business loan, but it is not bank pricing — set the borrower's expectation on the first call.</> },
     ],
@@ -223,8 +223,8 @@ export function ProductShelf() {
           </p>
           <p>
             <b>1 West</b> pays a percentage of <b>1 West's own compensation</b>, which never appears on anything we
-            see, <b>within 30 days of them collecting it</b>. We cannot forecast it, and the percentage itself is
-            contested — the signed agreement says 25%, our record says 50%.
+            see, <b>within 30 days of them collecting it</b>. We cannot forecast it — and the percentage depends on
+            us: <b>50% if we broker the file, 25% if we just hand over the referral link</b>.
           </p>
         </Alert>
 
@@ -237,8 +237,8 @@ export function ProductShelf() {
             </div>
             <div className="fp-mcell">
               <div className="fp-mk2">$50K through 1 West</div>
-              <div className="fp-mv">~$1,000</div>
-              <div className="fp-mn">25% of their comp, IF they earn 8 pts · ~30 days</div>
+              <div className="fp-mv">~$2,000</div>
+              <div className="fp-mn">50% brokered, IF they earn 8 pts · ~30 days · $1,000 if referred</div>
             </div>
             <div className="fp-mcell">
               <div className="fp-mk2">Our house model</div>
