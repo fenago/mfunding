@@ -74,8 +74,12 @@ export type ProductLine = {
   id: string;
   tab: string;
   name: string;
-  /** advance = purchase of receivables (never "loan"); credit = real lending. */
-  vocab: "advance" | "credit" | "both";
+  /**
+   * advance = purchase of receivables (never "loan"); credit = real lending;
+   * relief = neither — nothing is borrowed and nothing is purchased, so both
+   * vocabularies are wrong and saying either one misdescribes the product.
+   */
+  vocab: "advance" | "credit" | "both" | "relief";
   range: string;
   tagline: string;
   whoFor: string;
@@ -625,4 +629,167 @@ const GIG: ProductLine = {
   ],
 };
 
-export const LINES: ProductLine[] = [MICRO, MCA, TERM, GIG];
+// ── 5 ── DEBT RELIEF ─────────────────────────────────────────────────────────
+// The only line on this page where we are not placing capital. The merchant is
+// already stacked and cannot take another advance; the product is getting the
+// advances they ALREADY have renegotiated, or refinanced out with bank money.
+//
+// Two things make this line different from every other one here, and both are
+// written onto the page rather than left to be learned:
+//
+//  1. It is WHITE-LABEL. The merchant is never told the partner's name. "VCF"
+//     is an internal code and nothing else — it is in our pipeline stage labels
+//     by mistake, not by design.
+//  2. It must not be marketed publicly on this brand. Debt relief is a
+//     PROHIBITED content category for A2P 10DLC, the public pages were pulled
+//     for exactly that reason, and our SMS registration has been refused
+//     repeatedly. Working a file is fine. Advertising the line is not.
+const RELIEF: ProductLine = {
+  id: "relief",
+  tab: "Debt Relief",
+  name: "Momentum Debt Relief",
+  vocab: "relief",
+  range: "$50,000+ of existing debt",
+  tagline: "For the merchant who is already stacked and cannot take another advance.",
+  whoFor:
+    "A merchant being bled by daily or weekly debits on advances they already have. Being BEHIND is a qualifier here, not a disqualifier — this is the one line in the book that wants the file everybody else declines. It is also where a declined MCA merchant goes instead of into nurture.",
+  warning: {
+    tone: "stop",
+    title: "Do not advertise this line on the Momentum brand",
+    body:
+      "Debt relief is a PROHIBITED content category for A2P 10DLC — not restricted, prohibited. The public /debt-relief page and the relief calculators were deliberately unrouted for that reason, and our SMS registration has been refused more than once. Working a file that comes to us is fine. Putting this product on mfunding.net, or texting a merchant about it, risks the registration the whole company needs. If this line is ever marketed, it needs its own domain and its own brand.",
+  },
+  primary: {
+    role: "Primary",
+    name: "MCA Debt Restructuring",
+    lenderId: "ea733ace-66de-4804-8ed8-eb6da259a2d2",
+    liveToday: true,
+    liveNote:
+      "Live vendor, onboarded, named contact who emailed us directly. Partner program is open to us.",
+    routes: [
+      {
+        kind: "email",
+        value: "partnerprogram@valuecapitalfunding.com",
+        note: "The partner desk. Same address as our named contact",
+      },
+    ],
+    portal: [],
+    portalNote:
+      "No portal and no login. The URL on the funder record is their public marketing page, not a submission portal — do not treat it as one.",
+    box: [
+      { k: "Qualifier", v: "$50,000+ of MCA and other high-cost business debt, combined. Their words: the only real qualifier on debt size" },
+      { k: "Credit", v: "No minimum FICO" },
+      { k: "Collateral", v: "None" },
+      { k: "Already behind?", v: "A QUALIFIER, not a disqualifier. Default does not kill this file" },
+      { k: "Approval", v: "They claim 90%+ approved, reviewed in 1–2 hours — their figure, not ours" },
+      { k: "Max positions", v: "not published by them and not recorded by us", missing: true },
+      { k: "Revenue floor", v: "not published by them and not recorded by us", missing: true },
+      { k: "Time in business", v: "not published by them and not recorded by us", missing: true },
+      { k: "Excluded states", v: "not published by them and not recorded by us", missing: true },
+    ],
+    pricing: [
+      { k: "Shape", v: "Attorney-led renegotiation of the advances the merchant ALREADY has, with their current funders" },
+      { k: "New borrowing", v: "None. Nothing is added to the balance sheet" },
+      { k: "Upfront cost", v: "No upfront fees — their own ISO page, verbatim" },
+      { k: "How the fee is paid", v: "Built into the restructured payments. Do not describe it as free" },
+    ],
+    pay: {
+      headline: "3 – 7% of debt restructured — our share UNCONFIRMED",
+      basis:
+        "Our funder record holds the free-text string “3-7%” and nothing that says what moves it between the two ends. Our own unit-economics page models the top of that range with OUR SHARE SET TO 100% as an explicit assumption flagged “confirm in the Partner Agreement” — while the bank-loan program on that same page states a 50/50 split per that agreement. So the agreement was read for one program and not the other. Until somebody reads it for this one, treat the per-file number as unverified.",
+      timing: "Recurring over 12–24 months as the merchant performs, not a lump sum at closing. A merchant who drops out mid-program stops paying us.",
+    },
+    track:
+      "ZERO. Not one deal has ever carried deal_type = vcf, nothing has ever been submitted to them, and nothing has ever been funded or serviced — despite a built pipeline, an intake function, a call playbook and a unit-economics calculator all standing ready. Every number on this card is what we were told or what they publish. None of it is something we have seen happen.",
+    evidence: [
+      "lenders.description — the onboarding email from Ferne Kornfeld, verbatim",
+      "VCF ISO partner page (go.valuecapitalfunding.com) — attorney-led, $50K qualifier, no FICO, no collateral, no upfront fees",
+      "lenders.category — our 2026-08-11 web extraction, which already flags not_a_funder: true",
+    ],
+    gaps: [
+      "Whether our 3–7% is the whole fee or a split with VCF — the single most valuable unanswered question on this line",
+      "What moves the rate between 3% and 7%",
+      "Positions, revenue floor, time in business and excluded states are all unpublished by them",
+      "Whether a restructuring touches a funder we have a non-interference clause with — UCS carries 24 months and LCF carries one too. This is a lawyer question, not a closer question",
+    ],
+    contacts: [
+      { name: "Ferne Kornfeld", email: "partnerprogram@valuecapitalfunding.com", phone: "561-288-4510" },
+      { name: "Partner desk — text line", phone: "561-486-9731" },
+      { name: "Partner desk — toll free", phone: "800-944-6280" },
+    ],
+  },
+  secondary: {
+    role: "Secondary",
+    name: "Bank Term Loan & Line of Credit",
+    lenderId: "ea733ace-66de-4804-8ed8-eb6da259a2d2",
+    liveToday: true,
+    liveNote:
+      "Same partner, same desk, different program. Try this one FIRST when the merchant is still current on their payments — that is VCF's own triage rule.",
+    routes: [
+      { kind: "email", value: "partnerprogram@valuecapitalfunding.com", note: "Same desk — say which program you want" },
+    ],
+    portal: [],
+    portalNote: "No portal and no login.",
+    box: [
+      { k: "⚠ Two of their own pages disagree", v: "Their merchant site and their ISO partner page state DIFFERENT boxes today. Both are below. Quote the ISO column — the merchant column will pre-qualify people their desk then turns down", missing: true },
+      { k: "Credit", v: "640+ on all three bureaus — both pages agree" },
+      { k: "Time in business", v: "ISO page 2+ years · merchant site says 1 year" },
+      { k: "Revenue", v: "ISO page $250,000/yr · merchant site says $100,000/yr. Positive net income on both" },
+      { k: "Amount", v: "ISO page: minimum $100,000, no maximum stated · merchant site: up to $350,000" },
+      { k: "States", v: "not recorded", missing: true },
+    ],
+    pricing: [
+      { k: "Shape", v: "A 3–10 year bank or bank-style term loan whose purpose is to pay the MCA lenders off directly. Their words: not SBA, not an MCA" },
+      { k: "Rate", v: "ISO page 15–22% APR · merchant site says 13–22%" },
+      { k: "Term", v: "3 – 10 years" },
+      { k: "Speed", v: "ISO page: decision 1–3 days, close 2–3 weeks · merchant site: pre-approval 3–4 days, funds 10–14 days" },
+    ],
+    pay: {
+      headline: "~2% net to us",
+      basis:
+        "Up to 4% total compensation, split 50/50 — and unlike the restructuring program, that split IS stated in the Partner Agreement rather than assumed.",
+      timing: "Not recorded.",
+    },
+    track: "ZERO, same as the restructuring program. No file has ever been sent.",
+    evidence: [
+      "VCF ISO bank-term-loan page (go.valuecapitalfunding.com/isobanktermloans) — the ISO column above",
+      "valuecapitalfunding.com/mca-debt-refinancing/, modified 2026-09-04 — the merchant column above",
+      "Partner Agreement — the 50/50 split on this program",
+    ],
+    gaps: [
+      "Their two public pages contradict each other on four fields. Nobody has asked them which is current",
+      "Which bank actually lends. “FDIC” describes a bank's deposit insurance, NOT this loan — never call it an FDIC-insured loan",
+      "Commission timing unrecorded",
+    ],
+    contacts: [
+      { name: "Ferne Kornfeld", email: "partnerprogram@valuecapitalfunding.com", phone: "561-288-4510" },
+    ],
+  },
+  checklist: [
+    { id: "r-white", group: "Before you open your mouth", label: "You will NOT name the partner to the merchant", hard: true, why: "This line is white-label. The merchant buys Momentum Debt Relief. “VCF” is an internal code — it appears in our own pipeline stage labels by mistake, so do not read your screen aloud." },
+    { id: "r-nosms", group: "Before you open your mouth", label: "You are calling, not texting", hard: true, why: "Debt relief is a prohibited A2P 10DLC category. A text about this line risks the SMS registration the whole company is waiting on. No exceptions, no templates." },
+    { id: "r-noclaim", group: "Before you open your mouth", label: "You will not quote a savings percentage or a dollar figure", hard: true, why: "The “50–75%” in the old call script and the playbook has NO substantiation behind it — our own disclosure file still has the source as an empty placeholder. Say payments may be reduced and that a specialist reviews their actual numbers first." },
+    { id: "r-nolawyer", group: "Before you open your mouth", label: "You have said we are not a law firm and you are not giving legal advice", hard: true, why: "The program is attorney-led on their side. We are the referral. Blur that and you are practising law." },
+    { id: "r-debt", group: "Qualify", label: "$50,000 or more of combined MCA and high-cost business debt", hard: true, why: "The one hard qualifier. Under it, this line does not apply." },
+    { id: "r-which", group: "Qualify", label: "You know whether they are CURRENT or BEHIND on payments", hard: true, why: "It picks the program. Current → try the bank refinance first. Behind, stacked, or already declined → restructuring. That is VCF's own triage rule." },
+    { id: "r-640", group: "Qualify", label: "For the bank refinance only — 640+ FICO, 2+ years trading, $250,000/yr, positive net income", hard: true, why: "Use the ISO-page figures. Their merchant site publishes a softer box that their own desk does not honour." },
+    { id: "r-risk", group: "Qualify", label: "You have told them the risks, not just the upside", hard: true, why: "Renegotiating can mean collections activity, a breach claim from a funder, exposure under a personal guaranty, and possible tax on any amount reduced. A merchant who hears only the upside may stop paying on their own, and that is the worst outcome on this line." },
+    { id: "r-stop", group: "Qualify", label: "You have NOT told them to stop paying anybody", hard: true },
+    { id: "r-pos", group: "Collect", label: "Every open position: funder, balance, payment amount, frequency", hard: true, why: "The positions analysis is the whole file. A missing position is a plan that falls apart in week two." },
+    { id: "r-stmt", group: "Collect", label: "Bank statements showing the debits", hard: true },
+    { id: "r-agr", group: "Collect", label: "The merchant's existing advance agreements", hard: true, why: "The renegotiation is against those contracts. Without them the attorney is guessing." },
+    { id: "r-conflict", group: "Before you submit", label: "You have checked whether any position is held by a funder WE placed", hard: true, why: "We are an MCA broker helping unwind MCAs. If one of those positions is with UCS or LCF we may have a non-interference clause of our own in the way. Escalate — do not decide this on a call." },
+    { id: "r-expect", group: "Before you submit", label: "The merchant knows we are paid as a recurring share over 12–24 months", hard: true, why: "It shapes how you follow up. If they drop out of the program, our money stops too." },
+  ],
+  openQuestions: [
+    "Is our 3–7% the whole fee or a split with VCF? Our own economics page assumes 100% and flags it as unconfirmed. One read of the Partner Agreement settles it.",
+    "What moves the rate between 3% and 7%?",
+    "Ask VCF which of their two published boxes is current — their merchant site and their ISO page disagree on time in business, revenue, maximum amount and APR.",
+    "Counsel question, one sentence: does helping a merchant renegotiate an advance held by a funder we have a non-interference clause with (UCS, 24 months; LCF) breach that clause?",
+    "Which bank actually makes the term loan?",
+    "Kill the “50–75% payment reduction” claim in playbooks.ts and the call scripts, or get written substantiation from VCF for it.",
+    "Our funder record classifies VCF as an MCA funder. They fund nothing — fix funding_products and lender_types so nothing routes them a deal they cannot take.",
+  ],
+};
+
+export const LINES: ProductLine[] = [MICRO, MCA, TERM, GIG, RELIEF];

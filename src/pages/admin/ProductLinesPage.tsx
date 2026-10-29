@@ -173,7 +173,13 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
           <div className="fp-idchips">
             <span className="fp-idchip">{line.range}</span>
             <span className="fp-idchip">
-              {line.vocab === "advance" ? "Advance · never call it a loan" : line.vocab === "credit" ? "Credit · lending language" : "Mixed"}
+              {line.vocab === "advance"
+                ? "Advance · never call it a loan"
+                : line.vocab === "credit"
+                  ? "Credit · lending language"
+                  : line.vocab === "relief"
+                    ? "Relief · not a loan, not an advance, not ours to name"
+                    : "Mixed"}
             </span>
             <span className="fp-idchip">{line.primary.name}</span>
             {line.secondary ? <span className="fp-idchip">{line.secondary.name}</span> : null}
