@@ -509,7 +509,7 @@ const EXTRA_CSS = `
 .fcs .fp-ptoggle:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .fcs .fp-pmore{margin-top:5px;font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint)}
 .fcs .fp-ptoggle:hover .fp-pmore{color:var(--accent-ink)}
-.fcs .fp-pshut{padding:0 18px 14px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
+.fcs .fp-pshut{padding:12px 18px 14px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
 .fcs .fp-pshut b{color:var(--ink)}
 .fcs .fp-cklist{display:block;margin-top:6px}
 .fcs .fp-cktag{display:inline-block;margin:0 4px 4px 0;padding:1px 7px;border-radius:5px;background:var(--d-bg);color:var(--d);border:1px solid color-mix(in srgb,var(--d) 25%,transparent);font-size:11.5px;font-weight:700;line-height:1.7}
