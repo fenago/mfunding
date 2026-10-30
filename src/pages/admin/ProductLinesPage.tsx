@@ -21,16 +21,30 @@ import supabase from "@/supabase";
 import { FunderDisclosureStyles } from "@/components/admin/funder/styles";
 import { Alert, Checklist, PlaybookStyles, Sec, type CheckItem } from "@/components/admin/funder/playbook";
 import { BittySpreadCalc } from "@/components/admin/funder/BittySpreadCalc";
+import { LendiniSpreadCalc } from "@/components/admin/funder/LendiniSpreadCalc";
+import { WorkingCapitalCalc } from "@/components/admin/funder/WorkingCapitalCalc";
+import { SosLookup } from "@/components/admin/products/SosLookup";
 import { LINES, type FunderSlot, type ProductLine } from "@/components/admin/products/lines";
 import { PortalLogin, type CredState, type PortalCredRow } from "@/components/admin/products/PortalLogin";
 
-function Slot({ slot, creds, allEmpty }: { slot: FunderSlot; creds: CredState; allEmpty: boolean }) {
+function Slot({
+  slot,
+  creds,
+  allEmpty,
+  last,
+}: {
+  slot: FunderSlot;
+  creds: CredState;
+  allEmpty: boolean;
+  /** Rendered as a last resort rather than a ranked funder. */
+  last?: boolean;
+}) {
   return (
-    <div className={`fp-pcard ${slot.role === "Primary" ? "adv" : "spec"}`}>
+    <div className={`fp-pcard ${last ? "lastres" : slot.role === "Primary" ? "adv" : "spec"}`}>
       <div className="fp-ptop">
         <div>
           <span className="fp-pname">{slot.name}</span>
-          <span className="fp-pkind">{slot.role}</span>
+          <span className="fp-pkind">{last ? "Last resort" : slot.role}</span>
         </div>
         <div style={{ textAlign: "right" }}>
           <div className={`fp-vtag ${slot.liveToday ? "pref" : "no"}`}>
@@ -161,22 +175,28 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
     group: c.group,
     label: c.label,
     hard: c.hard,
-    // A check that turns on a list prints the list. Sending a closer to another
-    // tab to find out what "prohibited" means is the same as not telling them.
-    why: c.list ? (
-      <>
-        {c.why}
-        <span className="fp-cklist">
-          {c.list.map((x) => (
-            <span className="fp-cktag" key={x}>
-              {x}
+    // A check that turns on a list prints the list, and a check that needs a
+    // tool gets the tool. Sending a closer to another tab mid-call to find out
+    // what "prohibited" means, or which website holds Michigan's register, is
+    // the same as not telling them.
+    why:
+      c.list || c.tool ? (
+        <>
+          {c.why}
+          {c.list ? (
+            <span className="fp-cklist">
+              {c.list.map((x) => (
+                <span className="fp-cktag" key={x}>
+                  {x}
+                </span>
+              ))}
             </span>
-          ))}
-        </span>
-      </>
-    ) : (
-      c.why
-    ),
+          ) : null}
+          {c.tool === "sos" ? <SosLookup /> : null}
+        </>
+      ) : (
+        c.why
+      ),
   }));
 
   return (
@@ -233,11 +253,34 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
             </Alert>
           </div>
         )}
+
+        {line.lastResort ? (
+          <>
+            <div className="fp-lastbar">
+              Everything above first. This one <b>after</b> — and that ordering is a rule, not a preference.
+            </div>
+            <Slot slot={line.lastResort} creds={creds} allEmpty={allEmpty} last />
+          </>
+        ) : null}
       </Sec>
 
       {line.calculator ? (
-        <Sec n={3} title="Price it" sub="Bitty is the only funder on any line whose margin we choose">
-          <BittySpreadCalc />
+        <Sec
+          n={3}
+          title="Price it"
+          sub={
+            line.calculator === "wc"
+              ? "the funder sets the rate here and pays us points off it"
+              : "one of the two funders in the book whose margin we choose ourselves"
+          }
+        >
+          {line.calculator === "bitty" ? (
+            <BittySpreadCalc />
+          ) : line.calculator === "lendini" ? (
+            <LendiniSpreadCalc />
+          ) : (
+            <WorkingCapitalCalc />
+          )}
         </Sec>
       ) : null}
 
@@ -284,7 +327,13 @@ export default function ProductLinesPage() {
   // plaintext only comes back from the audited RPC.
   useEffect(() => {
     let cancelled = false;
-    const ids = LINES.flatMap((l) => [l.primary.lenderId, l.secondary?.lenderId ?? ""]).filter(Boolean);
+    const ids = [
+      ...new Set(
+        LINES.flatMap((l) => [l.primary.lenderId, l.secondary?.lenderId ?? "", l.lastResort?.lenderId ?? ""]).filter(
+          Boolean,
+        ),
+      ),
+    ];
     void (async () => {
       const { data, error } = await supabase
         .from("funder_portal_credentials")
@@ -364,4 +413,19 @@ const EXTRA_CSS = `
 .fcs .fp-gapbox li + li{margin-top:3px}
 .fcs .fp-cklist{display:block;margin-top:6px}
 .fcs .fp-cktag{display:inline-block;margin:0 4px 4px 0;padding:1px 7px;border-radius:5px;background:var(--d-bg);color:var(--d);border:1px solid color-mix(in srgb,var(--d) 25%,transparent);font-size:11.5px;font-weight:700;line-height:1.7}
+.fcs .fp-lastbar{margin:14px 0 0;padding:9px 14px;border:1px dashed var(--line);border-bottom:none;
+  border-radius:var(--radius) var(--radius) 0 0;background:var(--c-bg);color:var(--c);font-size:12.5px;line-height:1.5}
+.fcs .fp-pcard.lastres{border-style:dashed;border-top-left-radius:0;border-top-right-radius:0;margin-top:0;opacity:.94}
+.fcs .fp-sos{display:block;margin-top:7px;padding:9px 11px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel)}
+.fcs .fp-soslab{display:block;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px}
+.fcs .fp-sossel{font:inherit;font-size:13px;font-weight:700;color:var(--ink);padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);max-width:260px}
+.fcs .fp-sossel:focus{outline:2px solid var(--accent);outline-offset:1px}
+.fcs .fp-soshint{display:block;margin-top:5px;font-size:11.5px;color:var(--ink-faint);line-height:1.45}
+.fcs .fp-soshit{margin-top:7px}
+.fcs .fp-sosgo{display:inline-block;padding:4px 11px;border-radius:6px;background:var(--accent);color:var(--accent-ink);
+  font-size:12.5px;font-weight:800;text-decoration:none}
+.fcs .fp-sosgo:hover{filter:brightness(1.07)}
+.fcs .fp-soswarn{display:inline-block;margin-left:7px;padding:1px 6px;border-radius:4px;background:var(--c-bg);color:var(--c);font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.fcs .fp-sosmeta{margin-top:6px;font-size:11.5px;color:var(--ink-soft);line-height:1.5}
+.fcs .fp-sosmeta b{color:var(--c)}
 `;

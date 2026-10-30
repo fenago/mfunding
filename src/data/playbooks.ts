@@ -824,7 +824,7 @@ export const PLAYBOOKS: Playbook[] = [
     name: "VCF Debt Relief",
     tagline: "A merchant drowning in daily MCA payments. White-label debt restructuring (no new loan).",
     pipeline: "vcf",
-    revenue: "Up to 7% of restructured debt · ≈ $14,960 avg comp per file · recurring 12–24 mo",
+    revenue: "Commission DISPUTED — 7% of restructured debt per Partner Agreement §3, 3% per VCF's principal on 2026-10-21. Paid monthly, ~the 15th, on what the merchant cleared the prior month",
     entry: "Inbound at /debt-relief, OR own-book outreach to declined / stacked / struggling merchants",
     workFrom: {
       screen: "The VCF deal record (or create one from the customer)",
@@ -946,7 +946,7 @@ export const PLAYBOOKS: Playbook[] = [
           "Move to Servicing for ongoing check-ins; watch for when they're healthy enough for new funding.",
         ],
         say: "[First Name], your positions are restructured and your payment is way down. When cash flow is healthy again, I'm here to help you grow. Know any owners in the same spot? I can help them too.",
-        note: "Recurring commission pays weekly/monthly over the 12–24 month program — keep the relationship warm.",
+        note: "We are paid monthly, around the 15th, on the payments the merchant actually cleared the month before — Ferne Kornfeld, 2026-10-21. A merchant who drops out stops our money, so keep the relationship warm.",
       },
     ],
   },

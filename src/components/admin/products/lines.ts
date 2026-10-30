@@ -70,6 +70,12 @@ export type LineCheck = {
   label: string;
   why?: string;
   /**
+   * A check that needs a tool gets the tool, not a reference to one. `sos`
+   * renders the state picker so a closer confirming a registration never
+   * leaves the call to go and find the right state's register.
+   */
+  tool?: "sos";
+  /**
    * The actual items, when the check is "is it on the list". Naming a list and
    * its length without printing it makes the closer go and find it somewhere
    * else, which on a live call means guessing. If a check turns on a list, the
@@ -100,8 +106,20 @@ export type ProductLine = {
   /** Required when `secondary` is absent — says WHY, in words. */
   noSecondary?: string;
   checklist: LineCheck[];
-  /** Bitty is the only funder whose price we set, so only it gets a calculator. */
-  calculator?: boolean;
+  /**
+   * Which pricing tool this line needs. Two funders let US set the margin —
+   * Bitty and Lendini — and those two get a spread calculator. The clean
+   * working-capital lane gets a points-and-merchant-cost calculator instead,
+   * because there the funder sets the price and we take points off it.
+   */
+  calculator?: "bitty" | "lendini" | "wc";
+  /**
+   * A funder of genuine last resort, kept structurally separate from
+   * `secondary` because the ordering is a RULE, not a preference. 1 West
+   * shops a file across 45-50 lenders at once; going there first can burn
+   * the market before a direct funder ever sees the file.
+   */
+  lastResort?: FunderSlot;
   openQuestions: string[];
 };
 
@@ -234,7 +252,7 @@ const MICRO: ProductLine = {
     ],
     contacts: [{ name: "John Callandrillo", title: "gave a direct cell line" }],
   },
-  calculator: true,
+  calculator: "bitty",
   checklist: [
     { id: "m-tib", group: "Qualify on the call", label: "12+ months in business", hard: true, why: "Both funders require 12 months. Under 6 is an automatic decline at Bitty." },
     { id: "m-fico", group: "Qualify on the call", label: "FICO 500+, no open bankruptcy", hard: true, why: "500 is the floor at both. Below 550 at Bitty means the Access tier and 8% to us instead of 12%." },
@@ -253,7 +271,7 @@ const MICRO: ProductLine = {
     { id: "m-app", group: "Collect", label: "Signed application — legal name, DBA, EIN, entity type, state", hard: true, why: "Bitty's decision is automatic and keyed to application accuracy. A sloppy app is a slow one." },
     { id: "m-stmt", group: "Collect", label: "3 months of business bank statements", hard: true, why: "3 is True Advance's stated requirement. Bitty names no count anywhere — have a 4th ready." },
     { id: "m-chk", group: "Collect", label: "Business checking account confirmed", hard: true, why: "Bitty requires it on every file. A personal account does not substitute." },
-    { id: "m-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, why: "Named explicitly by Bitty. Check it yourself — a lapsed registration is a silent decline." },
+    { id: "m-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, tool: "sos", why: "Named explicitly by Bitty as a requirement on every file. Check it yourself rather than asking the merchant — a lapsed registration is a silent decline, and the owner is often the last to know. Pick the state below and the register opens in a tab." },
     { id: "m-web", group: "Collect", label: "Business location or website — home-based needs an online presence", hard: true, why: "A Bitty requirement. Find the online footprint before you submit." },
     { id: "m-ucc", group: "Collect", label: "No unresolved cash-advance UCCs or funding judgments", hard: true, why: "“Unresolved” is the operative word — a paid-off advance still needs a termination letter, and that takes days." },
     { id: "m-own", group: "Collect", label: "Owner name, DOB, SSN, home address, ownership %", hard: true },
@@ -275,154 +293,411 @@ const MICRO: ProductLine = {
   ],
 };
 
-// ── 2 ── MCA ─────────────────────────────────────────────────────────────────
-const MCA: ProductLine = {
-  id: "mca",
-  tab: "MCA",
-  name: "Momentum Working Capital",
-  vocab: "advance",
-  range: "$10,000 – $300,000",
-  tagline: "The core advance. A direct funder first, a marketplace behind it.",
-  whoFor:
-    "The standard merchant: trading at least 3–6 months, $4,000/mo and up, who needs working capital in days rather than weeks.",
-  warning: {
-    tone: "warn",
-    title: "Order of submission matters more on this line than any other",
-    body:
-      "1 West shops a file across 45–50 partners at once. Once they have, those partners have all seen it — their own decline on a clean $127K/mo merchant read “ineligible due to recent decline.” Send to LCF FIRST. Nobody has confirmed whether LCF sits inside 1 West's partner network, and if it does, leading with 1 West burns your best funder.",
-  },
-  primary: {
-    role: "Primary",
-    name: "The LCF Group / Reliant Funding",
-    lenderId: "60cba11b-bf10-435d-b041-9feb3aa894bb",
-    liveToday: true,
-    liveNote: "Live vendor, recipe ACTIVE on both entities. Can submit today.",
-    routes: [
-      { kind: "email", value: "submissions@thelcfgroup.com", note: "LCF entity — $25K minimum, 3mo TIB" },
-      { kind: "email", value: "submissions@reliantfunding.com", note: "Reliant entity — $10K minimum, 6mo TIB, 6–10 pts recorded" },
-    ],
-    portal: [],
-    portalNote:
-      "No broker portal and no login. Everything with LCF goes by email. The one approval we have ever had did put the offer behind a “View Offers” link in their reply — that is a per-deal link in the email, not an account you can log into, and nobody opened it.",
-    box: [
-      { k: "Funding", v: "$10,000 – $300,000 (Reliant) · $25,000 – $300,000 (LCF)" },
-      { k: "Time in business", v: "6 months (Reliant) · 3 months (LCF)" },
-      { k: "Revenue", v: "$4,000/mo (Reliant) — the LOWEST floor in our whole network · $6,000/mo (LCF)" },
-      { k: "Statements", v: "3 months, plus a signed application" },
-      { k: "Credit", v: "NO FICO FLOOR RECORDED on either entity", missing: true },
-      { k: "Max positions", v: "not recorded — critical gap for an MCA line", missing: true },
-      { k: "NSF / negative days", v: "not recorded", missing: true },
-      { k: "Excluded states / industries", v: "not recorded", missing: true },
-    ],
-    pricing: [
-      { k: "Factor", v: "from 1.20 (Reliant)" },
-      { k: "Term", v: "2 – 24 months daily or weekly (Reliant) · ~30 – 120 fixed daily payments (LCF)" },
-      { k: "Fees", v: "Origination approx 3–10% deducted — INFERRED from observed deals, not published" },
-      { k: "Speed", v: "80% approved in under 2 hours; approval in as little as 30 minutes; same-day funding available" },
-    ],
-    pay: {
-      headline: "6 – 10 points",
-      basis: "A spread — contract factor rate minus the quoted buy rate, on the funded amount — plus a volume bonus at LCF's discretion. Recorded on the Reliant row; the LCF row has no commission recorded at all.",
-      timing: "CONTRADICTORY INSIDE ONE SIGNED DOCUMENT — Schedule A says ACH within 5 business days of funding, section 2 says 30 business days after LCF receives the executed Merchant Agreement, and Schedule A states the Agreement prevails.",
-    },
-    track:
-      "2 submissions, 2 replies, ZERO declines ever — and the only approval we have ever received: MF-2026-0196 Titan Event Consultants, $30,000, approved in 5 hours 25 minutes on 2026-09-11. No contract was requested and the deal is now in nurture.",
-    evidence: [
-      "LCF ISO Agent Sales Agreement — commission spread, clawback, non-interference",
-      "lender_programs rows for both entities — ranges, TIB, revenue, term, speed",
-      "funder_replies on MF-2026-0196 — the approval and five chase emails, verbatim",
-    ],
-    gaps: [
-      "NO FICO floor on either entity",
-      "NO max position count — you cannot safely price a stacked merchant",
-      "Which entity papers a given deal: LCF or Reliant? Two inboxes, two boxes, two commission states",
-      "Commission timing contradicts itself inside the signed agreement",
-      "Origination fee is inferred from observed deals, never published to us",
-    ],
-    contacts: [
-      { name: "Kajal Das Gupta", title: "Partner Relationship Manager", email: "kgupta@thelcfgroup.com", phone: "888-499-2939 x312" },
-      { name: "Kurt Maimaron", email: "kmaimaron@thelcfgroup.com", phone: "866-604-4519" },
-      { name: "Curt", title: "cell / text", phone: "363-777-4328" },
-    ],
-  },
-  secondary: {
+// 1 West sits at the END of both MCA lines, and the same card is used on each
+// so they cannot drift apart. It is a function rather than a shared object
+// because each line renders its own copy and nothing should be able to mutate
+// a slot another line is showing.
+function LAST_RESORT_1WEST(): FunderSlot {
+  return {
     role: "Secondary",
-    name: "1 West",
+    name: "1 West — last resort, and that is a rule",
     lenderId: "e5e606c8-55dd-4490-9030-69214179a88b",
     liveToday: true,
     liveNote:
-      "Live vendor, recipe ACTIVE, delivery proven (5 sends, 5 replies). Can submit today. Our agreement with them carries NO clawback clause and NO non-circumvention clause — a genuine advantage over every other funder on this shelf.",
+      "Live vendor, recipe ACTIVE, delivery proven — 5 sends, 5 replies. Our agreement with them carries NO clawback and NO non-circumvention clause, which is a genuine advantage over every other funder on this shelf. Go here AFTER the direct funders, never before.",
     routes: [
-      { kind: "email", value: "partnersubs@1west.com", note: "Brokered route — application + LAST 4 MONTHS of statements" },
-      { kind: "selfserve", value: "https://apply.1west.com/?iso=a10PZ00000socCfYAI", note: "Send this to the merchant directly — our ISO code is embedded in the link" },
+      { kind: "email", value: "partnersubs@1west.com", note: "Brokered route — application + 4 months of statements. Yasemin's team works ISO files" },
+      { kind: "selfserve", value: "https://apply.1west.com/?iso=a10PZ00000socCfYAI", note: "Referral route. Our ISO code is inside the link — a retyped or shortened link pays us nothing" },
     ],
     portal: [
       {
         url: "https://apply.1west.com/accounts/login/",
         label: "Account log-in",
-        note: "From their own contact page. Not yet opened by anyone here. Note our submission profile points at www.1west.com, which is the marketing site, not a portal — ignore it.",
+        note: "From their own contact page. Not yet opened by anyone here. Our submission profile points at www.1west.com, which is the marketing site — ignore it.",
         unverified: true,
       },
     ],
     box: [
-      { k: "Funding", v: "$2,500 – $2,000,000 short-term" },
-      { k: "Time in business", v: "3 months absolute floor · 1 year for the ABLE marketplace" },
-      { k: "Credit", v: "0 published on the Starter band · 550 ABLE minimum — treat both as soft" },
-      { k: "Revenue", v: "$10,000/mo FAQ floor · $100,000 annual gross for ABLE" },
-      { k: "Bank balance", v: "$500 → $5,000 average daily, by band" },
-      { k: "Statements", v: "4 months on the brokered route (their FAQ says 3 — send 4)" },
-      { k: "States", v: "UNKNOWN — no state list exists in any document or on their site", missing: true },
+      { k: "Funding", v: "$5,000 – $1,000,000 — confirmed by their VP of Business Development on a call 2026-10-23" },
+      { k: "Time in business", v: "6 months per the VP, though most of their network lenders want a year" },
+      { k: "Credit", v: "550" },
+      { k: "Revenue", v: "Must exceed $10,000 EVERY month — their VP's wording, not an average" },
+      { k: "States", v: "No restricted states" },
+      { k: "Statements", v: "4 months on the brokered route" },
+      { k: "What they also broker", v: "Term loan, line of credit, SBA and equipment — all confirmed on the same call. NOT invoice factoring, which our record wrongly claimed" },
       { k: "Max positions", v: "not recorded", missing: true },
     ],
     pricing: [
-      { k: "Short-term", v: "3 – 24 months, daily or weekly, funds in 24–72 hours" },
+      { k: "Shape", v: "A marketplace, not a funder. They run the file across 45–50 partner lenders on the ABLE engine; the matched lender's own pricing governs" },
       { k: "Decision", v: "24 hours or less" },
+      { k: "Published envelope", v: "Their partner guide prices short-term at 12–99% APR, long-term 8–19%, LOC 12–72%, equipment 7–15%, SBA 8–12%. Those are the ranges ACROSS their lender network, not a box 1 West underwrites to" },
     ],
     pay: {
       headline: "50% brokered · 25% referred",
       basis:
-        "A share of 1 WEST'S compensation, not points on the funded amount. We broker it ourselves — take the application, chase the stips, work the file — and we get 50%. We hand the merchant the self-serve link and let 1 West do the work, and we get 25%. Either way it is a share of a number we never see, so a 1 West file cannot be forecast the way a direct one can.",
-      timing: "Within 30 calendar days of 1 West receiving its compensation.",
+        "A share of 1 WEST'S compensation, not points on the funded amount. Broker it ourselves — take the application, chase the stips, work the file — and we get 50%. Hand the merchant the self-serve link and let 1 West do the work, and we get 25%. Owner's ruling, settled. Either way it is a share of a number we never see, so a 1 West file cannot be forecast the way a direct one can.",
+      timing: "Within 30 calendar days of 1 West receiving its own compensation.",
     },
-    track: "5 submissions, 5 declines, zero funded. Three came back on one day marked “Declined from Ondeck.”",
+    track:
+      "5 submissions, 5 declines, zero funded. Three came back on a single day, and one of them read “Declined from Ondeck.” — a partner's answer printed as their own.",
     evidence: [
-      "1 West Product Overview.pdf — ABLE minimum and preferred qualifications",
-      "1 West PowerPoint Presentation.pdf (15pp) — the four Funding Program bands",
-      "ISO Application With W9_ACH.pdf, 07/24/2026 — the referral-rate language, verbatim",
-      "Partner-welcome email 2026-07-25 — both submission routes, 4-month statement rule",
+      "Processor worksheet 2026-10-27 — confirmed on a call with Michael Bernier, VP of Business Development, 2026-10-23",
+      "1 West Partner Guide (filed 2026-10-30) — 8 products with APR ranges and a qualification band",
+      "ISO Application With W9_ACH.pdf, 07/24/2026 — the referral-rate language",
+      "funder_replies — the five declines, verbatim",
     ],
     gaps: [
-      "State coverage genuinely unknown; it is whatever the matched partner covers",
-      "No portal login exists — the credential row is empty",
-      "Our MCA program row claims 1 month TIB, which no document supports. Ignore it.",
+      "🚨 THE LOCKOUT. A decline here can mean their whole 45–50 lender pool declined, not one funder. Ask the merchant who already has their file, and prefer direct funders first — this is why 1 West is last",
+      "We are paid a share of 1 West's compensation and we do not know what 1 West's compensation IS. Nobody has asked",
+      "Their partner guide lists a PERSONAL LOAN and a HOME EQUITY LINE among eight products, with no consumer-lending caveat of any kind. We are a commercial broker. Do not place either, and do not mention them, until somebody establishes whether the partner channel is even allowed to",
+      "Four different time-in-business floors now exist across our records and their documents — 1, 3, 6 months and a year. The VP said 6",
     ],
     contacts: [
-      { name: "Michael Bernier", title: "VP Business Development", email: "mike@1west.com", phone: "(516) 272-2110" },
+      { name: "Michael Bernier", title: "VP Business Development — confirmed the box on a call 2026-10-23", email: "mike@1west.com", phone: "(516) 272-2110" },
+      { name: "Yasemin & team", title: "ISO inquiries and submissions", email: "partnersubs@1west.com" },
       { name: "Ria Khan", title: "Funding Specialist", email: "ria.khan@1west.com", phone: "(956) 818-8335" },
     ],
+  };
+}
+
+// ── 2 ── WORKING CAPITAL (clean paper) ───────────────────────────────────────
+// The MCA shelf splits here. One line for a merchant whose bank statement
+// stands up, one for a merchant whose does not — and the dividing line is the
+// STATEMENT, not the credit score. Across these four funders FICO barely
+// separates anything (550 / 500 / none), while revenue and time in business
+// separate them completely: $20,000/mo and a year at Green Note against
+// $4,000-$6,000 and three to six months on the other side.
+const WORKING_CAPITAL: ProductLine = {
+  id: "wc",
+  tab: "Working Capital",
+  name: "Momentum Working Capital",
+  vocab: "advance",
+  range: "$10,000 – $2,000,000",
+  tagline: "The merchant whose bank statement stands up. The cheapest money we have.",
+  whoFor:
+    "A trading business with real deposits — six months or more, $4,000/mo at the floor and $20,000/mo to reach the best pricing. If the statements are clean and the owner is not drowning in positions, the file belongs here and nowhere else. This is where a merchant gets a 1.20 factor instead of a 1.50 one.",
+  primary: {
+    role: "Primary",
+    name: "Reliant Funding",
+    lenderId: "9e82cb23-5bb0-4a19-980b-28bb67431151",
+    liveToday: true,
+    liveNote:
+      "Live vendor, submission recipe ACTIVE. Can submit today. Reliant is the PRIME arm of The LCF Group — same parent since 2023 — so a file that turns out not to be clean does not get lost, it moves across to LCF on the Bridge line.",
+    routes: [
+      {
+        kind: "email",
+        value: "submissions@reliantfunding.com",
+        note: "The route. Their own ISO instruction is to copy lrodriguez@reliantfunding.com and gverma@reliantfunding.com on every file",
+      },
+    ],
+    portal: [],
+    portalNote: "No broker portal and no login. Everything with Reliant goes by email.",
+    box: [
+      { k: "Funding", v: "$10,000 – $300,000" },
+      { k: "Time in business", v: "6 months" },
+      { k: "Revenue", v: "$4,000/mo — the LOWEST revenue floor anywhere in our network ($48,000/yr)" },
+      { k: "Credit", v: "No minimum FICO required — their own published position, not a gap in our record" },
+      { k: "Collateral", v: "None, and no personal guarantee" },
+      { k: "States", v: "All 50" },
+      { k: "Statements", v: "3 months, plus a completed application" },
+      { k: "Max positions", v: "not recorded — ask before you promise a stacked merchant anything", missing: true },
+      { k: "NSF / negative days", v: "not recorded", missing: true },
+      { k: "Excluded industries", v: "not recorded", missing: true },
+    ],
+    pricing: [
+      { k: "Factor", v: "from 1.20 — the cheapest paper on any line in this book" },
+      { k: "Term", v: "2 – 24 months, daily or weekly" },
+      { k: "Early payoff", v: "Prepayment discount available, and it is real — their material says it can take the effective rate down substantially" },
+      { k: "Fees", v: "Origination fee varies by customer and advance size — never published to us", missing: true },
+      { k: "Speed", v: "Approval in as little as 30 minutes; same-day funding available" },
+    ],
+    pay: {
+      headline: "6 – 10 points",
+      basis:
+        "Points on the funded amount, recorded as a 6–10 range on the Reliant row. Where a given file lands in that range is not documented anywhere we hold — nobody has asked whether it is volume-driven, file-driven or negotiable.",
+      timing:
+        "⚠ The signed LCF ISO agreement contradicts itself: Schedule A says ACH within 5 business days of funding, section 2 says 30 business days after LCF receives the executed Merchant Agreement, and Schedule A states the Agreement prevails. Unresolved.",
+    },
+    track:
+      "ZERO submissions. Reliant has never been sent a file, although its sister entity LCF has — and LCF produced the only approval in our entire history.",
+    evidence: [
+      "lender_programs (mca) — $10K–$300K, 6mo TIB, $4,000/mo, factor from 1.20, 2–24 months, 6–10 points",
+      "lenders.commission_notes — the 6%–10% range, verbatim",
+      "LCF ISO Agent Sales Agreement — the commission and timing clauses, and the contradiction between them",
+    ],
+    gaps: [
+      "Our submission recipe for Reliant has NO required stips and NO special instructions recorded — the profile is active but empty. It is the thinnest recipe of any live funder on this shelf",
+      "Max positions, NSF tolerance and excluded industries are all unrecorded",
+      "Where a file lands inside the 6–10 point range, and what moves it",
+      "The origination fee the merchant pays is never published — you cannot tell them the real cost",
+    ],
+    contacts: [
+      { name: "Lisnet Rodriguez", title: "ISO — copy on every file", email: "lrodriguez@reliantfunding.com" },
+      { name: "G. Verma", title: "ISO — copy on every file", email: "gverma@reliantfunding.com" },
+    ],
   },
+  secondary: {
+    role: "Secondary",
+    name: "Green Note Capital",
+    lenderId: "75e0c40a-0ab7-40ab-a576-a527a3b1938f",
+    liveToday: true,
+    liveNote:
+      "Live vendor, recipe ACTIVE. Dean Simms is the single most responsive ISO manager in the network and the only funder in live conversation with us this month. Confirmed on a call 2026-10-23.",
+    routes: [
+      {
+        kind: "email",
+        value: "underwriting@greennotecapitalpartners.com",
+        note: "The route. CC Dean Simms — he works the file personally",
+      },
+    ],
+    portal: [],
+    portalNote: "No broker portal and no login. Email only, and DocuSign for contracts.",
+    box: [
+      { k: "Funding", v: "$10,000 – $2,000,000 — no stated maximum beyond this; the biggest ceiling on the shelf" },
+      { k: "Time in business", v: "12 months" },
+      { k: "Revenue", v: "$20,000/mo in deposits — the HIGHEST floor of any funder on this line. This is the gate" },
+      { k: "Credit", v: "550" },
+      { k: "NSFs", v: "Maximum 5" },
+      { k: "Ownership", v: "51% owner equity required" },
+      { k: "Tradelines", v: "4 open, 0 active defaults" },
+      { k: "Max positions", v: "NONE — they will stack, and they cross-collateralise" },
+      { k: "States", v: "All 50" },
+      { k: "Statements", v: "3 months" },
+    ],
+    pricing: [
+      { k: "Buy rate", v: "1.3% buy rate (~1.30 factor) — the second-cheapest money on this shelf after Reliant" },
+      { k: "Term", v: "Up to 12 months" },
+      { k: "Payments", v: "Daily or weekly" },
+      { k: "Speed", v: "~2-hour approvals, same-day funding" },
+      { k: "Early payoff", v: "Discount available; syndication offered" },
+    ],
+    pay: {
+      headline: "UNKNOWN — we have no commission figure for Green Note at all",
+      basis:
+        "Both the rate and the structure are empty on their record. Not a range, not a note — nothing. We cannot tell a closer what a Green Note deal pays, and we cannot build the margin side of the calculator until Dean gives us a rate card. He answers, so this is one email.",
+      timing: "Also unrecorded.",
+    },
+    track:
+      "ZERO submissions. Never sent a file, despite being the only funder in live conversation with us in October.",
+    evidence: [
+      "lender_programs (mca) — the full credit box, buy rate, term, speed and stip list",
+      "funder_submission_profiles — the recipe, the light-stip list and the collections rule",
+      "Processor worksheet 2026-10-27 — confirmed on a call with Dean Simms (ISO Manager) on 2026-10-23: MCA only, no debt restructuring or reverse consolidation, 550 FICO, 12mo TIB, $20K–$25K/mo for most industries, $10K–$2M, all states",
+      "Dean Simms email 2026-09-30 on MF-2026-0166 — the collections rule, verbatim",
+    ],
+    gaps: [
+      "🚨 NO COMMISSION DATA OF ANY KIND. Ask Dean — it is one line in an email and it unblocks the calculator",
+      "They confirmed MCA ONLY — no debt restructuring and no reverse consolidation, so a drowning merchant is not a Green Note file",
+    ],
+    contacts: [
+      { name: "Dean Simms", title: "ISO Manager — responsive, works files personally", email: "dean@greennotecapitalpartners.com", phone: "(347) 477-6127 cell" },
+      { name: "Dean Simms — direct line", phone: "(312) 819-4083" },
+    ],
+  },
+  lastResort: LAST_RESORT_1WEST(),
+  calculator: "wc",
   checklist: [
-    { id: "w-shopped", group: "Ask FIRST", label: "You have asked who else already has this merchant's file", hard: true, why: "The highest-value question on this line. If 1 West has shopped them, their whole partner pool has seen it." },
-    { id: "w-which", group: "Ask FIRST", label: "You know whether this is an LCF file or a Reliant file", hard: true, why: "Different inbox, different minimum ($25K vs $10K), different TIB (3mo vs 6mo), different recorded commission." },
-    { id: "w-tib", group: "Qualify", label: "3 months trading for LCF, 6 for Reliant", hard: true },
-    { id: "w-rev", group: "Qualify", label: "Revenue clears $4,000/mo (Reliant) or $6,000/mo (LCF)", hard: true, why: "Reliant's $4,000 floor is the lowest we have anywhere — this is the line for a thin-revenue merchant." },
-    { id: "w-fico", group: "Qualify", label: "Ask the owner's FICO and record it", hard: true, why: "We hold NO FICO floor for either entity. You are flying blind until someone asks Kajal." },
-    { id: "w-pos", group: "Qualify", label: "Count the open positions and ask before promising", hard: true, why: "LCF's maximum is unrecorded. Do not tell a stacked merchant they qualify." },
-    { id: "w-app", group: "Collect", label: "Signed application", hard: true },
-    { id: "w-stmt", group: "Collect", label: "Bank statements — 3 months for LCF, 4 months for 1 West", hard: true, why: "Different counts. Collect 4 and you satisfy both." },
-    { id: "w-own", group: "Collect", label: "Owner details including SSN", hard: true, why: "LCF asked for exactly this 51 minutes into the Titan file, instead of declining." },
-    { id: "w-consent", group: "Before you submit", label: "If routing to 1 West, the merchant consents to onward sharing", hard: true, why: "Required by our referral agreement, and not boilerplate — the file goes to dozens of third parties." },
-    { id: "w-respond", group: "AFTER you submit", label: "Somebody owns the reply and will act on an approval the same day", hard: true, why: "LCF approved a file in 5h25m and chased us five times over four days. Nobody requested the contract. Do not repeat it." },
+    { id: "c-shopped", group: "Ask FIRST", label: "You have asked who else already has this merchant's file", hard: true, why: "The highest-value question on any MCA call. If a marketplace has shopped them, dozens of funders have already seen the file and a fresh submission comes back as “ineligible due to recent decline”." },
+    { id: "c-which", group: "Ask FIRST", label: "You know which funder this file is for before you collect anything", hard: true, why: "Reliant takes $4,000/mo and 6 months. Green Note needs $20,000/mo and 12 months. That is a five-fold difference in the revenue gate — ask the deposits question early and you will not waste an hour collecting for the wrong funder." },
+    { id: "c-dep", group: "Qualify on the call", label: "Average monthly DEPOSITS, not revenue — and you have a number", hard: true, why: "Deposits are what gets underwritten. A merchant who says “we do $30,000 a month” and banks $12,000 of it is a Reliant file, not a Green Note one." },
+    { id: "c-tib", group: "Qualify on the call", label: "6+ months for Reliant · 12+ months for Green Note", hard: true },
+    { id: "c-fico", group: "Qualify on the call", label: "FICO — 550 for Green Note; Reliant has no stated minimum", hard: true, why: "Reliant publishes no FICO floor, which is a real position of theirs and not a gap in our record. Green Note's 550 is firm." },
+    { id: "c-nsf", group: "Qualify on the call", label: "For Green Note — 5 NSFs or fewer, 51% ownership, no active defaults", hard: true, why: "Count the NSFs in the statements yourself. Six is a decline and the merchant will not volunteer it." },
+    { id: "c-coll", group: "Qualify on the call", label: "NO collections activity and NO debt-settlement servicer debit in the statements", hard: true, why: "Green Note hard-declines these. Dean Simms, 2026-09-30, verbatim: “we dont fund when ram payments is in there as that is collections.” Look for RAM Payment / RAM PMT, Global Holdings / GLOBAL GHLLC.COM and similar escrow processors. If you find one, this is not a dead file — it is a Momentum Debt Relief file. Move it, do not nurture it." },
+    { id: "c-ind", group: "Qualify on the call", label: "Industry is not on Green Note's prohibited list", hard: true, why: "Prohibited at Green Note: Credit Repair, Check Cashing, ACH Processors, Bail Bonds, Auctions, Notary, Casinos, Non-Profits, Ticket Brokers, Adult Entertainment. Their preferred list is worth knowing too — Medical, Auto Repair, Laboratory, Pharmacy, IT Services, Pet Care, Restaurants, Laundromat, Marketing, Plumbing, Retail, Electricians, E-Commerce, Manufacturing, Funeral Home. Reliant publishes no exclusions at all, so you have to ask." },
+    { id: "c-app", group: "Collect", label: "Signed application", hard: true },
+    { id: "c-stmt", group: "Collect", label: "3 months of business bank statements", hard: true, why: "Three satisfies both funders. Collect a fourth anyway — it costs the merchant nothing and 1 West needs four if the file ends up there." },
+    { id: "c-id", group: "Collect", label: "For Green Note — photo ID and a voided check", hard: true, why: "Part of their light-stip list. Reliant does not ask for either." },
+    { id: "c-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, tool: "sos", why: "Check it yourself rather than asking the merchant — a lapsed registration is a silent decline and the owner is usually the last to know. Pick the state and the register opens in a tab. Read the STATUS field: active is not the same as in good standing." },
+    { id: "c-pos", group: "Before you submit", label: "You have counted the open positions and know where they are going", hard: true, why: "Green Note will stack and has no position limit, which is unusual and useful. Reliant's limit is unrecorded — ask, do not assume it is the same." },
+    { id: "c-price", group: "Before you submit", label: "You have priced it in the calculator above", hard: true, why: "Reliant pays 6–10 points on the funded amount. Green Note's commission is unknown to us entirely, so you cannot forecast that one at all — say so internally rather than guessing." },
+    { id: "c-respond", group: "AFTER you submit", label: "Somebody owns the reply and will act on an approval the same day", hard: true, why: "The sister entity LCF approved a file in 5 hours 25 minutes and then chased us five times over four days. Nobody requested the contract and the deal died. That is the only approval this company has ever had." },
   ],
   openQuestions: [
-    "Is LCF inside 1 West's partner network? Decides submission order on every file.",
-    "LCF's FICO floor and maximum position count — both unrecorded.",
-    "Which entity papers the deal, LCF or Reliant?",
-    "Commission timing: 5 business days or 30? The signed agreement says both.",
+    "🚨 Ask Dean Simms what Green Note pays an ISO. We have no commission figure of any kind for them, so the margin half of this line is unknowable and the calculator cannot show it.",
+    "Reliant's recipe has no stips and no instructions recorded — the thinnest of any live funder. Ask Lisnet Rodriguez what they actually want in a package.",
+    "Where does a file land inside Reliant's 6–10 points, and what moves it?",
+    "Reliant's max positions, NSF tolerance and excluded industries are all unrecorded.",
+    "Commission timing on the LCF/Reliant paper: 5 business days or 30? The signed agreement says both, in two different places.",
   ],
 };
 
-// ── 3 ── TERM & LINE OF CREDIT ───────────────────────────────────────────────
+// ── 3 ── BRIDGE (thin file, distressed, or declined elsewhere) ───────────────
+const BRIDGE: ProductLine = {
+  id: "bridge",
+  tab: "Bridge",
+  name: "Momentum Bridge",
+  vocab: "advance",
+  range: "$5,100 – $300,000",
+  tagline: "Thin revenue, short history, imperfect statements. The file the clean lane turns down.",
+  whoFor:
+    "A merchant trading three to eight months, or banking $5,000–$6,000 a month, or carrying positions and NSFs that put them outside Working Capital. Nothing here is a consolation prize — this lane pays us roughly double the clean one, and Lendini is the only funder besides Bitty where WE set the price.",
+  warning: {
+    tone: "stop",
+    title: "California files through Lendini need a licence we may not hold",
+    body:
+      "Lendini's own partner guidelines state that for California submissions the ISO must be a CA DFPI-licensed broker under the California Financing Law. Nobody has confirmed whether Momentum holds that licence. Until somebody does, do not submit a California merchant to Lendini — send it to LCF, who fund all states. This is not a preference and it is not Lendini being difficult; brokering without a required state licence is the kind of problem that outlives the deal.",
+  },
+  primary: {
+    role: "Primary",
+    name: "Lendini / Funding Metrics",
+    lenderId: "4009c261-a881-4142-982a-6c36997edc37",
+    liveToday: true,
+    liveNote:
+      "Live vendor, recipe ACTIVE, delivery proven — they underwrote and answered MF-2026-0166 on 2026-08-12. Confirmed on a call with Account Manager Mia Stephenson 2026-10-23.",
+    routes: [
+      {
+        kind: "email",
+        value: "submissions@lendini.com",
+        note: "CC MIA STEPHENSON on every single file — both the signed ISO agreement and their setup email require it, and we were not doing it because nobody had captured her address until the 10/23 call",
+      },
+      {
+        kind: "portal",
+        value: "https://partners.lendini.com",
+        note: "Partner portal. Desk hours 9am–8pm EST, Monday to Friday",
+      },
+    ],
+    portal: [
+      {
+        url: "https://partners.lendini.com",
+        label: "Lendini partner portal",
+        note: "Listed in their partner guidelines. Nobody here has logged in, so try it before you rely on it.",
+        unverified: true,
+      },
+    ],
+    box: [
+      { k: "Funding", v: "$5,100 – $300,000" },
+      { k: "Time in business", v: "8 months at Lendini · 5 months through Quick Fix Capital, their sister brand" },
+      { k: "Revenue", v: "$5,100/mo" },
+      { k: "Credit", v: "500" },
+      { k: "Excluded states", v: "TEXAS and NORTH DAKOTA — no longer funded. Send those to LCF" },
+      { k: "Statements", v: "3 months PLUS month-to-date for most states · 4 MONTHS for CALIFORNIA and NEW YORK" },
+      { k: "Industry caps", v: "Construction: 2yr TIB, no 1st positions, $50k cap · Roofing: 5yr · Restaurants under 3.5yr: $20k cap · Florida: 3.5yr · Hair/Skin/Nails: $30k cap" },
+      { k: "Excluded industries", v: "The longest prohibited list we hold anywhere — roughly 70 categories. Check it before you collect, not after" },
+      { k: "Max positions", v: "not recorded, except that Construction takes no 1st positions", missing: true },
+    ],
+    pricing: [
+      { k: "Speed", v: "Offers in as few as 3 hours; ~9 of 10 applications pre-approved within hours; funding 24–48 hours after approval" },
+      { k: "Payments", v: "Daily Monday–Friday, or weekly ACH" },
+      { k: "Factor", v: "Not published by Lendini and not recorded by us — it arrives on the approval and the commission lives inside it", missing: true },
+    ],
+    pay: {
+      headline: "Up to 15 points — and WE set it",
+      basis:
+        "The highest commission in the network, and the second funder after Bitty whose margin is ours to choose. The points are BUILT INTO THE FACTOR RATE, which means they shrink the moment you down-sell the rate to win the deal. Full document submission earns up to 15; a referral-only lead earns a negotiated referral fee instead. ⚠ This figure is sourced to a third-party lender review, not to a Lendini document — treat it as the working number and get it confirmed.",
+      timing:
+        "Paid within 24 hours of origination, by ACH or cheque — the fastest in the book. BUT: 100% of the commission is clawed back if the merchant defaults within 30 days of funding, returned only once Lendini has received 90% of the RTR, and only if the account was cured inside a 48-hour window.",
+    },
+    track:
+      "1 submission. MF-2026-0166 went out 2026-08-12 at 13:38 UTC and came back with a per-file ineligibility reply at 14:19 — 41 minutes. They answer.",
+    evidence: [
+      "Processor worksheet 2026-10-27 — confirmed on a call with Mia Stephenson 2026-10-23: the box, the restricted states, the full industry list, the caps and the statement rule",
+      "lender_programs (mca) — commission structure, clawback, CA licensing requirement, portal and desk hours",
+      "funder_submission_profiles — the recipe and the cc requirement",
+      "Lendini ISO submission guide (lendini_mailchimpsites.pdf) — filed on the funder record 2026-10-30",
+    ],
+    gaps: [
+      "The 15 points comes from a third-party review, not from Lendini. Get it in writing from Mia",
+      "No buy-rate or factor range is published anywhere, so the calculator works in points rather than rates",
+      "🚨 Whether Momentum holds the CA DFPI broker licence Lendini requires for California files",
+      "Max position count, except that Construction takes no first positions",
+    ],
+    contacts: [
+      { name: "Mia Stephenson", title: "Account Manager — cc on EVERY submission; handles approvals and denials", email: "mia.stephenson@lendini.com", phone: "(484) 842-4005" },
+      { name: "Orange Team", title: "Lendini desk", phone: "(215) 965-1071" },
+      { name: "Carly Padilla", title: "Funding Metrics — earlier contact", email: "carly.padilla@fundingmetrics.com", phone: "267-569-7035" },
+    ],
+  },
+  secondary: {
+    role: "Secondary",
+    name: "The LCF Group",
+    lenderId: "60cba11b-bf10-435d-b041-9feb3aa894bb",
+    liveToday: true,
+    liveNote:
+      "Live vendor, recipe ACTIVE. LCF is the catcher for this whole line: it funds all states, all industries and all risk factors, which is precisely the set Lendini refuses.",
+    routes: [
+      {
+        kind: "email",
+        value: "submissions@thelcfgroup.com",
+        note: "CC kmaimaron@thelcfgroup.com and prm@thelcfgroup.com",
+      },
+    ],
+    portal: [],
+    portalNote:
+      "No broker portal and no login. The one approval we have ever had put the offer behind a “View Offers” link inside their reply — that is a per-deal link in an email, not an account, and nobody opened it.",
+    box: [
+      { k: "Funding", v: "$25,000 – $300,000 — note the FLOOR is five times Lendini's. A $6,000/mo merchant may not support the minimum advance" },
+      { k: "Time in business", v: "3 months — the shortest on any line" },
+      { k: "Revenue", v: "$6,000/mo" },
+      { k: "Credit", v: "No minimum FICO required" },
+      { k: "States", v: "ALL — including Texas and North Dakota, which Lendini will not fund" },
+      { k: "Industries", v: "ALL. Their own description: funds all states, industries and risk factors" },
+      { k: "Statements", v: "3 months, plus a completed application" },
+      { k: "Max positions", v: "not recorded — the one gap that matters most on a stacked file", missing: true },
+      { k: "NSF / negative days", v: "not recorded", missing: true },
+    ],
+    pricing: [
+      { k: "Term", v: "Short — approximately 30 to 120 fixed daily payments" },
+      { k: "Payments", v: "Fixed daily" },
+      { k: "Fees", v: "Origination approximately 3–10% deducted from the advance — INFERRED from observed deal shapes, never published to us", missing: true },
+      { k: "Speed", v: "80% approved in under 2 hours; approval in as little as 30 minutes; same-day funding possible" },
+    ],
+    pay: {
+      headline: "UNKNOWN — no commission recorded on the LCF entity",
+      basis:
+        "The LCF row carries no commission rate and no structure. The 6–10 points we hold belongs to Reliant, their prime arm, and should not be assumed to apply here. Ask prm@thelcfgroup.com.",
+      timing:
+        "⚠ The signed ISO agreement contradicts itself — Schedule A says ACH within 5 business days of funding, section 2 says 30 business days after LCF receives the executed Merchant Agreement, and Schedule A states the Agreement prevails.",
+    },
+    track:
+      "2 submissions, 2 replies, ZERO declines ever — and the only approval in this company's history: MF-2026-0196, Titan Event Consultants, $30,000, approved in 5 hours 25 minutes on 2026-09-11. No contract was requested and the deal went to nurture.",
+    evidence: [
+      "lender_programs (mca) — the box, the term shape, the speed and the subprime positioning",
+      "LCF ISO Agent Sales Agreement — commission spread, clawback, non-interference, and the timing contradiction",
+      "funder_replies on MF-2026-0196 — the approval and five chase emails, verbatim",
+    ],
+    gaps: [
+      "🚨 NO COMMISSION RECORDED. Do not borrow Reliant's 6–10 points for an LCF file",
+      "Max position count and NSF tolerance — both unrecorded, on the funder most likely to see a stacked merchant",
+      "The origination fee the merchant pays is inferred from deal shapes, never published",
+      "Their 24-month non-interference clause is live and it collides with the Debt Relief line — see that tab",
+    ],
+    contacts: [
+      { name: "Kajal Das Gupta", title: "Partner Relationship Manager", email: "kgupta@thelcfgroup.com", phone: "888-499-2939 x312" },
+      { name: "Kurt Maimaron", email: "kmaimaron@thelcfgroup.com", phone: "866-604-4519" },
+      { name: "Partner desk", email: "prm@thelcfgroup.com" },
+    ],
+  },
+  lastResort: LAST_RESORT_1WEST(),
+  calculator: "lendini",
+  checklist: [
+    { id: "b-shopped", group: "Ask FIRST", label: "You have asked who else already has this merchant's file", hard: true, why: "A merchant on this line has usually been shopped already. If a marketplace has had it, dozens of funders have seen it and a fresh submission comes back as “ineligible due to recent decline”." },
+    { id: "b-ca", group: "Ask FIRST", label: "The merchant is NOT in California — or you have confirmed our DFPI licence", hard: true, why: "Lendini requires the ISO to be a CA DFPI-licensed broker under the California Financing Law for California files. Nobody has confirmed we hold it. A California merchant goes to LCF until somebody does." },
+    { id: "b-state", group: "Ask FIRST", label: "If the merchant is in TEXAS or NORTH DAKOTA, this is an LCF file", hard: true, why: "Lendini no longer funds either state. LCF funds all fifty, so the file is not lost — it just goes to the other inbox. Do not submit it to Lendini and wait." },
+    { id: "b-tib", group: "Qualify on the call", label: "8+ months for Lendini (5 via Quick Fix) · 3+ months for LCF", hard: true, why: "LCF's 3 months is the shortest trading history any funder on this shelf will take." },
+    { id: "b-rev", group: "Qualify on the call", label: "$5,100/mo for Lendini · $6,000/mo for LCF", hard: true },
+    { id: "b-size", group: "Qualify on the call", label: "You have checked the advance size against the right floor", hard: true, why: "Lendini starts at $5,100 and LCF starts at $25,000. A thin merchant who needs $8,000 has exactly one option here, and it is not LCF." },
+    { id: "b-fico", group: "Qualify on the call", label: "FICO 500+ for Lendini · LCF has no minimum", hard: true },
+    { id: "b-ind", group: "Qualify on the call", label: "Industry is not on Lendini's prohibited list, and not under one of their caps", hard: true, why: "Lendini's exclusion list runs to roughly 70 categories — the longest we hold — and the caps bite hard: Construction needs 2 years, takes no first positions and caps at $50k; Roofing needs 5 years; a Restaurant under 3.5 years caps at $20k; Florida merchants need 3.5 years; Hair, Skin and Nails caps at $30k. California is restricted for sole proprietorships and import/export/wholesale. Anything Lendini throws out, LCF will look at — they fund all industries." },
+    { id: "b-app", group: "Collect", label: "Signed application", hard: true },
+    { id: "b-stmt", group: "Collect", label: "Statements — 3 months plus MONTH-TO-DATE for Lendini; 4 months if California or New York", hard: true, why: "The month-to-date statement is the one people forget and it holds the file up. LCF wants 3 months and no MTD." },
+    { id: "b-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, tool: "sos", why: "On a thin file this matters more, not less — a 3-month-old business may not have finished registering. Pick the state and the register opens in a tab. Read the STATUS field: active is not the same as in good standing." },
+    { id: "b-one", group: "Before you submit", label: "For Lendini — ONE email, labelled PDFs, summary at the top, reference number in the subject", hard: true, why: "Their written partner guideline. Split the package across emails and it sits in a queue. If it is a rush, put the deadline in the email." },
+    { id: "b-cc", group: "Before you submit", label: "Mia Stephenson is CC'd on the Lendini submission", hard: true, why: "Required by the signed ISO agreement and their setup email. We were not doing it for months because nobody had captured her address — she gave it on the 10/23 call." },
+    { id: "b-price", group: "Before you submit", label: "You know the points you intend to take", hard: true, why: "At Lendini the commission is built into the factor rate, so it shrinks the moment you cut the rate to win the deal. Up to 15 points — the most any funder pays us — but only if you price it deliberately. Use the calculator above." },
+    { id: "b-30", group: "AFTER you submit", label: "You understand the 30-day clawback before you spend the commission", hard: true, why: "Lendini pays within 24 hours of origination, which is the fastest in the book — and takes 100% of it back if the merchant defaults inside 30 days. It is returned once Lendini receives 90% of the RTR, and only if the account was cured within a 48-hour window. Fast money with a string on it." },
+  ],
+  openQuestions: [
+    "🚨 Does Momentum hold a California DFPI broker licence? Lendini requires one for CA files and nobody has checked. This blocks a whole state.",
+    "Get Lendini's 15-point commission confirmed in writing by Mia Stephenson — our figure comes from a third-party review, not from Lendini.",
+    "Ask prm@thelcfgroup.com what LCF pays. The row is empty, and Reliant's 6–10 points must not be assumed to apply.",
+    "Lendini's and LCF's maximum position counts — unrecorded on the two funders most likely to see a stacked merchant.",
+    "Does Lendini publish a buy-rate or factor range to ISOs? Without one the calculator has to work in points rather than rates.",
+    "Commission timing on the LCF paper: 5 business days or 30? The signed agreement says both.",
+  ],
+};
+
+// ── 4 ── TERM & LINE OF CREDIT ───────────────────────────────────────────────
 const TERM: ProductLine = {
   id: "term",
   tab: "Term & LOC",
@@ -545,7 +820,7 @@ const TERM: ProductLine = {
   ],
 };
 
-// ── 4 ── GIG ─────────────────────────────────────────────────────────────────
+// ── 5 ── GIG ─────────────────────────────────────────────────────────────────
 // The only line whose funder we have never spoken to. It is here because the
 // link works and the borrower is one no other line can serve — not because
 // the relationship is real. Everything unknown about it is printed.
@@ -648,7 +923,7 @@ const GIG: ProductLine = {
   ],
 };
 
-// ── 5 ── DEBT RELIEF ─────────────────────────────────────────────────────────
+// ── 6 ── DEBT RELIEF ─────────────────────────────────────────────────────────
 // The only line on this page where we are not placing capital. The merchant is
 // already stacked and cannot take another advance; the product is getting the
 // advances they ALREADY have renegotiated, or refinanced out with bank money.
@@ -825,4 +1100,4 @@ const RELIEF: ProductLine = {
   ],
 };
 
-export const LINES: ProductLine[] = [MICRO, MCA, TERM, GIG, RELIEF];
+export const LINES: ProductLine[] = [MICRO, WORKING_CAPITAL, BRIDGE, TERM, GIG, RELIEF];
