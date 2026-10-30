@@ -996,6 +996,9 @@ Deno.serve(async (req) => {
         subject: "", bodyText: "", bodyHtml: "",
         docs: [], attachmentUrls: [], attachedNames: [], docLinkLines: [],
         sentPayload: {}, blocked: missing, blockedLabels: missing.map(docLabel),
+        // A blocked funder still shows its recipe note in the preview — that
+        // note is often exactly what explains the block.
+        internalNote: recipe?.special_instructions?.trim() || null,
         directives, directiveBlock, directivesUnreadable,
       };
     }
