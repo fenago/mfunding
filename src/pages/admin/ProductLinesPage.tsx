@@ -239,11 +239,24 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
   // RLS hands an unauthorised reader an empty list rather than an error, so a
   // page-wide zero is the one signal we have that the emptiness may not be real.
   const allEmpty = creds.s === "ok" && creds.rows.length === 0;
+  // "Which of these two funders is this one for?" was the question the flat
+  // list made a closer answer mid-call. A check now names its funder and the
+  // list collapses into one block per funder, with everything that is true
+  // either way sitting in a shared block at the top.
+  const sectionFor = (f?: "primary" | "secondary" | "last"): string | undefined => {
+    if (!f) return undefined;
+    const slot = f === "primary" ? line.primary : f === "secondary" ? line.secondary : line.lastResort;
+    if (!slot) return undefined;
+    const nm = slot.shortName ?? slot.name;
+    return f === "last" ? `${nm} — only if it goes here, and it goes here last` : `${nm} only`;
+  };
+
   const checks: CheckItem[] = line.checklist.map((c) => ({
     id: c.id,
     group: c.group,
     label: c.label,
     hard: c.hard,
+    section: sectionFor(c.funder),
     // A check that turns on a list prints the list, and a check that needs a
     // tool gets the tool. Sending a closer to another tab mid-call to find out
     // what "prohibited" means, or which website holds Michigan's register, is
@@ -373,7 +386,9 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
       <Sec
         n={line.calculator ? 4 : 3}
         title="Submission checklist"
-        sub={`${line.checklist.length} items · walk it top to bottom · ticks are saved in this browser only`}
+        sub={`${line.checklist.length} items${
+          line.checklist.some((c) => c.funder) ? " · split by funder" : ""
+        } · ticks are saved in this browser only`}
         open={open.checklist}
         onToggle={() => toggle("checklist")}
       >

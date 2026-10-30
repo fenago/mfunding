@@ -40,6 +40,19 @@ export const PLAYBOOK_CSS = `
   justify-content:center;padding:0 5px;font-variant-numeric:tabular-nums}
 .fcs .fp-sechead .fp-sub{font-size:12.5px;color:var(--ink-faint)}
 
+/* ── checklist sub-accordion, one per funder ── */
+.fcs .fp-cksec + .fp-cksec{border-top:1px solid var(--line)}
+.fcs .fp-cksechead{display:flex;align-items:center;gap:10px;width:100%;font:inherit;text-align:left;
+  cursor:pointer;background:var(--chip);border:0;border-bottom:1px solid var(--line);
+  padding:9px 16px;color:var(--ink)}
+.fcs .fp-cksechead.shut{border-bottom-color:transparent}
+.fcs .fp-cksname{font-size:12.5px;font-weight:800;letter-spacing:-.01em}
+.fcs .fp-cksmeta{font-size:11px;font-weight:700;color:var(--ink-faint);font-variant-numeric:tabular-nums}
+.fcs .fp-ckscaret{margin-left:auto;font-size:10px;font-weight:800;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-cksechead:hover .fp-cksname,.fcs .fp-cksechead:hover .fp-ckscaret{color:var(--accent-ink)}
+.fcs .fp-cksechead:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
 /* ── accordion ──
    These pages run long. A closer mid-call wants one section open, not six,
    and the header has to stay a heading — so the <button> lives INSIDE the
@@ -382,6 +395,15 @@ export type CheckItem = {
   label: string;
   why?: ReactNode;
   hard?: boolean;
+  /**
+   * Which funder this check is FOR. A line with two funders has two credit
+   * boxes, and a flat list of checks mixing them makes a closer guess which
+   * half applies to the file in front of them. Items carrying a section are
+   * grouped under it and the section collapses on its own.
+   *
+   * Undefined means the check applies to every file on the line.
+   */
+  section?: string;
 };
 
 // Ticks persist per browser so a half-finished file survives a refresh — but
@@ -417,18 +439,37 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
     }
   }, [storageKey, ticks]);
 
-  const groups = useMemo(() => {
+  // Two levels: the funder a check belongs to, then the stage of the file.
+  // Items with no section ride in one shared block at the top, because they
+  // are true whichever funder the file ends up with.
+  const sections = useMemo(() => {
     const order: string[] = [];
     const by = new Map<string, CheckItem[]>();
     for (const it of items) {
-      if (!by.has(it.group)) {
-        by.set(it.group, []);
-        order.push(it.group);
+      const key = it.section ?? "";
+      if (!by.has(key)) {
+        by.set(key, []);
+        order.push(key);
       }
-      by.get(it.group)!.push(it);
+      by.get(key)!.push(it);
     }
-    return order.map((g) => ({ g, rows: by.get(g)! }));
+    return order.map((sec) => {
+      const rows = by.get(sec)!;
+      const gOrder: string[] = [];
+      const gBy = new Map<string, CheckItem[]>();
+      for (const it of rows) {
+        if (!gBy.has(it.group)) {
+          gBy.set(it.group, []);
+          gOrder.push(it.group);
+        }
+        gBy.get(it.group)!.push(it);
+      }
+      return { sec, rows, groups: gOrder.map((g) => ({ g, rows: gBy.get(g)! })) };
+    });
   }, [items]);
+
+  const multiSection = sections.length > 1;
+  const [shut, setShut] = useState<Record<string, boolean>>({});
 
   const done = items.reduce((n, it) => n + (ticks[it.id] ? 1 : 0), 0);
   const pct = items.length === 0 ? 0 : Math.round((done / items.length) * 100);
@@ -449,7 +490,29 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
         </button>
       </div>
 
-      {groups.map(({ g, rows }) => (
+      {sections.map(({ sec, rows: secRows, groups }) => {
+        const secDone = secRows.reduce((n, it) => n + (ticks[it.id] ? 1 : 0), 0);
+        const secHard = secRows.filter((it) => it.hard && !ticks[it.id]).length;
+        const open = !shut[sec];
+        return (
+      <div key={sec || "__all"} className="fp-cksec">
+        {multiSection ? (
+          <button
+            type="button"
+            className={`fp-cksechead${open ? "" : " shut"}`}
+            aria-expanded={open}
+            onClick={() => setShut((p) => ({ ...p, [sec]: !!open }))}
+          >
+            <span className="fp-cksname">{sec || "Every file on this line"}</span>
+            <span className="fp-cksmeta">
+              {secDone}/{secRows.length}
+              {secHard > 0 ? ` · ${secHard} required open` : " · done"}
+            </span>
+            <span className="fp-ckscaret">{open ? "Hide" : "Show +"}</span>
+          </button>
+        ) : null}
+        {!multiSection || open
+          ? groups.map(({ g, rows }) => (
         <div key={g}>
           <div className="fp-ckgroup">{g}</div>
           {rows.map((it) => {
@@ -481,7 +544,11 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
             );
           })}
         </div>
-      ))}
+            ))
+          : null}
+      </div>
+        );
+      })}
     </div>
   );
 }

@@ -55,6 +55,8 @@ export type FunderSlot = {
   /** What the merchant pays. Same missing-field treatment as the credit box. */
   pricing: { k: string; v: string; missing?: boolean }[];
   pay: { headline: string; basis: string; timing: string };
+  /** Used as a checklist section heading, where the full name is too long. */
+  shortName?: string;
   /** Submission history, stated plainly including zeros. */
   track: string;
   /** Which documents/records these figures came from — the mapping back. */
@@ -75,6 +77,18 @@ export type LineCheck = {
    * leaves the call to go and find the right state's register.
    */
   tool?: "sos";
+  /**
+   * Which funder on this line the check belongs to. A line with two funders
+   * has two credit boxes, and a flat list that interleaves them makes a closer
+   * work out mid-call which half applies — which is the one thing a checklist
+   * exists to stop them doing.
+   *
+   * Omit it when the check is true whichever funder the file goes to. Omit it
+   * ALSO when we simply do not hold the other funder's value: tagging a check
+   * to one funder asserts that the other does not require it, and an unknown
+   * must never be rendered as a difference.
+   */
+  funder?: "primary" | "secondary" | "last";
   /**
    * The actual items, when the check is "is it on the list". Naming a list and
    * its length without printing it makes the closer go and find it somewhere
@@ -256,7 +270,8 @@ const MICRO: ProductLine = {
   checklist: [
     { id: "m-tib", group: "Qualify on the call", label: "12+ months in business", hard: true, why: "Both funders require 12 months. Under 6 is an automatic decline at Bitty." },
     { id: "m-fico", group: "Qualify on the call", label: "FICO 500+, no open bankruptcy", hard: true, why: "500 is the floor at both. Below 550 at Bitty means the Access tier and 8% to us instead of 12%." },
-    { id: "m-rev", group: "Qualify on the call", label: "Revenue — $5,000/mo for Bitty, $10,000/mo for True Advance", hard: true, why: "True Advance needs double. Check which funder the file is actually going to." },
+    { id: "m-rev", group: "Qualify on the call", label: "$5,000/mo in revenue", hard: true, funder: "primary", why: "Bitty's floor. Half what True Advance wants — so a merchant banking $6,000 is a Bitty file and nothing else on this line." },
+    { id: "m-rev-ta", group: "Qualify on the call", label: "$10,000/mo in revenue", hard: true, funder: "secondary", why: "True Advance needs double Bitty's floor. Check which funder the file is actually going to before you promise anybody anything." },
     { id: "m-state", group: "Qualify on the call", label: "Merchant is NOT in Texas or North Dakota", hard: true, why: "True Advance excludes both, so a Texas or North Dakota file has to go to Bitty — whose own excluded states are unrecorded. Ask before you promise." },
     { id: "m-pos", group: "Qualify on the call", label: "5 or fewer open positions", hard: true, why: "True Advance caps at 5. Bitty's position limit is unrecorded — ask before you promise." },
     {
@@ -308,6 +323,7 @@ function LAST_RESORT_1WEST(lane: "advance" | "credit" = "advance"): FunderSlot {
   return {
     role: "Secondary",
     name: "1 West — last resort, and that is a rule",
+    shortName: "1 West",
     lenderId: "e5e606c8-55dd-4490-9030-69214179a88b",
     liveToday: true,
     liveNote: credit
@@ -535,14 +551,16 @@ const WORKING_CAPITAL: ProductLine = {
     { id: "c-shopped", group: "Ask FIRST", label: "You have asked who else already has this merchant's file", hard: true, why: "The highest-value question on any MCA call. If a marketplace has shopped them, dozens of funders have already seen the file and a fresh submission comes back as “ineligible due to recent decline”." },
     { id: "c-which", group: "Ask FIRST", label: "You know which funder this file is for before you collect anything", hard: true, why: "Reliant takes $4,000/mo and 6 months. Green Note needs $20,000/mo and 12 months. That is a five-fold difference in the revenue gate — ask the deposits question early and you will not waste an hour collecting for the wrong funder." },
     { id: "c-dep", group: "Qualify on the call", label: "Average monthly DEPOSITS, not revenue — and you have a number", hard: true, why: "Deposits are what gets underwritten. A merchant who says “we do $30,000 a month” and banks $12,000 of it is a Reliant file, not a Green Note one." },
-    { id: "c-tib", group: "Qualify on the call", label: "6+ months for Reliant · 12+ months for Green Note", hard: true },
-    { id: "c-fico", group: "Qualify on the call", label: "FICO — 550 for Green Note; Reliant has no stated minimum", hard: true, why: "Reliant publishes no FICO floor, which is a real position of theirs and not a gap in our record. Green Note's 550 is firm." },
-    { id: "c-nsf", group: "Qualify on the call", label: "For Green Note — 5 NSFs or fewer, 51% ownership, no active defaults", hard: true, why: "Count the NSFs in the statements yourself. Six is a decline and the merchant will not volunteer it." },
+    { id: "c-tib", group: "Qualify on the call", label: "6+ months trading", hard: true, funder: "primary", why: "The shorter of the two bars on this line by half a year." },
+    { id: "c-tib-gn", group: "Qualify on the call", label: "12+ months trading", hard: true, funder: "secondary", why: "Double Reliant's. A merchant eight months in is a Reliant file, not a Green Note one." },
+    { id: "c-fico", group: "Qualify on the call", label: "No FICO floor to clear", hard: true, funder: "primary", why: "Reliant publishes no FICO minimum at all. That is a real position of theirs, not a gap in our record — so a thin credit file is not what stops a Reliant deal." },
+    { id: "c-fico-gn", group: "Qualify on the call", label: "FICO 550+", hard: true, funder: "secondary", why: "Green Note's 550 is firm." },
+    { id: "c-nsf", group: "Qualify on the call", label: "5 NSFs or fewer, 51% ownership, no active defaults", hard: true, funder: "secondary", why: "Count the NSFs in the statements yourself. Six is a decline and the merchant will not volunteer it." },
     { id: "c-coll", group: "Qualify on the call", label: "NO collections activity and NO debt-settlement servicer debit in the statements", hard: true, why: "Green Note hard-declines these. Dean Simms, 2026-09-30, verbatim: “we dont fund when ram payments is in there as that is collections.” Look for RAM Payment / RAM PMT, Global Holdings / GLOBAL GHLLC.COM and similar escrow processors. If you find one, this is not a dead file — it is a Momentum Debt Relief file. Move it, do not nurture it." },
-    { id: "c-ind", group: "Qualify on the call", label: "Industry is not on Green Note's prohibited list", hard: true, why: "Prohibited at Green Note: Credit Repair, Check Cashing, ACH Processors, Bail Bonds, Auctions, Notary, Casinos, Non-Profits, Ticket Brokers, Adult Entertainment. Their preferred list is worth knowing too — Medical, Auto Repair, Laboratory, Pharmacy, IT Services, Pet Care, Restaurants, Laundromat, Marketing, Plumbing, Retail, Electricians, E-Commerce, Manufacturing, Funeral Home. Reliant publishes no exclusions at all, so you have to ask." },
+    { id: "c-ind", group: "Qualify on the call", label: "Industry is not on Green Note's prohibited list", hard: true, funder: "secondary", why: "Prohibited at Green Note: Credit Repair, Check Cashing, ACH Processors, Bail Bonds, Auctions, Notary, Casinos, Non-Profits, Ticket Brokers, Adult Entertainment. Their preferred list is worth knowing too — Medical, Auto Repair, Laboratory, Pharmacy, IT Services, Pet Care, Restaurants, Laundromat, Marketing, Plumbing, Retail, Electricians, E-Commerce, Manufacturing, Funeral Home. Reliant publishes no exclusions at all, so you have to ask." },
     { id: "c-app", group: "Collect", label: "Signed application", hard: true },
     { id: "c-stmt", group: "Collect", label: "3 months of business bank statements", hard: true, why: "Three satisfies both funders. Collect a fourth anyway — it costs the merchant nothing and 1 West needs four if the file ends up there." },
-    { id: "c-id", group: "Collect", label: "For Green Note — photo ID and a voided check", hard: true, why: "Part of their light-stip list. Reliant does not ask for either." },
+    { id: "c-id", group: "Collect", label: "Photo ID and a voided check", hard: true, funder: "secondary", why: "Part of Green Note's light-stip list. Reliant does not ask for either — and a screenshot of the merchant's bank portal satisfies the voided check, so it never blocks a submission." },
     { id: "c-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, tool: "sos", why: "Check it yourself rather than asking the merchant — a lapsed registration is a silent decline and the owner is usually the last to know. Pick the state and the register opens in a tab. Read the STATUS field: active is not the same as in good standing." },
     { id: "c-pos", group: "Before you submit", label: "You have counted the open positions and know where they are going", hard: true, why: "Green Note will stack and has no position limit, which is unusual and useful. Reliant's limit is unrecorded — ask, do not assume it is the same." },
     { id: "c-price", group: "Before you submit", label: "You have priced it in the calculator above", hard: true, why: "Reliant pays 6–10 points on the funded amount. Green Note's commission is unknown to us entirely, so you cannot forecast that one at all — say so internally rather than guessing." },
@@ -722,20 +740,23 @@ const BRIDGE: ProductLine = {
     { id: "b-shopped", group: "Ask FIRST", label: "You have asked who else already has this merchant's file", hard: true, why: "A merchant on this line has usually been shopped already. If a marketplace has had it, dozens of funders have seen it and a fresh submission comes back as “ineligible due to recent decline”." },
     { id: "b-ca", group: "Ask FIRST", label: "The merchant is NOT in California — or you have confirmed our DFPI licence", hard: true, why: "Lendini requires the ISO to be a CA DFPI-licensed broker under the California Financing Law for California files. Nobody has confirmed we hold it. A California merchant goes to LCF until somebody does." },
     { id: "b-state", group: "Ask FIRST", label: "If the merchant is in TEXAS or NORTH DAKOTA, this is an LCF file", hard: true, why: "Lendini no longer funds either state. LCF funds all fifty, so the file is not lost — it just goes to the other inbox. Do not submit it to Lendini and wait." },
-    { id: "b-tib", group: "Qualify on the call", label: "8+ months for Lendini (5 via Quick Fix) · 3+ months for LCF", hard: true, why: "LCF's 3 months is the shortest trading history any funder on this shelf will take." },
-    { id: "b-rev", group: "Qualify on the call", label: "$5,100/mo for Lendini · $6,000/mo for LCF", hard: true },
+    { id: "b-tib", group: "Qualify on the call", label: "8+ months trading — or 5 through Quick Fix Capital, their sister brand", hard: true, funder: "primary", why: "Quick Fix is the way in for a merchant between five and eight months. Same house, lower bar, and it buys at 1.35 rather than 1.25." },
+    { id: "b-tib-lcf", group: "Qualify on the call", label: "3+ months trading", hard: true, funder: "secondary", why: "The shortest trading history any funder on this shelf will take. A merchant too new for everything else is an LCF file." },
+    { id: "b-rev", group: "Qualify on the call", label: "$5,100/mo in revenue", hard: true, funder: "primary" },
+    { id: "b-rev-lcf", group: "Qualify on the call", label: "$6,000/mo in revenue", hard: true, funder: "secondary" },
     { id: "b-size", group: "Qualify on the call", label: "You have checked the advance size against the right floor", hard: true, why: "Lendini starts at $5,100 and LCF starts at $25,000. A thin merchant who needs $8,000 has exactly one option here, and it is not LCF." },
-    { id: "b-fico", group: "Qualify on the call", label: "FICO 500+ for Lendini · LCF has no minimum", hard: true },
-    { id: "b-neg", group: "Qualify on the call", label: "For Lendini — 6 or fewer negative days last month, 20 or fewer across three", hard: true, why: "Straight off their submission guidelines. Count them in the statements rather than asking: a merchant who has been juggling debits rarely knows the number, and this is the kind of thing that comes back as a decline two days later." },
-    { id: "b-adb", group: "Qualify on the call", label: "For Lendini — $500 average daily balance and 51%+ collective ownership", hard: true, why: "Both are named requirements on their sheet. The ownership one bites when two partners each hold 40% and nobody on the application clears the bar." },
-    { id: "b-stack", group: "Qualify on the call", label: "Count the positions — Lendini takes 1st to 4th, and no further", hard: true, why: "Five or more open positions is a Lendini decline. Their sheet does carry a “No position cap” headline, but that is QUICK FIX CAPITAL's column, not Lendini's — reading it as Lendini's is the single easiest way to generate declines on this line. A deeply stacked merchant goes to Quick Fix (no position limit, buys at 1.35) or to LCF. Construction is a separate rule: Lendini takes no FIRST positions there at all." },
-    { id: "b-ind", group: "Qualify on the call", label: "Industry is not on Lendini's prohibited list, and not under one of their caps", hard: true, why: "Lendini's exclusion list runs to roughly 70 categories — the longest we hold — and the caps bite hard: Construction needs 2 years, takes no first positions and caps at $50k; Roofing needs 5 years; a Restaurant under 3.5 years caps at $20k; Florida merchants need 3.5 years; Hair, Skin and Nails caps at $30k. California is restricted for sole proprietorships and import/export/wholesale. Anything Lendini throws out, LCF will look at — they fund all industries." },
+    { id: "b-fico", group: "Qualify on the call", label: "FICO 500+", hard: true, funder: "primary" },
+    { id: "b-fico-lcf", group: "Qualify on the call", label: "No FICO minimum to clear", hard: true, funder: "secondary", why: "LCF publishes no credit floor. Credit is not what stops a file here." },
+    { id: "b-neg", group: "Qualify on the call", funder: "primary", label: "6 or fewer negative days last month, 20 or fewer across three", hard: true, why: "Straight off their submission guidelines. Count them in the statements rather than asking: a merchant who has been juggling debits rarely knows the number, and this is the kind of thing that comes back as a decline two days later." },
+    { id: "b-adb", group: "Qualify on the call", funder: "primary", label: "$500 average daily balance and 51%+ collective ownership", hard: true, why: "Both are named requirements on their sheet. The ownership one bites when two partners each hold 40% and nobody on the application clears the bar." },
+    { id: "b-stack", group: "Qualify on the call", funder: "primary", label: "Count the positions — Lendini takes 1st to 4th, and no further", hard: true, why: "Five or more open positions is a Lendini decline. Their sheet does carry a “No position cap” headline, but that is QUICK FIX CAPITAL's column, not Lendini's — reading it as Lendini's is the single easiest way to generate declines on this line. A deeply stacked merchant goes to Quick Fix (no position limit, buys at 1.35) or to LCF. Construction is a separate rule: Lendini takes no FIRST positions there at all." },
+    { id: "b-ind", group: "Qualify on the call", funder: "primary", label: "Industry is not on Lendini's prohibited list, and not under one of their caps", hard: true, why: "Lendini's exclusion list runs to roughly 70 categories — the longest we hold — and the caps bite hard: Construction needs 2 years, takes no first positions and caps at $50k; Roofing needs 5 years; a Restaurant under 3.5 years caps at $20k; Florida merchants need 3.5 years; Hair, Skin and Nails caps at $30k. California is restricted for sole proprietorships and import/export/wholesale. Anything Lendini throws out, LCF will look at — they fund all industries." },
     { id: "b-app", group: "Collect", label: "Signed application", hard: true },
     { id: "b-stmt", group: "Collect", label: "Statements — 3 months plus MONTH-TO-DATE for Lendini; 4 months if California or New York", hard: true, why: "The month-to-date statement is the one people forget and it holds the file up. LCF wants 3 months and no MTD." },
-    { id: "b-idck", group: "Collect", label: "For Lendini — photo ID and a voided check, before funding", hard: true, why: "Their guidelines list both as required on every funding, not just on request. Collecting them with the statements saves a day at the end." },
+    { id: "b-idck", group: "Collect", funder: "primary", label: "Photo ID and a voided check, before funding", hard: true, why: "Their guidelines list both as required on every funding, not just on request. Collecting them with the statements saves a day at the end." },
     { id: "b-sos", group: "Collect", label: "Secretary of State active and in good standing", hard: true, tool: "sos", why: "On a thin file this matters more, not less — a 3-month-old business may not have finished registering. Pick the state and the register opens in a tab. Read the STATUS field: active is not the same as in good standing." },
-    { id: "b-one", group: "Before you submit", label: "For Lendini — ONE email, labelled PDFs, summary at the top, reference number in the subject", hard: true, why: "Their written partner guideline. Split the package across emails and it sits in a queue. If it is a rush, put the deadline in the email." },
-    { id: "b-cc", group: "Before you submit", label: "Mia Stephenson is CC'd on the Lendini submission", hard: true, why: "Required by the signed ISO agreement and their setup email. We were not doing it for months because nobody had captured her address — she gave it on the 10/23 call." },
+    { id: "b-one", group: "Before you submit", funder: "primary", label: "ONE email, labelled PDFs, summary at the top, reference number in the subject", hard: true, why: "Their written partner guideline. Split the package across emails and it sits in a queue. If it is a rush, put the deadline in the email." },
+    { id: "b-cc", group: "Before you submit", funder: "primary", label: "Mia Stephenson is CC'd on the submission", hard: true, why: "Required by the signed ISO agreement and their setup email. We were not doing it for months because nobody had captured her address — she gave it on the 10/23 call." },
     { id: "b-price", group: "Before you submit", label: "You know the points you intend to take", hard: true, why: "At Lendini the commission is built into the factor rate, so it shrinks the moment you cut the rate to win the deal. Up to 15 points — the most any funder pays us — but only if you price it deliberately. Use the calculator above." },
     { id: "b-30", group: "AFTER you submit", label: "You understand the 30-day clawback before you spend the commission", hard: true, why: "Lendini pays within 24 hours of origination, which is the fastest in the book — and takes 100% of it back if the merchant defaults inside 30 days. It is returned once Lendini receives 90% of the RTR, and only if the account was cured within a 48-hour window. Fast money with a string on it." },
   ],
@@ -859,19 +880,22 @@ const TERM: ProductLine = {
   checklist: [
     { id: "t-order", group: "Qualify", label: "You are going UCS first, GoKapital second, 1 West last", hard: true, why: "The ordering is a rule, not a preference. UCS and GoKapital are direct relationships that publish what they pay us per product. 1 West is a marketplace: one submission puts the file in front of 45–50 lenders at once, so a decline there can burn the direct funders you have not tried yet, and it pays us a share of a number we have never seen. Everything above it first." },
     { id: "t-product", group: "Qualify", label: "You know whether this is a term loan or a line of credit", hard: true, why: "Different boxes and very different commission, and the two funders pay a line of credit on DIFFERENT BASES. UCS: 1–3% of the first draw only, nothing on any later draw. GoKapital: 2.5% of the whole approved facility. The rule that sends term loans to UCS reverses on a line — price it before you route it." },
-    { id: "t-tib", group: "Qualify", label: "12 months for UCS · 24 for a GoKapital term loan · 36 for a GoKapital LOC", hard: true, why: "GoKapital's time-in-business bars are far higher. Check before you route." },
-    { id: "t-fico", group: "Qualify", label: "575 for UCS · 660 GoKapital term · 650 GoKapital LOC", hard: true },
-    { id: "t-rev", group: "Qualify", label: "$25,000/mo for UCS · $250,000/yr GoKapital term · $15,000/mo GoKapital LOC", hard: true },
-    { id: "t-adb", group: "Qualify", label: "For a GoKapital line of credit, $5,000 average daily balance", hard: true },
+    { id: "t-tib", group: "Qualify", label: "12 months trading", hard: true, funder: "primary" },
+    { id: "t-fico", group: "Qualify", label: "FICO 575+", hard: true, funder: "primary" },
+    { id: "t-rev", group: "Qualify", label: "$25,000/mo · $300,000/yr", hard: true, funder: "primary" },
+    { id: "t-tib-gk", group: "Qualify", label: "24 months trading for a term loan · 36 for a line of credit", hard: true, funder: "secondary", why: "Far higher than UCS on both. A borrower eighteen months in clears UCS and fails here, so check this before you route rather than after." },
+    { id: "t-fico-gk", group: "Qualify", label: "FICO 660 for a term loan · 650 for a line of credit", hard: true, funder: "secondary" },
+    { id: "t-rev-gk", group: "Qualify", label: "$250,000/yr for a term loan · $15,000/mo for a line of credit", hard: true, funder: "secondary" },
+    { id: "t-adb", group: "Qualify", label: "$5,000 average daily balance, on a line of credit", hard: true, funder: "secondary" },
     { id: "t-time", group: "Qualify", label: "The borrower understands this is NOT same-day money", hard: true, why: "Term funds in 1–2 weeks at GoKapital. SBA runs 30–60 days. Set that expectation on call one." },
     { id: "t-app", group: "Collect", label: "Signed application", hard: true },
     { id: "t-stmt", group: "Collect", label: "4 months of statements — covers UCS and every GoKapital product except SBA", hard: true },
     { id: "t-fin", group: "Collect", label: "YTD P&L and balance sheet for anything over $250,000", why: "Standard for real credit, and the reason term files take longer than advances." },
-    { id: "t-fuse", group: "Before you submit", label: "If routing to UCS, you know the 30-day referral fuse is running", hard: true, why: "If the merchant does not sign a Merchant Agreement within 30 days of referral, UCS owes us nothing. Term underwriting routinely runs past that." },
+    { id: "t-fuse", group: "Before you submit", funder: "primary", label: "You know the 30-day referral fuse is running", hard: true, why: "If the merchant does not sign a Merchant Agreement within 30 days of referral, UCS owes us nothing. Term underwriting routinely runs past that." },
     { id: "t-lang", group: "Before you submit", label: "You are using LENDING language, not advance language", hard: true, why: "These are real credit products. Loan, borrower, term, draw, origination fee are all correct here — and must never be used on the Micro or MCA lines." },
     { id: "t-consumer", group: "Before you submit", label: "You are NOT placing a personal loan or a home equity line", hard: true, why: "Two of the products on offer through this line are consumer credit, not commercial: 1 West's partner guide carries a PERSONAL LOAN and a HOME EQUITY LINE among its eight products with no licensing caveat of any kind, and GoKapital's grid prices “personal and start-up” at 3%. Momentum is a commercial broker and nobody here has established that we are permitted to place consumer paper. Do not place it, and do not offer it, until somebody has." },
     { id: "t-price", group: "Before you submit", label: "You have priced it in the calculator above", hard: true, why: "This is the only line where both funders publish a per-product grid, and where the same borrower can be worth four times as much at one of them. A term loan pays up to 10% at UCS and 2.5% at GoKapital. SBA pays 50 basis points — $750 on a $150,000 file against $15,000 for a term loan of the same size. A line of credit flips the whole rule because of the basis. Run it before you route it; none of this is holdable in your head." },
-    { id: "t-west", group: "Before you submit", label: "If it is going to 1 West, you have told whoever forecasts that it cannot be forecast", hard: true, why: "We are paid 50% of 1 West's own compensation when we broker the file and 25% when we refer it — and we have never seen that compensation figure on any deal. A 1 West file has real value and an unknown one. Record it as unknown rather than letting a pipeline figure be invented for it." },
+    { id: "t-west", group: "Before you submit", funder: "last", label: "You have told whoever forecasts that this file cannot be forecast", hard: true, why: "We are paid 50% of 1 West's own compensation when we broker the file and 25% when we refer it — and we have never seen that compensation figure on any deal. A 1 West file has real value and an unknown one. Record it as unknown rather than letting a pipeline figure be invented for it." },
   ],
   openQuestions: [
     "🚨 Ask Michael Bernier what 1 West's own compensation is on a term loan, a line of credit, SBA and equipment. We take 50% of it brokered and 25% referred, and we have never seen the number — so every file routed to the last resort on this line is unpriceable, and the calculator says so rather than guessing.",
