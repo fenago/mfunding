@@ -612,9 +612,15 @@ export function TermLocCalc() {
         <b>What this does not do.</b> It does not price the borrower&rsquo;s side. UCS publishes term pricing as
         &ldquo;from 1–4% per month&rdquo; and GoKapital publishes &ldquo;6%–25%&rdquo; with no unit attached — one
         is monthly, the other is unlabelled, and converting either into a payment would mean inventing the part
-        they did not state. Ask for the amortisation on the approval instead. <b>Every rate above is taken from
-        the funders&rsquo; own published commission grids</b> — UCS ISO Compensation Schedule A Rev 04-2018 and
-        GoKapital&rsquo;s Broker Referral Agreement Exhibit A — and nothing on this panel is inferred.{" "}
+        they did not state. Ask for the amortisation on the approval instead.{" "}
+        <b>Where these rates come from, and how firmly.</b> The UCS figures are the strongest thing on this page:
+        the 1–3% line-of-credit rate and its initial-draw basis are both extracted verbatim from UCS ISO
+        Compensation Schedule A Rev 04-2018 and held as a quoted fact. The GoKapital figures are weaker in one
+        specific way — they sit on GoKapital&rsquo;s funder record attributing them to Broker Referral Agreement
+        Exhibit A, nothing anywhere contradicts them, and no figure differing from 2.5% / 0.5% exists in our
+        records, <b>but no extraction from that document is on file</b>, so the 2.5%-of-the-whole-facility basis
+        that makes a line of credit worth four times as much here is our own record speaking, not theirs. It is
+        the number to confirm before a line-of-credit file is routed on the strength of it.{" "}
         <b>Nothing here is a quote to a borrower.</b>
       </div>
     </div>

@@ -321,7 +321,7 @@ function LAST_RESORT_1WEST(lane: "advance" | "credit" = "advance"): FunderSlot {
       {
         url: "https://apply.1west.com/accounts/login/",
         label: "Account log-in",
-        note: "From their own contact page. Not yet opened by anyone here. Our submission profile points at www.1west.com, which is the marketing site — ignore it.",
+        note: "From their own contact page. Not yet opened by anyone here, and no login has ever been issued to us. Note that the submission_portal_url on their funder record is NOT this — it holds the merchant self-serve application link carrying our ISO code, which is a thing we send a borrower, not a thing we log into.",
         unverified: true,
       },
     ],
@@ -335,6 +335,7 @@ function LAST_RESORT_1WEST(lane: "advance" | "credit" = "advance"): FunderSlot {
           { k: "States", v: "No restricted states" },
           { k: "Statements", v: "4 months on the brokered route" },
           { k: "Why it is still last", v: "UCS and GoKapital are direct, and both publish what they pay us per product. Here we are paid a share of 1 West's compensation and have never seen that figure on any file" },
+          { k: "⚠ Their four credit boxes are one box", v: "Term loan, line of credit, SBA and equipment each have a program row on their record and all four carry IDENTICAL numbers — 550, 6 months, $10,000/mo, $5,000–$1,000,000. That is because the rep gave one marketplace-wide qualification band on the call, not a credit box per product. Do not read the term row as term-loan criteria; it is the door, not the product" },
         ]
       : [
           { k: "Funding", v: "$5,000 – $1,000,000 — confirmed by their VP of Business Development on a call 2026-10-23" },
@@ -587,15 +588,21 @@ const BRIDGE: ProductLine = {
       },
       {
         kind: "portal",
-        value: "https://partners.lendini.com",
-        note: "Partner portal. Desk hours 9am–8pm EST, Monday to Friday",
+        value: "https://portal.fundingmetrics.com/dashboard",
+        note: "THE portal — Funding Metrics is Lendini's legal entity, and this is the one we hold a login for. Desk hours 9am–8pm EST, Monday to Friday",
       },
     ],
     portal: [
       {
+        url: "https://portal.fundingmetrics.com/dashboard",
+        label: "Funding Metrics broker portal",
+        note: "Credentials issued to us and vaulted 2026-10-30. Nobody has signed in yet, so the login is on file but unproven — if it is refused, the username may be the other way round (our company sending address is sales@send.mfunding.net).",
+        unverified: true,
+      },
+      {
         url: "https://partners.lendini.com",
-        label: "Lendini partner portal",
-        note: "Listed in their partner guidelines. Nobody here has logged in, so try it before you rely on it.",
+        label: "partners.lendini.com",
+        note: "A second address listed in their partner guidelines. No login was ever issued for it and nobody here has opened it. Use the Funding Metrics portal above.",
         unverified: true,
       },
     ],
@@ -873,6 +880,7 @@ const TERM: ProductLine = {
     "Ask GoKapital what makes a file high-risk — those are held 45 business days instead of paying on the 1st or 15th — and whether any clawback applies at all. Their grid is silent on it.",
     "Get the GoKapital affiliate link. Our record refers to one by name and the URL itself was lost in a paste, so self-serve volume may be going untracked.",
     "Establish whether Momentum may place CONSUMER credit at all. Two of the products reachable through this line — 1 West's personal loan and home equity line, GoKapital's personal and start-up loan — are consumer products sold to us with no licensing caveat attached. Until this is answered the checklist says do not place them.",
+    "🚨 Our submission recipes have no product dimension — one recipe per funder, and all three of these are MCA-shaped (application plus bank statements). A UCS term loan needs an application signed inside the last 30 days; a GoKapital term loan wants 3 months of statements plus a call with their analyst; 1 West's rep said 3–4 months depending on which lender picks it up. None of that can be stored today, so a term file pushed through the submit flow goes out on the advance recipe. Until that is fixed, package term files by this checklist and not by the recipe.",
     "Read UCS's and GoKapital's brand clauses before printing anything Momentum-branded.",
   ],
 };
