@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Alert, type CheckItem, Checklist, IndustryFinder, Quote, Rows, Sec } from "./playbook";
 import { BittySpreadCalc } from "./BittySpreadCalc";
+import { BITTY_PREFERRED as PREFERRED, BITTY_PROHIBITED as PROHIBITED, BITTY_STANDARD as STANDARD } from "./bittyIndustries";
 
 const TIERS = [
   { n: "Premier", cls: "t1", factor: "1.39", term: "69 wks", comm: "12%", fico: "675+", rev: "$15K/mo" },
@@ -24,44 +25,6 @@ const TIERS = [
   { n: "Access", cls: "t4", factor: "1.59", term: "50 wks", comm: "8%", fico: "500+", rev: "$5K/mo" },
 ];
 
-const PREFERRED = [
-  "Advertising", "Agriculture, Forestry, Fishing", "Ambulance", "Architectural / Engineering",
-  "Assisted Facility", "Auto Repair", "Barber Shops", "Beauty Salons", "Car Rental", "Car Wash",
-  "Child Day Care", "Computer Systems Design", "Cosmetics / Hair Ext. / Supply", "CPA Office / Accountant",
-  "Dentist", "Doctor / Physician / Specialist", "Drinking Alcohol", "Driving School",
-  "Drycleaner / Laundry", "Employment / Staffing", "Fitness Center", "Florist", "Food Truck",
-  "Furniture / Home Retail", "Gas Station", "Graphic Design", "Grocery / Food / Bev. Retail",
-  "Home Health Care", "Insurance", "Interior Design", "Janitorial", "Lab / Imaging", "Landscaping",
-  "Lawyer", "Manufacturing", "Mental Health", "Mortgage Broker", "Nail Salon",
-  "Oil / Gas Support Activities", "Other Information", "Other Legal Services", "Pest", "Pet Care",
-  "Photography", "Real Estate Lessor", "Restaurant - Full-service", "Restaurant - Limited-service",
-  "Septic Tank", "Spa / Tattoo / Wax", "Sports / Hobby / Music Retail", "Sports / Recreation Instruction",
-  "Telecommunications", "Tobacco / Vape", "Trade Show / Convention", "Travel Agency / Arrangement",
-  "Tutoring", "Veterinary",
-];
-
-const STANDARD = [
-  "Accommodation", "Appliance Repair", "Auto Body Shop", "Auto Parts / Tires", "Boat / Marine",
-  "Catering", "Chiropractor", "Clothing / Shoes / Acc. Retail", "Construction - Carpentry",
-  "Construction - Electrician", "Construction - Flooring", "Construction - Gen. Remodeler",
-  "Construction - New Home Builder", "Construction - Other Unclass.", "Construction - Painting",
-  "Construction - Plumbing / HVAC", "Construction - Roofing", "Construction - Site Prep / Excav.",
-  "Consulting - Management", "Drywall", "Electronics / Appliance Retail", "Fine Arts School",
-  "Funeral Home", "General Merchandise Retail", "Health / Personal Care Retail", "Investment Advisor",
-  "Jewelry", "Marketing", "Medical Transport (non-emerg.)", "Movie / Music", "Moving", "Notary",
-  "Online Seller", "Other Arts / Entertain. / Rec.", "Other Education", "Other Finance",
-  "Other Misc. Retail", "Other Personal Services", "Other Prof / Sci / Tech Services",
-  "Other Services - Bldgs / Dwellings", "Public Administration", "Real Estate Agent / Broker",
-  "Real Estate / Other Activities", "Rental Center / Consumer / Gen.", "Security Guard / Investigation",
-  "Security Systems", "Solar", "Taxi / Limo / Shuttle", "Towing / Roadside", "Trucking",
-  "T-shirt / Printing", "Wholesale",
-];
-
-const PROHIBITED = [
-  "Auto Dealer / New, Used", "Bail Bonds", "Cannabis", "Crypto", "Debt Collections", "Gambling",
-  "Guns", "Health Supplements", "Money Service Businesses", "Not-for-profit", "Pawn Shops",
-  "Psychic Services", "Religious / Grantmaking / Civic", "Sexual Content",
-];
 
 const CHECK: CheckItem[] = [
   // ── 1. kill it on the call ──
@@ -97,7 +60,12 @@ const CHECK: CheckItem[] = [
     group: "Qualify on the call — before you collect anything",
     label: "Industry is not on the 14-item prohibited list",
     hard: true,
-    why: <>Use the industry lookup in section 5. Prohibited means do not submit at all.</>,
+    why: (
+      <>
+        <b>Prohibited means do not submit at all</b>, at any price. All {PROHIBITED.length}:{" "}
+        {PROHIBITED.join(" · ")}. Everything else is preferred or standard — section 5 has the lookup.
+      </>
+    ),
   },
   {
     id: "b-neg",

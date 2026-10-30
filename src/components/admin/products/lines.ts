@@ -23,6 +23,8 @@
  * nobody here has opened it — it is shown, and labelled, rather than hidden,
  * because a closer who cannot find a login assumes none exists.
  */
+import { BITTY_PROHIBITED } from "@/components/admin/funder/bittyIndustries";
+
 export type PortalRef = {
   url: string;
   label: string;
@@ -67,6 +69,13 @@ export type LineCheck = {
   group: string;
   label: string;
   why?: string;
+  /**
+   * The actual items, when the check is "is it on the list". Naming a list and
+   * its length without printing it makes the closer go and find it somewhere
+   * else, which on a live call means guessing. If a check turns on a list, the
+   * list goes here and renders underneath it.
+   */
+  list?: string[];
   hard?: boolean;
 };
 
@@ -131,7 +140,7 @@ const MICRO: ProductLine = {
       { k: "Negative days", v: "19+ in prior 3 months is an auto-decline" },
       { k: "Max positions", v: "not recorded", missing: true },
       { k: "Excluded states", v: "not recorded", missing: true },
-      { k: "Excluded industries", v: "14 prohibited, published in full" },
+      { k: "Excluded industries", v: `${BITTY_PROHIBITED.length} prohibited — all of them printed on the industry check below` },
     ],
     pricing: [
       { k: "Factor", v: "1.39 – 1.59 starting, by tier" },
@@ -232,7 +241,14 @@ const MICRO: ProductLine = {
     { id: "m-rev", group: "Qualify on the call", label: "Revenue — $5,000/mo for Bitty, $10,000/mo for True Advance", hard: true, why: "True Advance needs double. Check which funder the file is actually going to." },
     { id: "m-state", group: "Qualify on the call", label: "Merchant is NOT in Texas or North Dakota", hard: true, why: "True Advance excludes both, so a Texas or North Dakota file has to go to Bitty — whose own excluded states are unrecorded. Ask before you promise." },
     { id: "m-pos", group: "Qualify on the call", label: "5 or fewer open positions", hard: true, why: "True Advance caps at 5. Bitty's position limit is unrecorded — ask before you promise." },
-    { id: "m-ind", group: "Qualify on the call", label: "Industry is not on Bitty's 14-item prohibited list", hard: true, why: "Check the Bitty tab's industry lookup. True Advance's exclusions are unrecorded." },
+    {
+      id: "m-ind",
+      group: "Qualify on the call",
+      label: "Industry is not one Bitty prohibits",
+      hard: true,
+      why: "Prohibited means do not submit at all, at any price — these are the whole list, not a sample. Anything not here is fine by Bitty; the preferred/standard split only moves the tier. True Advance publishes no exclusions at all, so for a file going there you have to ask.",
+      list: BITTY_PROHIBITED,
+    },
     { id: "m-neg", group: "Qualify on the call", label: "Under 19 negative days across the last 3 months", hard: true, why: "Automatic decline at Bitty. Verify in the statements, not just by asking." },
     { id: "m-app", group: "Collect", label: "Signed application — legal name, DBA, EIN, entity type, state", hard: true, why: "Bitty's decision is automatic and keyed to application accuracy. A sloppy app is a slow one." },
     { id: "m-stmt", group: "Collect", label: "3 months of business bank statements", hard: true, why: "3 is True Advance's stated requirement. Bitty names no count anywhere — have a 4th ready." },

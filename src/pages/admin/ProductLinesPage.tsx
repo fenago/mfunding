@@ -161,7 +161,22 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
     group: c.group,
     label: c.label,
     hard: c.hard,
-    why: c.why,
+    // A check that turns on a list prints the list. Sending a closer to another
+    // tab to find out what "prohibited" means is the same as not telling them.
+    why: c.list ? (
+      <>
+        {c.why}
+        <span className="fp-cklist">
+          {c.list.map((x) => (
+            <span className="fp-cktag" key={x}>
+              {x}
+            </span>
+          ))}
+        </span>
+      </>
+    ) : (
+      c.why
+    ),
   }));
 
   return (
@@ -347,4 +362,6 @@ const EXTRA_CSS = `
 .fcs .fp-gapbox > b{display:block;font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--c);margin-bottom:6px}
 .fcs .fp-gapbox ul{margin:0;padding-left:18px;font-size:13px;line-height:1.6}
 .fcs .fp-gapbox li + li{margin-top:3px}
+.fcs .fp-cklist{display:block;margin-top:6px}
+.fcs .fp-cktag{display:inline-block;margin:0 4px 4px 0;padding:1px 7px;border-radius:5px;background:var(--d-bg);color:var(--d);border:1px solid color-mix(in srgb,var(--d) 25%,transparent);font-size:11.5px;font-weight:700;line-height:1.7}
 `;
