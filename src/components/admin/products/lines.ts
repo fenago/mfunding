@@ -106,26 +106,21 @@ const MICRO: ProductLine = {
   tagline: "Small advances, fast automatic decisions, the files nobody else wants.",
   whoFor:
     "A merchant who needs $2K–$100K and would be ignored by a funder with a $50,000 minimum. Thin revenue is fine; 12 months trading is not negotiable at the primary.",
-  warning: {
-    tone: "warn",
-    title: "Bitty's submission recipe is switched OFF in our app",
-    body:
-      "Until that flag is turned back on, every Micro file routes to True Advance — a $2,000–$200,000 range and a 5-position cap instead of Bitty's box. This is a setting on our side, nothing to do with Bitty.",
-  },
   primary: {
     role: "Primary",
     name: "Bitty Advance",
     lenderId: "46bcc237-2837-4316-8afc-6939542411e6",
-    liveToday: false,
-    liveNote: "Submission profile is switched OFF in our app — turn it on before routing a file here.",
+    liveToday: true,
+    liveNote:
+      "Live. Submission recipe ACTIVE and the broker-portal login is on file — open the portal and key the file in. Nobody has sent Bitty a deal yet, so you would be the first.",
     routes: [
       { kind: "portal", value: "broker.bittyadvance.com", note: "Manual entry marked preferred; API fastest; auto-email fallback" },
     ],
     portal: [
       {
-        url: "https://broker.bittyadvance.com",
+        url: "https://broker.bittyadvance.com/",
         label: "Bitty broker portal",
-        note: "The submission route as well as the login. Manual entry is the method they mark preferred.",
+        note: "The submission route as well as the login. Manual entry is the method they mark preferred. Credentials are below — reveal them here rather than asking around for them.",
       },
     ],
     box: [
@@ -235,7 +230,7 @@ const MICRO: ProductLine = {
     { id: "m-tib", group: "Qualify on the call", label: "12+ months in business", hard: true, why: "Both funders require 12 months. Under 6 is an automatic decline at Bitty." },
     { id: "m-fico", group: "Qualify on the call", label: "FICO 500+, no open bankruptcy", hard: true, why: "500 is the floor at both. Below 550 at Bitty means the Access tier and 8% to us instead of 12%." },
     { id: "m-rev", group: "Qualify on the call", label: "Revenue — $5,000/mo for Bitty, $10,000/mo for True Advance", hard: true, why: "True Advance needs double. Check which funder the file is actually going to." },
-    { id: "m-state", group: "Qualify on the call", label: "Merchant is NOT in Texas or North Dakota", hard: true, why: "True Advance excludes both. With Bitty offline, those two states have no Micro rail at all." },
+    { id: "m-state", group: "Qualify on the call", label: "Merchant is NOT in Texas or North Dakota", hard: true, why: "True Advance excludes both, so a Texas or North Dakota file has to go to Bitty — whose own excluded states are unrecorded. Ask before you promise." },
     { id: "m-pos", group: "Qualify on the call", label: "5 or fewer open positions", hard: true, why: "True Advance caps at 5. Bitty's position limit is unrecorded — ask before you promise." },
     { id: "m-ind", group: "Qualify on the call", label: "Industry is not on Bitty's 14-item prohibited list", hard: true, why: "Check the Bitty tab's industry lookup. True Advance's exclusions are unrecorded." },
     { id: "m-neg", group: "Qualify on the call", label: "Under 19 negative days across the last 3 months", hard: true, why: "Automatic decline at Bitty. Verify in the statements, not just by asking." },
@@ -253,6 +248,8 @@ const MICRO: ProductLine = {
   openQuestions: [
     "Ask Bitty how many months of statements they actually want.",
     "Ask both funders their maximum position count.",
+    "Ask Bitty which states they will not fund — ours is the only Micro route into Texas and North Dakota.",
+    "Confirm the broker-portal login works on first use and stamp the date on the credential.",
   ],
 };
 

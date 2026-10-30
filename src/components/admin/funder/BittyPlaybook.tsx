@@ -584,7 +584,7 @@ export function BittyPlaybook() {
             },
             {
               k: "Submission recipe",
-              v: <span className="fp-miss">Our stored submission profile for Bitty is still INACTIVE — the app will not auto-assemble a Bitty package yet. Submissions are manual until somebody turns it on.</span>,
+              v: <>Our submission profile for Bitty is <b>ACTIVE</b>, and the broker-portal login is held in the vault — reveal it from the Bitty funder record or the Micro product line. Method is the portal, not email: there is no Bitty submission address, so do not invent one.</>,
             },
             {
               k: "Early payoff",
