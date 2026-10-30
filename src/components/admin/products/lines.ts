@@ -258,7 +258,13 @@ const MICRO: ProductLine = {
     { id: "m-ucc", group: "Collect", label: "No unresolved cash-advance UCCs or funding judgments", hard: true, why: "“Unresolved” is the operative word — a paid-off advance still needs a termination letter, and that takes days." },
     { id: "m-own", group: "Collect", label: "Owner name, DOB, SSN, home address, ownership %", hard: true },
     { id: "m-cell", group: "Collect", label: "Owner's mobile is correct and they will answer a text after signing", why: "Bitty auto-texts an ID verification link after signing. Do not chase a photo ID; confirm the cell." },
-    { id: "m-price", group: "Before you submit", label: "You know the sell rate you intend to quote", hard: true, why: "At Bitty the spread IS the commission. Submit without a sell rate in mind and a funded deal can pay us nothing." },
+    {
+      id: "m-price",
+      group: "Before you submit",
+      label: "You have priced the file in the Bitty calculator above",
+      hard: true,
+      why: "Bitty is the only funder here that pays no commission percentage. They quote US a BUY rate on the approval; we quote the MERCHANT a SELL rate above it; the gap between the two is the entirety of what we earn — one factor point is 1% of the funded amount. Nobody is expected to do that in their head: open the calculator at the top of this tab, pick the tier and the amount, and the sell-rate dropdown shows you the dollars beside every legal rate. Submit without having done it and a funded deal can pay us nothing.",
+    },
     { id: "m-5day", group: "Before you submit", label: "Merchant can sign within 5 days of approval", hard: true, why: "Bitty's funding window. After five days another agent who closes it takes the commission." },
   ],
   openQuestions: [

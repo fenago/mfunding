@@ -232,6 +232,24 @@ export const PLAYBOOK_CSS = `
 .fcs .fp-capbar.over{background:var(--d-bg);color:var(--d)}
 .fcs .fp-capbar.zero{background:var(--c-bg);color:var(--c)}
 .fcs .fp-capbar b{font-weight:800}
+.fcs .fp-teach{padding:14px 16px 2px;border-bottom:1px solid var(--line);background:var(--chip)}
+.fcs .fp-tlead{font-size:13.5px;line-height:1.6;color:var(--ink)}
+.fcs .fp-tlead i{color:var(--ink-soft);font-style:italic}
+.fcs .fp-tsteps{margin:10px 0 0;padding-left:20px;font-size:13px;line-height:1.65;color:var(--ink-soft)}
+.fcs .fp-tsteps li{margin-bottom:7px}
+.fcs .fp-tsteps li::marker{color:var(--ink-faint);font-weight:800}
+.fcs .fp-tsteps b{color:var(--ink);font-weight:800}
+.fcs .fp-tk{display:block;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--accent-ink)}
+.fcs .fp-twarn{margin:4px -16px 0;padding:10px 16px;border-top:1px solid var(--line-soft);
+  background:var(--c-bg);color:var(--c);font-size:12.5px;line-height:1.55;font-weight:600}
+.fcs .fp-gloss{padding:13px 16px;border-top:1px solid var(--line);background:var(--chip)}
+.fcs .fp-gloss > b{display:block;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink-faint);margin-bottom:7px}
+.fcs .fp-gloss dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:12.5px;line-height:1.5}
+.fcs .fp-gloss dt{font-weight:800;color:var(--ink);white-space:nowrap}
+.fcs .fp-gloss dd{margin:0;color:var(--ink-soft)}
+@media (max-width:620px){.fcs .fp-gloss dl{grid-template-columns:1fr;gap:1px}
+  .fcs .fp-gloss dd{margin-bottom:6px}}
 `;
 
 export function PlaybookStyles() {

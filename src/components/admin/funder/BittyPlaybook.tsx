@@ -180,12 +180,15 @@ const CHECK: CheckItem[] = [
   {
     id: "b-cap",
     group: "Before you hit submit — our gates, not theirs",
-    label: "You know the sell rate you intend to quote, and it is inside Bitty's rate cap",
+    label: "You have priced the file — you know the sell rate you will quote",
     hard: true,
     why: (
       <>
-        <b>This is how we get paid.</b> Our commission is the spread between Bitty's buy rate and your sell rate
-        (section 3). Submit without a sell rate in mind and you can close a funded deal for nothing.
+        <b>This is the whole of how we get paid here.</b> Bitty quotes <b>us</b> a buy rate on the approval; we
+        quote the <b>merchant</b> a sell rate above it; the gap is our commission, and one factor point of gap is
+        1% of the funded amount. Do not work it out on paper — the calculator in section 3 lists every legal sell
+        rate with the dollars it pays beside it. Submit without a sell rate in mind and you can close a funded deal
+        for nothing.
       </>
     ),
   },
