@@ -101,7 +101,16 @@ export default function UnitEconomicsVCFPage() {
       <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
         <InformationCircleIcon className="w-5 h-5 shrink-0" />
         <div>
-          Defaults reflect VCF's published figures: <strong>up to 7%</strong> of restructured debt, <strong>~$14,960 avg comp/file</strong>, <strong>$50K min</strong> debt, paid recurring over 12–24 months. Two numbers VCF doesn't publish are set as assumptions you can tune: your <strong>share of the 7%</strong> (set to 100% — confirm in the Partner Agreement) and a <strong>completion rate</strong> haircut for merchants who drop mid-program.
+          <strong>⚠ The two numbers that drive this whole page are in dispute.</strong> Our executed Partner
+          Agreement §3 says we receive <strong>7% of the restructured debt with no split</strong>. VCF's principal,
+          Ferne Kornfeld, told our processor on <strong>2026-10-21</strong> that total compensation is{" "}
+          <strong>6% split 50/50</strong>, which makes our share <strong>3%</strong>. Nobody has resolved it, so
+          every figure below is a model of one of two possible worlds — set the sliders to 7% / 100% to see the
+          agreement's version and 6% / 50% to see hers, and treat the gap between them as the real answer until
+          she confirms in writing. What IS settled: she says payment arrives <strong>monthly, around the 15th</strong>,
+          on what the merchant actually cleared the previous month, which is why the completion-rate haircut
+          matters so much here. The <strong>$50K minimum debt</strong> is confirmed. The{" "}
+          <strong>~$14,960 avg comp/file</strong> and the <strong>12–24 month</strong> span are ours, not theirs.
         </div>
       </div>
 
@@ -124,9 +133,9 @@ export default function UnitEconomicsVCFPage() {
           </h2>
           <div className="mt-4 space-y-4">
             <Slider label="Avg debt restructured / file" value={enrolledDebt} setValue={setEnrolledDebt} min={50000} max={500000} step={5000} format={k} hint="$50K minimum to qualify" />
-            <Slider label="Commission rate" value={commissionPct} setValue={setCommissionPct} min={1} max={7} step={0.5} format={(n) => `${n}%`} hint="Up to 7% of restructured debt" />
-            <Slider label="Your share of commission" value={sharePct} setValue={setSharePct} min={50} max={100} step={5} format={(n) => `${n}%`} hint="Assumption — confirm split in the Partner Agreement" />
-            <Slider label="Program completion rate" value={completionPct} setValue={setCompletionPct} min={50} max={100} step={5} format={(n) => `${n}%`} hint="Recurring payout over 12–24 mo; haircut for drop-offs" />
+            <Slider label="Commission rate" value={commissionPct} setValue={setCommissionPct} min={1} max={7} step={0.5} format={(n) => `${n}%`} hint="7% per Partner Agreement §3 · 6% per Ferne Kornfeld, 10/21" />
+            <Slider label="Your share of commission" value={sharePct} setValue={setSharePct} min={50} max={100} step={5} format={(n) => `${n}%`} hint="100% per the agreement · 50% per Ferne Kornfeld, 10/21" />
+            <Slider label="Program completion rate" value={completionPct} setValue={setCompletionPct} min={50} max={100} step={5} format={(n) => `${n}%`} hint="We are paid monthly as they pay, so a drop-off stops our money" />
             <Slider label="Files closed / month" value={filesPerMonth} setValue={setFilesPerMonth} min={1} max={40} step={1} format={(n) => `${n}`} />
           </div>
           <div className="grid grid-cols-2 gap-3 mt-5">
