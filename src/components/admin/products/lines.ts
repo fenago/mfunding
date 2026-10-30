@@ -112,7 +112,7 @@ export type ProductLine = {
    * working-capital lane gets a points-and-merchant-cost calculator instead,
    * because there the funder sets the price and we take points off it.
    */
-  calculator?: "bitty" | "lendini" | "wc";
+  calculator?: "bitty" | "lendini" | "wc" | "term";
   /**
    * A funder of genuine last resort, kept structurally separate from
    * `secondary` because the ordering is a RULE, not a preference. 1 West
@@ -297,14 +297,22 @@ const MICRO: ProductLine = {
 // so they cannot drift apart. It is a function rather than a shared object
 // because each line renders its own copy and nothing should be able to mutate
 // a slot another line is showing.
-function LAST_RESORT_1WEST(): FunderSlot {
+function LAST_RESORT_1WEST(lane: "advance" | "credit" = "advance"): FunderSlot {
+  // 1 West sits last on three lines now, and the reason is the same on all
+  // three: it is a marketplace, so a decline can mean 45-50 lenders declined
+  // at once and the direct funders above are burned. What changes between the
+  // lanes is WHICH of their products is in play and therefore which of their
+  // numbers matter — so the box and the pricing speak to the lane, and the
+  // rest of the card is identical wherever it appears.
+  const credit = lane === "credit";
   return {
     role: "Secondary",
     name: "1 West — last resort, and that is a rule",
     lenderId: "e5e606c8-55dd-4490-9030-69214179a88b",
     liveToday: true,
-    liveNote:
-      "Live vendor, recipe ACTIVE, delivery proven — 5 sends, 5 replies. Our agreement with them carries NO clawback and NO non-circumvention clause, which is a genuine advantage over every other funder on this shelf. Go here AFTER the direct funders, never before.",
+    liveNote: credit
+      ? "Live vendor, recipe ACTIVE, delivery proven — 5 sends, 5 replies. Their VP of Business Development confirmed on a call 2026-10-23 that they broker TERM LOANS, LINES OF CREDIT, SBA and EQUIPMENT, so everything this line sells can go here. It goes here LAST. UCS and GoKapital are direct relationships that pay a published rate; 1 West pays a share of a number we never see, and one submission can exhaust a 45-50 lender pool. Our agreement with them carries no clawback and no non-circumvention clause, which is a real advantage once the file is here."
+      : "Live vendor, recipe ACTIVE, delivery proven — 5 sends, 5 replies. Our agreement with them carries NO clawback and NO non-circumvention clause, which is a genuine advantage over every other funder on this shelf. Go here AFTER the direct funders, never before.",
     routes: [
       { kind: "email", value: "partnersubs@1west.com", note: "Brokered route — application + 4 months of statements. Yasemin's team works ISO files" },
       { kind: "selfserve", value: "https://apply.1west.com/?iso=a10PZ00000socCfYAI", note: "Referral route. Our ISO code is inside the link — a retyped or shortened link pays us nothing" },
@@ -317,21 +325,39 @@ function LAST_RESORT_1WEST(): FunderSlot {
         unverified: true,
       },
     ],
-    box: [
-      { k: "Funding", v: "$5,000 – $1,000,000 — confirmed by their VP of Business Development on a call 2026-10-23" },
-      { k: "Time in business", v: "6 months per the VP, though most of their network lenders want a year" },
-      { k: "Credit", v: "550" },
-      { k: "Revenue", v: "Must exceed $10,000 EVERY month — their VP's wording, not an average" },
-      { k: "States", v: "No restricted states" },
-      { k: "Statements", v: "4 months on the brokered route" },
-      { k: "What they also broker", v: "Term loan, line of credit, SBA and equipment — all confirmed on the same call. NOT invoice factoring, which our record wrongly claimed" },
-      { k: "Max positions", v: "not recorded", missing: true },
-    ],
-    pricing: [
-      { k: "Shape", v: "A marketplace, not a funder. They run the file across 45–50 partner lenders on the ABLE engine; the matched lender's own pricing governs" },
-      { k: "Decision", v: "24 hours or less" },
-      { k: "Published envelope", v: "Their partner guide prices short-term at 12–99% APR, long-term 8–19%, LOC 12–72%, equipment 7–15%, SBA 8–12%. Those are the ranges ACROSS their lender network, not a box 1 West underwrites to" },
-    ],
+    box: credit
+      ? [
+          { k: "What they broker on this line", v: "TERM LOAN, LINE OF CREDIT, SBA and EQUIPMENT — all four confirmed by their VP of Business Development on a call 2026-10-23. NOT invoice factoring, which our record wrongly claimed" },
+          { k: "Funding", v: "$5,000 – $1,000,000 — same call" },
+          { k: "Time in business", v: "6 months per the VP, though most of their network lenders want a year — and a term lender will want the year" },
+          { k: "Credit", v: "550 to get in the door. The long-term and SBA lenders inside their pool price off a great deal more than that" },
+          { k: "Revenue", v: "Must exceed $10,000 EVERY month — their VP's wording, not an average" },
+          { k: "States", v: "No restricted states" },
+          { k: "Statements", v: "4 months on the brokered route" },
+          { k: "Why it is still last", v: "UCS and GoKapital are direct, and both publish what they pay us per product. Here we are paid a share of 1 West's compensation and have never seen that figure on any file" },
+        ]
+      : [
+          { k: "Funding", v: "$5,000 – $1,000,000 — confirmed by their VP of Business Development on a call 2026-10-23" },
+          { k: "Time in business", v: "6 months per the VP, though most of their network lenders want a year" },
+          { k: "Credit", v: "550" },
+          { k: "Revenue", v: "Must exceed $10,000 EVERY month — their VP's wording, not an average" },
+          { k: "States", v: "No restricted states" },
+          { k: "Statements", v: "4 months on the brokered route" },
+          { k: "What they also broker", v: "Term loan, line of credit, SBA and equipment — all confirmed on the same call. NOT invoice factoring, which our record wrongly claimed" },
+          { k: "Max positions", v: "not recorded", missing: true },
+        ],
+    pricing: credit
+      ? [
+          { k: "Shape", v: "A marketplace, not a funder. They run the file across 45–50 partner lenders on the ABLE engine; the matched lender's own pricing governs, and 1 West never quotes a rate of its own" },
+          { k: "Decision", v: "24 hours or less" },
+          { k: "Published envelope — credit products", v: "Their partner guide prices long-term at 8–19% APR, line of credit 12–72%, equipment 7–15%, SBA 8–12% and asset-backed 8–14%. Those are the ranges ACROSS their lender network, not a box 1 West underwrites to. The 12–72% LOC band is wide enough that quoting its bottom end to a borrower would be a guess" },
+          { k: "What we cannot price", v: "A 1 West file, at all. We take 50% of their compensation when we broker it and 25% when we refer it, and nobody has ever asked what that compensation is. The calculator on this tab refuses to print a figure rather than borrow one" },
+        ]
+      : [
+          { k: "Shape", v: "A marketplace, not a funder. They run the file across 45–50 partner lenders on the ABLE engine; the matched lender's own pricing governs" },
+          { k: "Decision", v: "24 hours or less" },
+          { k: "Published envelope", v: "Their partner guide prices short-term at 12–99% APR, long-term 8–19%, LOC 12–72%, equipment 7–15%, SBA 8–12%. Those are the ranges ACROSS their lender network, not a box 1 West underwrites to" },
+        ],
     pay: {
       headline: "50% brokered · 25% referred",
       basis:
@@ -346,12 +372,20 @@ function LAST_RESORT_1WEST(): FunderSlot {
       "ISO Application With W9_ACH.pdf, 07/24/2026 — the referral-rate language",
       "funder_replies — the five declines, verbatim",
     ],
-    gaps: [
-      "🚨 THE LOCKOUT. A decline here can mean their whole 45–50 lender pool declined, not one funder. Ask the merchant who already has their file, and prefer direct funders first — this is why 1 West is last",
-      "We are paid a share of 1 West's compensation and we do not know what 1 West's compensation IS. Nobody has asked",
-      "Their partner guide lists a PERSONAL LOAN and a HOME EQUITY LINE among eight products, with no consumer-lending caveat of any kind. We are a commercial broker. Do not place either, and do not mention them, until somebody establishes whether the partner channel is even allowed to",
-      "Four different time-in-business floors now exist across our records and their documents — 1, 3, 6 months and a year. The VP said 6",
-    ],
+    gaps: credit
+      ? [
+          "🚨 THE LOCKOUT. A decline here can mean their whole 45–50 lender pool declined, not one funder. Ask the borrower who already has their file, and go to UCS and GoKapital first — this is why 1 West is last on this line",
+          "🚨 Their partner guide lists a PERSONAL LOAN and a HOME EQUITY LINE among its eight products, with no consumer-lending caveat, disclaimer, licence or NMLS reference of any kind. This line sells CREDIT, so the temptation is here and nowhere else on the shelf. We are a commercial broker. Do not place either, do not mention either, until somebody establishes whether the partner channel is even permitted to",
+          "We are paid a share of 1 West's compensation and we do not know what 1 West's compensation IS on a term loan, a line, SBA or equipment. Nobody has asked. Until somebody does, no term file routed here can be forecast",
+          "The qualification band in their partner guide is not attached to any one product — so which floor applies to a term loan rather than an advance is unstated",
+          "Four different time-in-business floors now exist across our records and their documents — 1, 3, 6 months and a year. The VP said 6, and a long-term lender inside their pool will want more",
+        ]
+      : [
+          "🚨 THE LOCKOUT. A decline here can mean their whole 45–50 lender pool declined, not one funder. Ask the merchant who already has their file, and prefer direct funders first — this is why 1 West is last",
+          "We are paid a share of 1 West's compensation and we do not know what 1 West's compensation IS. Nobody has asked",
+          "Their partner guide lists a PERSONAL LOAN and a HOME EQUITY LINE among eight products, with no consumer-lending caveat of any kind. We are a commercial broker. Do not place either, and do not mention them, until somebody establishes whether the partner channel is even allowed to",
+          "Four different time-in-business floors now exist across our records and their documents — 1, 3, 6 months and a year. The VP said 6",
+        ],
     contacts: [
       { name: "Michael Bernier", title: "VP Business Development — confirmed the box on a call 2026-10-23", email: "mike@1west.com", phone: "(516) 272-2110" },
       { name: "Yasemin & team", title: "ISO inquiries and submissions", email: "partnersubs@1west.com" },
@@ -720,9 +754,9 @@ const TERM: ProductLine = {
     "A stronger borrower with time: 12+ months trading, $25,000/mo, 575+ credit. They want a fixed end date or a revolving facility, not a daily split off receivables.",
   warning: {
     tone: "warn",
-    title: "Both funders are live — watch how the line of credit pays",
+    title: "Three funders, in that order — and the line of credit pays on a different basis at each",
     body:
-      "You can submit to UCS and GoKapital today; both recipes are active. Note that UCS's line-of-credit commission is 1–3% ON THE INITIAL DRAW ONLY — there is no residual on later draws, so a revolving facility pays us once no matter how often the borrower redraws.",
+      "UCS first, GoKapital second, 1 West last. All three can take a term file today. The ordering is a rule: UCS and GoKapital are direct and publish what they pay us per product, while 1 West is a marketplace that runs one submission across 45–50 lenders at once and pays us a share of a number we never see. On the line of credit specifically, read the basis before you route: UCS pays 1–3% ON THE INITIAL DRAW ONLY, with no residual on any later draw, while GoKapital pays 2.5% of the TOTAL APPROVED AND ACCEPTED facility. A borrower approved for $100,000 who draws $20,000 is worth $600 at UCS and $2,500 at GoKapital — so the rule that sends term loans to UCS reverses on a line. The calculator shows it.",
   },
   primary: {
     role: "Primary",
@@ -753,7 +787,7 @@ const TERM: ProductLine = {
       headline: "Term up to 10% · LOC 1–3%",
       basis:
         "Per the UCS ISO Compensation schedule: MCA up to 10% by rate sold, business term loan up to 10%, line of credit 1–3% ON THE INITIAL DRAW ONLY, SBA 50 basis points, equipment up to 10%. Paid on NET funded, not gross.",
-      timing: "Contradictory — the compensation schedule says 5 business days, the agreement says 30. Unresolved.",
+      timing: "The compensation schedule says 5 business days; the agreement body says 30 business days. The agreement normally governs, so plan on 30 and be pleased if it is sooner. Separately: a default inside 30 days of funding claws back the whole lump sum, and UCS may set it off against anything else it owes us.",
     },
     track: "1 submission ever — an MCA, MF-2026-0013 Brideau Insurance, declined 2026-07-09. Zero term files have ever been sent.",
     evidence: [
@@ -783,6 +817,7 @@ const TERM: ProductLine = {
     box: [
       { k: "Term loan", v: "$10,000 – $350,000 · 1–5 years · monthly · 660 FICO · 24 months TIB · $250,000/yr" },
       { k: "Line of credit", v: "$5,000 – $350,000 · 12–36 months per draw · weekly · 650 FICO · 36 months TIB · $15,000/mo · $5,000 average daily balance" },
+      { k: "Why a LINE comes here, not to UCS", v: "Their LOC commission is paid on the TOTAL APPROVED AND ACCEPTED facility, where UCS pays on the first draw alone. On a lightly-drawn line that is four times the money to us for the same work — the one product on this line where GoKapital beats UCS outright" },
       { k: "Also", v: "MCA $20K–$5M (6% to us) · Equipment $20K–$5M (4%) · SBA $30K–$5M (1%)" },
       { k: "Statements", v: "3 months for term, 4 for LOC, 6 for MCA and equipment, 12 for SBA" },
       { k: "Max positions / NSF", v: "not recorded", missing: true },
@@ -796,8 +831,8 @@ const TERM: ProductLine = {
     pay: {
       headline: "Term 2.5% · LOC 2.5% · MCA 6%",
       basis:
-        "Published broker grid (Broker Referral Agreement, Exhibit A), broker tier / affiliate tier: MCA and revenue-based 6% / 2%; business term loan 2.5% / 0.5% on net funded; equipment leasing 4% / 1%; SBA 1%.",
-      timing: "Not recorded.",
+        "Published broker grid (Broker Referral Agreement, Exhibit A), broker tier / affiliate tier: MCA and revenue-based 6% / 2%; business term loan 2.5% / 0.5% on net funded; business line of credit 2.5% / 0.5% ON THE TOTAL APPROVED AND ACCEPTED amount, paid after the first draw; equipment leasing 4% / 1%; SBA 7(a) 1% / 0.5%; personal and start-up 3% / 1%; hard money real estate 2% / 0.25%; commercial mortgage 2% / 0.25%. Broker tier means we own the file through funding; affiliate tier means we supplied the lead only — on a term loan that is a five-fold difference, so work the file.",
+      timing: "Paid on the 1st or the 15th. A file GoKapital classes as high-risk is held 45 business days. First agent with a signed contract and docs wins a duplicate submission.",
     },
     track: "1 submission (July 2026). It reached a decision, which is more than most.",
     evidence: [
@@ -805,14 +840,18 @@ const TERM: ProductLine = {
       "lender_programs — five product rows with full credit boxes",
     ],
     gaps: [
-      "Commission payment timing unrecorded",
       "A GoKapital affiliate link for online applications is referred to on our record but the URL itself was lost — we may be leaving self-serve volume untracked",
-      "Term pays a QUARTER of UCS — route term files to UCS unless UCS declines",
+      "Term pays a QUARTER of UCS — route term files to UCS unless UCS declines, or unless the borrower fits GoKapital and not UCS",
+      "No clawback term is recorded on their grid. That is an absence in what we hold, not a confirmed absence of one — the duplicate-submission rule is written down and a clawback is not, so ask before anyone spends a GoKapital commission",
+      "What makes a file “high-risk” — and therefore held 45 business days instead of paid on the 1st or 15th — is not defined anywhere we hold",
     ],
     contacts: [],
   },
+  lastResort: LAST_RESORT_1WEST("credit"),
+  calculator: "term",
   checklist: [
-    { id: "t-product", group: "Qualify", label: "You know whether this is a term loan or a line of credit", hard: true, why: "Different boxes and very different commission. A LOC at UCS pays 1–3% on the initial draw ONLY." },
+    { id: "t-order", group: "Qualify", label: "You are going UCS first, GoKapital second, 1 West last", hard: true, why: "The ordering is a rule, not a preference. UCS and GoKapital are direct relationships that publish what they pay us per product. 1 West is a marketplace: one submission puts the file in front of 45–50 lenders at once, so a decline there can burn the direct funders you have not tried yet, and it pays us a share of a number we have never seen. Everything above it first." },
+    { id: "t-product", group: "Qualify", label: "You know whether this is a term loan or a line of credit", hard: true, why: "Different boxes and very different commission, and the two funders pay a line of credit on DIFFERENT BASES. UCS: 1–3% of the first draw only, nothing on any later draw. GoKapital: 2.5% of the whole approved facility. The rule that sends term loans to UCS reverses on a line — price it before you route it." },
     { id: "t-tib", group: "Qualify", label: "12 months for UCS · 24 for a GoKapital term loan · 36 for a GoKapital LOC", hard: true, why: "GoKapital's time-in-business bars are far higher. Check before you route." },
     { id: "t-fico", group: "Qualify", label: "575 for UCS · 660 GoKapital term · 650 GoKapital LOC", hard: true },
     { id: "t-rev", group: "Qualify", label: "$25,000/mo for UCS · $250,000/yr GoKapital term · $15,000/mo GoKapital LOC", hard: true },
@@ -823,10 +862,17 @@ const TERM: ProductLine = {
     { id: "t-fin", group: "Collect", label: "YTD P&L and balance sheet for anything over $250,000", why: "Standard for real credit, and the reason term files take longer than advances." },
     { id: "t-fuse", group: "Before you submit", label: "If routing to UCS, you know the 30-day referral fuse is running", hard: true, why: "If the merchant does not sign a Merchant Agreement within 30 days of referral, UCS owes us nothing. Term underwriting routinely runs past that." },
     { id: "t-lang", group: "Before you submit", label: "You are using LENDING language, not advance language", hard: true, why: "These are real credit products. Loan, borrower, term, draw, origination fee are all correct here — and must never be used on the Micro or MCA lines." },
+    { id: "t-consumer", group: "Before you submit", label: "You are NOT placing a personal loan or a home equity line", hard: true, why: "Two of the products on offer through this line are consumer credit, not commercial: 1 West's partner guide carries a PERSONAL LOAN and a HOME EQUITY LINE among its eight products with no licensing caveat of any kind, and GoKapital's grid prices “personal and start-up” at 3%. Momentum is a commercial broker and nobody here has established that we are permitted to place consumer paper. Do not place it, and do not offer it, until somebody has." },
+    { id: "t-price", group: "Before you submit", label: "You have priced it in the calculator above", hard: true, why: "This is the only line where both funders publish a per-product grid, and where the same borrower can be worth four times as much at one of them. A term loan pays up to 10% at UCS and 2.5% at GoKapital. SBA pays 50 basis points — $750 on a $150,000 file against $15,000 for a term loan of the same size. A line of credit flips the whole rule because of the basis. Run it before you route it; none of this is holdable in your head." },
+    { id: "t-west", group: "Before you submit", label: "If it is going to 1 West, you have told whoever forecasts that it cannot be forecast", hard: true, why: "We are paid 50% of 1 West's own compensation when we broker the file and 25% when we refer it — and we have never seen that compensation figure on any deal. A 1 West file has real value and an unknown one. Record it as unknown rather than letting a pipeline figure be invented for it." },
   ],
   openQuestions: [
-    "Ask UCS whether term-loan volume counts toward ACTIVE status, or only cash advances.",
-    "Ask UCS whether the 30-day referral fuse applies to term files.",
+    "🚨 Ask Michael Bernier what 1 West's own compensation is on a term loan, a line of credit, SBA and equipment. We take 50% of it brokered and 25% referred, and we have never seen the number — so every file routed to the last resort on this line is unpriceable, and the calculator says so rather than guessing.",
+    "Ask UCS whether term-loan volume counts toward ACTIVE status, or only cash advances. Their agreement says a month without two merchants who “receive cash advances” forfeits upfront AND residual compensation across the whole portfolio — on its face a term-only relationship here could earn nothing.",
+    "Ask UCS whether the 30-day referral fuse applies to term files. It bites this line hardest: P&L and balance-sheet stips routinely push referral-to-signature past 30 days, and past 30 days the commission is gone however the deal funds.",
+    "Ask GoKapital what makes a file high-risk — those are held 45 business days instead of paying on the 1st or 15th — and whether any clawback applies at all. Their grid is silent on it.",
+    "Get the GoKapital affiliate link. Our record refers to one by name and the URL itself was lost in a paste, so self-serve volume may be going untracked.",
+    "Establish whether Momentum may place CONSUMER credit at all. Two of the products reachable through this line — 1 West's personal loan and home equity line, GoKapital's personal and start-up loan — are consumer products sold to us with no licensing caveat attached. Until this is answered the checklist says do not place them.",
     "Read UCS's and GoKapital's brand clauses before printing anything Momentum-branded.",
   ],
 };

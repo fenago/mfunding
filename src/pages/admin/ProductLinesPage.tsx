@@ -23,6 +23,7 @@ import { Alert, Checklist, PlaybookStyles, Sec, type CheckItem } from "@/compone
 import { BittySpreadCalc } from "@/components/admin/funder/BittySpreadCalc";
 import { LendiniSpreadCalc } from "@/components/admin/funder/LendiniSpreadCalc";
 import { WorkingCapitalCalc } from "@/components/admin/funder/WorkingCapitalCalc";
+import { TermLocCalc } from "@/components/admin/funder/TermLocCalc";
 import { SosLookup } from "@/components/admin/products/SosLookup";
 import { LINES, type FunderSlot, type ProductLine } from "@/components/admin/products/lines";
 import { PortalLogin, type CredState, type PortalCredRow } from "@/components/admin/products/PortalLogin";
@@ -32,27 +33,50 @@ function Slot({
   creds,
   allEmpty,
   last,
+  startOpen,
 }: {
   slot: FunderSlot;
   creds: CredState;
   allEmpty: boolean;
   /** Rendered as a last resort rather than a ranked funder. */
   last?: boolean;
+  /** A funder card is tall. The primary opens; the rest wait to be asked. */
+  startOpen?: boolean;
 }) {
+  const [open, setOpen] = useState(Boolean(startOpen));
+
+  // What a closed card still has to say. Collapsing a card must not hide
+  // whether we can submit to this funder or what it pays — those are the two
+  // things somebody scanning the page is looking for.
+  const howOut = slot.routes
+    .map((r) => (r.kind === "email" ? r.value : r.kind === "selfserve" ? "merchant self-serve link" : "portal"))
+    .join(" · ");
+
   return (
     <div className={`fp-pcard ${last ? "lastres" : slot.role === "Primary" ? "adv" : "spec"}`}>
-      <div className="fp-ptop">
-        <div>
-          <span className="fp-pname">{slot.name}</span>
-          <span className="fp-pkind">{last ? "Last resort" : slot.role}</span>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className={`fp-vtag ${slot.liveToday ? "pref" : "no"}`}>
-            {slot.liveToday ? "Can submit today" : "Cannot submit"}
+      <button type="button" className="fp-ptoggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <div className="fp-ptop">
+          <div>
+            <span className="fp-pname">{slot.name}</span>
+            <span className="fp-pkind">{last ? "Last resort" : slot.role}</span>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div className={`fp-vtag ${slot.liveToday ? "pref" : "no"}`}>
+              {slot.liveToday ? "Can submit today" : "Cannot submit"}
+            </div>
+            <div className="fp-pmore">{open ? "Hide detail" : "Show detail"}</div>
           </div>
         </div>
-      </div>
+      </button>
 
+      {open ? null : (
+        <div className="fp-pshut">
+          <b>{slot.pay.headline}</b> · {howOut}
+        </div>
+      )}
+
+      {open ? (
+      <>
       <div className="fp-pline">
         <span className="fp-plk">Status</span>
         {slot.liveNote}
@@ -153,6 +177,8 @@ function Slot({
           ))}
         </ul>
       </div>
+      </>
+      ) : null}
     </div>
   );
 }
@@ -166,7 +192,50 @@ function Row({ k, v, missing }: { k: string; v: string; missing?: boolean }) {
   );
 }
 
+/**
+ * Which sections start open, and a memory of what this person last had open.
+ * Defaults chosen for the thing the page is actually used for — a live call:
+ * who it is for and the checklist, with the funder detail, the calculator and
+ * the open questions a click away.
+ */
+function useSections(lineId: string, hasCalc: boolean) {
+  const key = `mf.productline.${lineId}.open.v2`;
+  const base: Record<string, boolean> = {
+    who: true,
+    funders: false,
+    calc: false,
+    checklist: true,
+    questions: false,
+  };
+
+  const [open, setOpen] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw) return { ...base, ...(JSON.parse(raw) as Record<string, boolean>) };
+    } catch {
+      // Storage unavailable. The defaults are fine and nothing of record
+      // lives here, so there is nothing to warn anybody about.
+    }
+    return base;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(open));
+    } catch {
+      // Same.
+    }
+  }, [key, open]);
+
+  const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
+  const setAll = (v: boolean) =>
+    setOpen({ who: v, funders: v, calc: hasCalc ? v : false, checklist: v, questions: v });
+
+  return { open, toggle, setAll };
+}
+
 function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
+  const { open, toggle, setAll } = useSections(line.id, Boolean(line.calculator));
   // RLS hands an unauthorised reader an empty list rather than an error, so a
   // page-wide zero is the one signal we have that the emptiness may not be real.
   const allEmpty = creds.s === "ok" && creds.rows.length === 0;
@@ -222,7 +291,16 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
         </div>
       </div>
 
-      <Sec n={1} title="Who this is for">
+      <div className="fp-allbar">
+        <button type="button" className="fp-allb" onClick={() => setAll(true)}>
+          Expand all
+        </button>
+        <button type="button" className="fp-allb" onClick={() => setAll(false)}>
+          Collapse all
+        </button>
+      </div>
+
+      <Sec n={1} title="Who this is for" open={open.who} onToggle={() => toggle("who")}>
         <div className="fp-panel">
           <div className="fp-pline">{line.whoFor}</div>
         </div>
@@ -239,8 +317,10 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
         n={2}
         title={line.secondary ? "The two funders behind it" : "The funder behind it"}
         sub="mapped back to the record and the documents"
+        open={open.funders}
+        onToggle={() => toggle("funders")}
       >
-        <Slot slot={line.primary} creds={creds} allEmpty={allEmpty} />
+        <Slot slot={line.primary} creds={creds} allEmpty={allEmpty} startOpen />
         {line.secondary ? (
           <Slot slot={line.secondary} creds={creds} allEmpty={allEmpty} />
         ) : (
@@ -271,13 +351,19 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
           sub={
             line.calculator === "wc"
               ? "the funder sets the rate here and pays us points off it"
-              : "one of the two funders in the book whose margin we choose ourselves"
+              : line.calculator === "term"
+                ? "both funders publish a grid — and the grids disagree enough to move a file"
+                : "one of the two funders in the book whose margin we choose ourselves"
           }
+          open={open.calc}
+          onToggle={() => toggle("calc")}
         >
           {line.calculator === "bitty" ? (
             <BittySpreadCalc />
           ) : line.calculator === "lendini" ? (
             <LendiniSpreadCalc />
+          ) : line.calculator === "term" ? (
+            <TermLocCalc />
           ) : (
             <WorkingCapitalCalc />
           )}
@@ -287,12 +373,20 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
       <Sec
         n={line.calculator ? 4 : 3}
         title="Submission checklist"
-        sub="walk it top to bottom · ticks are saved in this browser only"
+        sub={`${line.checklist.length} items · walk it top to bottom · ticks are saved in this browser only`}
+        open={open.checklist}
+        onToggle={() => toggle("checklist")}
       >
         <Checklist storageKey={`mf.productline.${line.id}.v1`} items={checks} />
       </Sec>
 
-      <Sec n={line.calculator ? 5 : 4} title="Open questions on this line" sub="each one is a blocker for something">
+      <Sec
+        n={line.calculator ? 5 : 4}
+        title="Open questions on this line"
+        sub={`${line.openQuestions.length} · each one is a blocker for something`}
+        open={open.questions}
+        onToggle={() => toggle("questions")}
+      >
         <div className="fp-panel">
           <div className="fp-ladder">
             {line.openQuestions.map((q) => (
@@ -388,7 +482,7 @@ export default function ProductLinesPage() {
           ))}
         </div>
 
-        <LineView line={line} creds={creds} />
+        <LineView key={line.id} line={line} creds={creds} />
       </div>
     </div>
   );
@@ -411,6 +505,12 @@ const EXTRA_CSS = `
 .fcs .fp-gapbox > b{display:block;font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--c);margin-bottom:6px}
 .fcs .fp-gapbox ul{margin:0;padding-left:18px;font-size:13px;line-height:1.6}
 .fcs .fp-gapbox li + li{margin-top:3px}
+.fcs .fp-ptoggle{display:block;width:100%;padding:0;font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left}
+.fcs .fp-ptoggle:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fcs .fp-pmore{margin-top:5px;font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-ptoggle:hover .fp-pmore{color:var(--accent-ink)}
+.fcs .fp-pshut{padding:0 18px 14px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
+.fcs .fp-pshut b{color:var(--ink)}
 .fcs .fp-cklist{display:block;margin-top:6px}
 .fcs .fp-cktag{display:inline-block;margin:0 4px 4px 0;padding:1px 7px;border-radius:5px;background:var(--d-bg);color:var(--d);border:1px solid color-mix(in srgb,var(--d) 25%,transparent);font-size:11.5px;font-weight:700;line-height:1.7}
 .fcs .fp-lastbar{margin:14px 0 0;padding:9px 14px;border:1px dashed var(--line);border-bottom:none;

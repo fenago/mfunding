@@ -39,6 +39,30 @@ export const PLAYBOOK_CSS = `
   border-radius:6px;min-width:20px;height:20px;display:inline-flex;align-items:center;
   justify-content:center;padding:0 5px;font-variant-numeric:tabular-nums}
 .fcs .fp-sechead .fp-sub{font-size:12.5px;color:var(--ink-faint)}
+
+/* ── accordion ──
+   These pages run long. A closer mid-call wants one section open, not six,
+   and the header has to stay a heading — so the <button> lives INSIDE the
+   h3 rather than wrapping it. */
+.fcs h3.fp-sech{margin:0}
+.fcs .fp-sectoggle{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;width:100%;
+  font:inherit;text-align:left;background:none;border:0;border-bottom:1px solid var(--line-soft);
+  padding:4px 0 8px;margin-bottom:10px;cursor:pointer;color:var(--ink)}
+.fcs .fp-sectoggle .fp-sttl{font-size:16px;font-weight:800;letter-spacing:-.01em}
+.fcs .fp-sectoggle:hover .fp-sttl{color:var(--accent-ink)}
+.fcs .fp-sectoggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.fcs .fp-caret{margin-left:auto;align-self:center;min-width:64px;text-align:right;
+  font-size:10.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-sectoggle:hover .fp-caret{color:var(--accent-ink)}
+.fcs .fp-sec.shut{margin-top:8px}
+.fcs .fp-sec.shut .fp-sectoggle{margin-bottom:0;border-bottom-color:var(--line)}
+.fcs .fp-allbar{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.fcs .fp-allb{font:inherit;font-size:11.5px;font-weight:700;padding:3px 11px;border-radius:999px;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink-soft);cursor:pointer}
+.fcs .fp-allb:hover{border-color:var(--accent);color:var(--accent-ink)}
+/* An unreadable figure has to look unreadable wherever it lands, not only
+   inside a credit-box row. */
+.fcs .fp-ov .fp-miss{color:var(--c);font-weight:700}
 .fcs .fp-panel{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
   box-shadow:var(--shadow);overflow:hidden}
 
@@ -262,20 +286,45 @@ export function Sec({
   title,
   sub,
   children,
+  open,
+  onToggle,
 }: {
   n: number;
   title: string;
   sub?: string;
   children: ReactNode;
+  /**
+   * Pass both to make the section an accordion. Omit them and it renders
+   * exactly as it always has — the other playbooks on this site are short
+   * enough that collapsing them would only add a click.
+   */
+  open?: boolean;
+  onToggle?: () => void;
 }) {
+  if (typeof open !== "boolean" || typeof onToggle !== "function") {
+    return (
+      <section className="fp-sec">
+        <div className="fp-sechead">
+          <span className="fp-num">{n}</span>
+          <h3>{title}</h3>
+          {sub ? <span className="fp-sub">{sub}</span> : null}
+        </div>
+        {children}
+      </section>
+    );
+  }
+
   return (
-    <section className="fp-sec">
-      <div className="fp-sechead">
-        <span className="fp-num">{n}</span>
-        <h3>{title}</h3>
-        {sub ? <span className="fp-sub">{sub}</span> : null}
-      </div>
-      {children}
+    <section className={`fp-sec${open ? "" : " shut"}`}>
+      <h3 className="fp-sech">
+        <button type="button" className="fp-sectoggle" aria-expanded={open} onClick={onToggle}>
+          <span className="fp-num">{n}</span>
+          <span className="fp-sttl">{title}</span>
+          {sub ? <span className="fp-sub">{sub}</span> : null}
+          <span className="fp-caret">{open ? "Hide" : "Show +"}</span>
+        </button>
+      </h3>
+      {open ? children : null}
     </section>
   );
 }
