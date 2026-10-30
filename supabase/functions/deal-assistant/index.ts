@@ -361,7 +361,10 @@ Deno.serve(async (req) => {
             }
           : null,
         their_required_stips: r?.required_stips ?? p?.required_documents ?? null,
-        their_special_instructions: clip(r?.special_instructions, 400),
+        // OUR note to ourselves about submitting here — not the funder's words.
+        // It was called `their_special_instructions`, which invited the model to
+        // attribute our own buy-rate and commission notes to the funder.
+        our_internal_submission_note: clip(r?.special_instructions, 400),
         max_statement_months: r?.max_statement_months ?? p?.doc_bank_statement_months ?? null,
         // COMPUTED IN CODE — deterministic, not an AI guess:
         stips_still_missing_for_this_funder: gap.missing,

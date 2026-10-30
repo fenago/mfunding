@@ -937,6 +937,11 @@ Deno.serve(async (req) => {
     docs: Array<{ label: string; filename: string; delivery: "attached" | "link" }>;
     attachmentUrls: string[]; attachedNames: string[]; docLinkLines: string[];
     sentPayload: Record<string, unknown>;
+    /**
+     * The recipe's `special_instructions`, for the HUMAN running the send.
+     * Internal. It is deliberately not part of `bodyText` or `bodyHtml`.
+     */
+    internalNote: string | null;
     docsWarning?: string;
     blocked?: string[]; blockedLabels?: string[];
     /** Every OPEN standing instruction on file for this funder (warn-level). */
@@ -1299,7 +1304,23 @@ Deno.serve(async (req) => {
     tokens.doc_links = docLinksText;
     const subject = render(recipe?.subject_template || GENERIC_SUBJECT, tokens);
     let bodyText = render(recipe?.body_template || GENERIC_BODY, tokens);
-    if (recipe?.special_instructions) bodyText += `\n\n${recipe.special_instructions}`;
+    // `special_instructions` IS NOT FUNDER-FACING AND NEVER GOES ON THE WIRE.
+    //
+    // It used to be appended here, and to the HTML body below. It is our own
+    // note to ourselves about how to submit to this funder, and across the
+    // book it holds: our commission split with them (1 West — "we earn 50% of
+    // 1WEST compensation"; ROK — "we earn 20% of ROK upfront revenue"), their
+    // buy rates read back to them (Bizcap 1.27, Reliance 1.28), our own margin
+    // mechanics (Diesel's factor-rate reduction per point), "PENDING APPROVAL
+    // — do not submit" holds, and in one case a complaint that the funder did
+    // not receive our files, addressed to that funder. 24 submissions across
+    // 11 funders went out carrying it before this was caught.
+    //
+    // It still reaches the human: it rides the preview and the audit trail as
+    // `internalNote`, labelled as withheld. If a funder ever genuinely needs a
+    // standing line in the email body, that belongs in `body_template`, which
+    // is the field whose entire purpose is to be read by them.
+    const internalNote = recipe?.special_instructions?.trim() || null;
     if (notes) bodyText += `\n\nNotes: ${notes}`;
     // Honest "to follow" note for any owner-waived required stip (compliance-safe).
     const toFollowLine = waivedMissing.length
@@ -1317,7 +1338,7 @@ Deno.serve(async (req) => {
       `<div style="white-space:pre-wrap">${esc(render(recipe?.body_template || GENERIC_BODY, tokens))}</div>` +
       (wantLinks && docLinkHtml.length ? `<ul style="margin:8px 0">${docLinkHtml.join("")}</ul>` : "") +
       (wantAttach && attachedNames.length ? `<p style="margin:8px 0;color:#334155">📎 Attached: ${attachedNames.map(esc).join(", ")}</p>` : "") +
-      (recipe?.special_instructions ? `<p style="margin:8px 0;color:#334155">${esc(recipe.special_instructions)}</p>` : "") +
+      // No special_instructions here either — see the note above bodyText.
       (notes ? `<p style="margin:8px 0"><strong>Notes:</strong> ${esc(notes)}</p>` : "") +
       (toFollowLine ? `<p style="margin:8px 0;color:#334155">${esc(toFollowLine)}</p>` : "") +
       (bizSummary ? `<div style="margin-top:12px;padding-top:8px;border-top:1px solid #e2e8f0"><strong style="color:#334155">Deal Overview</strong><p style="margin:4px 0;color:#334155;white-space:pre-wrap">${esc(bizSummary)}</p></div>` : "") +
@@ -1342,13 +1363,17 @@ Deno.serve(async (req) => {
       ...(unnormalizedNames.length ? { unnormalizedAttachmentNames: unnormalizedNames } : {}),
       ...(unknownTypeNames.length ? { unknownTypeAttachments: unknownTypeNames } : {}),
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
+      // Recorded so the audit trail shows WHAT the recipe held at send time,
+      // under a key whose name says it did not travel. Never merge this into
+      // `body`.
+      ...(internalNote ? { internalInstructionsWithheld: internalNote } : {}),
       ...(waivedMissing.length ? { stipOverridden: waivedMissing } : {}),
     };
 
     return {
       lenderId, name, method, recipe, isPortalOnly, to, cc,
       subject, bodyText, bodyHtml, docs, attachmentUrls, attachedNames,
-      docLinkLines, sentPayload, docsWarning,
+      docLinkLines, sentPayload, docsWarning, internalNote,
       directives, directiveBlock, directivesUnreadable,
     };
   }
@@ -1387,6 +1412,9 @@ Deno.serve(async (req) => {
         lenderId: R.lenderId, name: R.name, method: R.method,
         isPortalOnly: R.isPortalOnly,
         to: R.to, cc: R.cc, subject: R.subject, body: R.bodyText,
+        // Shown beside the email, NOT in it. The preview is the truth about
+        // what sends, so this has to arrive on its own key.
+        internalNote: R.internalNote,
         docs: R.docs, docsWarning: R.docsWarning,
         portal: (R.isPortalOnly || R.method === "email_and_portal") ? portalInfoOf(R) : undefined,
         ...directiveFields,

@@ -132,6 +132,13 @@ interface PreviewFunder {
   body?: string;
   docs?: PreviewDoc[];
   docsWarning?: string;
+  /**
+   * The recipe's special_instructions — OUR note on how to submit here.
+   * It is shown beside the email and deliberately never inside it: across the
+   * book this field holds commission splits, buy rates and "do not submit yet"
+   * holds, and it used to be appended to the outbound body.
+   */
+  internalNote?: string | null;
   portal?: { url: string | null; steps: string[]; hint: string | null };
   blocked?: string[];
   blockedLabels?: string[];
@@ -1977,6 +1984,18 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                           )}
                           {p.docsWarning && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">⚠ {p.docsWarning}</p>}
                         </div>
+
+                        {/* Our own submission note. Beside the email, never in
+                            it — this field carries commission splits and buy
+                            rates, and it used to ride the outbound body. */}
+                        {p.internalNote && (
+                          <div className="rounded-md border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60 px-2.5 py-2">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-1">
+                              Internal — not sent to the funder
+                            </p>
+                            <p className="text-[11px] text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{p.internalNote}</p>
+                          </div>
+                        )}
 
                         {p.method === "email_and_portal" && p.portal?.url && (
                           <p className="text-[11px] text-purple-600 dark:text-purple-300 inline-flex items-center gap-1">
