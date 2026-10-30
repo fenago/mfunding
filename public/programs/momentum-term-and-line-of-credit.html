@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Momentum Term &amp; Line of Credit — Momentum Funding</title>
+<meta name="description" content="If you have the time and the numbers to back it up, an advance may not be your best option. A term loan or a revolving line can cost considerably less, depending on your file — it just asks more of you up front." />
+<meta name="robots" content="index, follow" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --midnight:#0A2342; --deepsea:#0C516E; --ocean:#007EA7; --teal:#00A896; --mint:#00D49D;
+  --ink:#0A2342; --ink-soft:#44596B; --ink-faint:#7B8C9A;
+  --rule:#D8E0E6; --rule-soft:#EAEFF2; --wash:#F4F8FA; --paper:#FFFFFF;
+}
+*{box-sizing:border-box}
+@page{size:letter;margin:0}
+html,body{margin:0;padding:0;background:#51606B;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:Inter,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink)}
+.sheet{width:8.5in;height:11in;background:var(--paper);margin:0 auto;display:flex;flex-direction:column;overflow:hidden}
+@media screen{.sheet{margin:18px auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}}
+@media print{html,body{background:#fff}.sheet{margin:0;box-shadow:none}}
+
+/* ── header ── */
+.hd{background:linear-gradient(135deg,var(--midnight) 0%,var(--deepsea) 72%,var(--ocean) 140%);
+  color:#fff;padding:.42in .55in .40in;position:relative}
+.hd::after{content:"";position:absolute;left:0;right:0;bottom:0;height:4px;
+  background:linear-gradient(90deg,var(--teal),var(--mint))}
+.brandrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:.22in}
+.brand{display:flex;align-items:center;gap:8px}
+.mark{width:17px;height:17px;border-radius:5px;background:linear-gradient(135deg,var(--mint),var(--teal));flex:none}
+.bn{font-size:12.5px;font-weight:700;letter-spacing:.02em}
+.eyebrow{font-size:8.5px;font-weight:700;letter-spacing:.17em;text-transform:uppercase;color:rgba(255,255,255,.72);text-align:right}
+.pname{font-family:"DM Serif Display",Georgia,serif;font-size:33px;line-height:1.04;letter-spacing:-.012em;margin:0 0 .13in}
+.headline{font-size:15.5px;font-weight:600;line-height:1.32;margin:0 0 .11in;max-width:7.1in;color:#EAF6F8}
+.standfirst{font-size:10.3px;line-height:1.55;color:rgba(255,255,255,.76);margin:0;max-width:6.7in}
+
+/* ── stats ── */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--rule);background:var(--wash)}
+.stat{padding:.19in .55in;border-right:1px solid var(--rule-soft)}
+.stat:last-child{border-right:0}
+.sk{font-size:8px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-faint)}
+.sv{font-family:"DM Serif Display",Georgia,serif;font-size:27px;line-height:1.05;color:var(--deepsea);margin-top:2px;
+  font-variant-numeric:tabular-nums}
+.ss{font-size:9.3px;color:var(--ink-soft);margin-top:3px;line-height:1.35}
+
+/* ── body ── */
+.body{flex:1;padding:.26in .55in .1in;display:flex;flex-direction:column;gap:.19in;justify-content:space-between}
+.h{font-size:9px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--teal);
+  margin:0 0 .11in;display:flex;align-items:center;gap:9px}
+.h::after{content:"";flex:1;height:1px;background:var(--rule)}
+.ticks{display:grid;grid-template-columns:1fr 1fr;gap:.07in .34in}
+.tick{display:flex;gap:8px;font-size:10.4px;line-height:1.42;color:var(--ink)}
+.tick i{flex:none;width:13px;height:13px;border-radius:50%;background:var(--mint);margin-top:1px;position:relative}
+.tick i::after{content:"";position:absolute;left:4px;top:1.5px;width:3.5px;height:7px;
+  border:solid #06321f;border-width:0 1.7px 1.7px 0;transform:rotate(43deg)}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:.26in}
+.step .n{font-family:"DM Serif Display",Georgia,serif;font-size:21px;color:var(--ocean);line-height:1}
+.step .t{font-size:10.2px;font-weight:700;margin:3px 0 3px;line-height:1.28}
+.step .d{font-size:9.1px;line-height:1.46;color:var(--ink-soft)}
+.cols{display:grid;grid-template-columns:1.15fr 1fr;gap:.34in}
+.cost{background:var(--wash);border-left:3px solid var(--teal);padding:.15in .19in;border-radius:0 6px 6px 0}
+.cost b{display:block;font-size:12px;color:var(--deepsea);margin-bottom:4px}
+.cost p{margin:0;font-size:9.4px;line-height:1.52;color:var(--ink-soft)}
+.nf{margin:0;padding:0;list-style:none}
+.nf li{font-size:9.4px;line-height:1.45;color:var(--ink-soft);padding-left:14px;position:relative;margin-bottom:5px}
+.nf li::before{content:"";position:absolute;left:0;top:6px;width:7px;height:1.6px;background:#C2CED7}
+.ready{display:grid;grid-template-columns:repeat(4,1fr);gap:.16in}
+.rc{border:1px solid var(--rule);border-top:3px solid var(--ocean);border-radius:0 0 6px 6px;
+  padding:.11in .13in;font-size:9.2px;line-height:1.42;color:var(--ink-soft)}
+
+/* ── footer ── */
+.cta{margin-top:auto;background:var(--midnight);color:#fff;padding:.2in .55in;
+  display:flex;align-items:center;justify-content:space-between;gap:16px}
+.cta .l{font-size:11.5px;font-weight:600;color:#D7E8EC}
+.cta .r{display:flex;align-items:center;gap:18px}
+.cta .ph{font-family:"DM Serif Display",Georgia,serif;font-size:22px;color:var(--mint);white-space:nowrap}
+.cta .ap{font-size:10.5px;font-weight:700;color:#fff;border:1.4px solid rgba(255,255,255,.42);
+  border-radius:999px;padding:5px 14px;white-space:nowrap}
+.legal{padding:.14in .55in .17in;font-size:6.9px;line-height:1.5;color:#8C9BA6;border-top:1px solid var(--rule)}
+.legal b{color:#5F6F7B}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="hd">
+    <div class="brandrow">
+      <span class="brand"><span class="mark"></span><span class="bn">Momentum Funding</span></span>
+      <span class="eyebrow">Real credit · fixed end dates</span>
+    </div>
+    <h1 class="pname">Momentum Term &amp; Line of Credit</h1>
+    <p class="headline">You don't want a daily debit off your receivables. You want a loan with an end date.</p>
+    <p class="standfirst">If you have the time and the numbers to back it up, an advance may not be your best option. A term loan or a revolving line can cost considerably less, depending on your file — it just asks more of you up front.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="sk">How much</div>
+      <div class="sv">$1,000</div>
+      <div class="ss">to $10,000,000, depending on the product</div>
+    </div><div class="stat">
+      <div class="sk">What decides it</div>
+      <div class="sv">Financials</div>
+      <div class="ss">read by a person, which is why this is not same-week money</div>
+    </div><div class="stat">
+      <div class="sk">What we need</div>
+      <div class="sv">4</div>
+      <div class="ss">months of statements, plus financials over $250,000</div>
+    </div>
+  </div>
+
+  <main class="body">
+    <section>
+      <h2 class="h">Is this you?</h2>
+      <div class="ticks">
+        <div class="tick"><i></i><span>You have been trading twelve months or more</span></div><div class="tick"><i></i><span>You do $25,000 a month or better</span></div><div class="tick"><i></i><span>Your credit is 575 or above</span></div><div class="tick"><i></i><span>You can wait days or weeks rather than needing the money this afternoon</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h">How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <div class="t">Pick the shape, not just the amount</div>
+          <div class="d">A term loan is a fixed sum with a fixed end date. A line of credit sits there until you draw on it and you pay for what you use. They suit different problems.</div>
+        </div><div class="step">
+          <div class="n">2</div>
+          <div class="t">Send a real file</div>
+          <div class="d">Signed application and four months of statements. Over $250,000, a year-to-date profit and loss and a balance sheet as well.</div>
+        </div><div class="step">
+          <div class="n">3</div>
+          <div class="t">Underwriting takes its time</div>
+          <div class="d">This is real credit, so a person reads it. A term loan or a line moves fastest; equipment takes longer; SBA is measured in weeks rather than days, and we will say so on day one rather than at the end.</div>
+        </div><div class="step">
+          <div class="n">4</div>
+          <div class="t">Terms in writing, then you decide</div>
+          <div class="d">Amount, rate, term, fees and payment, in a document, before anything is signed.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h">Have these ready and this takes one call</h2>
+      <div class="ready">
+        <div class="rc">A signed application, dated in the last 30 days</div><div class="rc">Four months of business bank statements</div><div class="rc">Year-to-date P&amp;L and balance sheet if you want over $250,000</div><div class="rc">Photo ID</div>
+      </div>
+    </section>
+
+    <section class="cols">
+      <div>
+        <h2 class="h">What it costs you</h2>
+        <div class="cost">
+          <b>You pay us nothing. Ever.</b>
+          <p>We are paid by the lender when your loan funds. No application fee, no broker fee charged to you, no retainer, no charge if you decline the offer. The rate and any origination fee come from the lender and are disclosed to you in writing before you sign.</p>
+        </div>
+      </div>
+      <div>
+        <h2 class="h">This probably isn&rsquo;t you if&hellip;</h2>
+        <ul class="nf">
+          <li>You need the money this week — real credit does not move at that speed. Ask about Momentum Working Capital</li><li>You have been trading under a year, or your credit is below 575</li><li>You want a personal loan or to borrow against your home — we arrange business funding only, and we will not place consumer credit</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <div class="cta">
+    <span class="l">Talk to someone who will tell you if it is a no.</span>
+    <span class="r">
+      <span class="ph">(954) 737-5692</span>
+      <span class="ap">mfunding.net/apply</span>
+    </span>
+  </div>
+
+  <div class="legal"><b>Agentic Voice Inc. d/b/a Momentum Funding.</b> Nothing here is an offer of credit, an approval or a commitment to lend. All amounts, rates, terms and fees are set by the lender's underwriting and are disclosed to you in writing before you sign anything. Momentum Funding is a broker, not a lender — we are paid by the lender, never by you, and we charge no upfront fees of any kind. Submitting an enquiry to us does not affect your credit score; a formal submission to a lender may. Any disclosure your state requires on commercial financing is provided with your offer, before you sign.</div>
+
+</div>
+</body>
+</html>

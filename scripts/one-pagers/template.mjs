@@ -76,8 +76,6 @@ body{font-family:Inter,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-seri
   border-radius:999px;padding:5px 14px;white-space:nowrap}
 .legal{padding:.14in .55in .17in;font-size:6.9px;line-height:1.5;color:#8C9BA6;border-top:1px solid var(--rule)}
 .legal b{color:#5F6F7B}
-.restricted{background:#FFF4F4;border-top:2px solid #EF4444;color:#9B1C1C;
-  padding:.12in .55in;font-size:8.2px;line-height:1.45;font-weight:600}
 `;
 
 export function render(sheet) {
@@ -90,6 +88,7 @@ export function render(sheet) {
 <title>${esc(sheet.name)} — ${esc(BRAND.company)}</title>
 <meta name="description" content="${esc(sheet.standfirst)}" />
 <meta name="robots" content="${sheet.restricted ? "noindex, nofollow" : "index, follow"}" />
+${sheet.restricted ? `<!-- HANDLING NOTE, NOT FOR THE READER: ${esc(sheet.restricted)} -->` : ""}
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
@@ -168,14 +167,12 @@ export function render(sheet) {
   </main>
 
   <div class="cta">
-    <span class="l">${credit ? "Talk to someone who will tell you if it is a no." : "Find out in one call, not one week."}</span>
+    <span class="l">${credit ? "Talk to someone who will tell you if it is a no." : "One call tells you whether this is worth your time."}</span>
     <span class="r">
       <span class="ph">${esc(BRAND.phone)}</span>
       <span class="ap">${esc(BRAND.site)}/apply</span>
     </span>
   </div>
-
-  ${sheet.restricted ? `<div class="restricted">${esc(sheet.restricted)}</div>` : ""}
 
   <div class="legal"><b>${esc(BRAND.legal)}.</b> ${esc(sheet.legal)}</div>
 

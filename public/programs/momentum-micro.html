@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Momentum Micro — Momentum Funding</title>
+<meta name="description" content="A minimum deal size can rule you out before anyone looks at your business. This program is built around the amount you actually asked for, not the amount that makes somebody else’s minimum worth their while." />
+<meta name="robots" content="index, follow" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --midnight:#0A2342; --deepsea:#0C516E; --ocean:#007EA7; --teal:#00A896; --mint:#00D49D;
+  --ink:#0A2342; --ink-soft:#44596B; --ink-faint:#7B8C9A;
+  --rule:#D8E0E6; --rule-soft:#EAEFF2; --wash:#F4F8FA; --paper:#FFFFFF;
+}
+*{box-sizing:border-box}
+@page{size:letter;margin:0}
+html,body{margin:0;padding:0;background:#51606B;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:Inter,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink)}
+.sheet{width:8.5in;height:11in;background:var(--paper);margin:0 auto;display:flex;flex-direction:column;overflow:hidden}
+@media screen{.sheet{margin:18px auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}}
+@media print{html,body{background:#fff}.sheet{margin:0;box-shadow:none}}
+
+/* ── header ── */
+.hd{background:linear-gradient(135deg,var(--midnight) 0%,var(--deepsea) 72%,var(--ocean) 140%);
+  color:#fff;padding:.42in .55in .40in;position:relative}
+.hd::after{content:"";position:absolute;left:0;right:0;bottom:0;height:4px;
+  background:linear-gradient(90deg,var(--teal),var(--mint))}
+.brandrow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:.22in}
+.brand{display:flex;align-items:center;gap:8px}
+.mark{width:17px;height:17px;border-radius:5px;background:linear-gradient(135deg,var(--mint),var(--teal));flex:none}
+.bn{font-size:12.5px;font-weight:700;letter-spacing:.02em}
+.eyebrow{font-size:8.5px;font-weight:700;letter-spacing:.17em;text-transform:uppercase;color:rgba(255,255,255,.72);text-align:right}
+.pname{font-family:"DM Serif Display",Georgia,serif;font-size:33px;line-height:1.04;letter-spacing:-.012em;margin:0 0 .13in}
+.headline{font-size:15.5px;font-weight:600;line-height:1.32;margin:0 0 .11in;max-width:7.1in;color:#EAF6F8}
+.standfirst{font-size:10.3px;line-height:1.55;color:rgba(255,255,255,.76);margin:0;max-width:6.7in}
+
+/* ── stats ── */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--rule);background:var(--wash)}
+.stat{padding:.19in .55in;border-right:1px solid var(--rule-soft)}
+.stat:last-child{border-right:0}
+.sk{font-size:8px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-faint)}
+.sv{font-family:"DM Serif Display",Georgia,serif;font-size:27px;line-height:1.05;color:var(--deepsea);margin-top:2px;
+  font-variant-numeric:tabular-nums}
+.ss{font-size:9.3px;color:var(--ink-soft);margin-top:3px;line-height:1.35}
+
+/* ── body ── */
+.body{flex:1;padding:.26in .55in .1in;display:flex;flex-direction:column;gap:.19in;justify-content:space-between}
+.h{font-size:9px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--teal);
+  margin:0 0 .11in;display:flex;align-items:center;gap:9px}
+.h::after{content:"";flex:1;height:1px;background:var(--rule)}
+.ticks{display:grid;grid-template-columns:1fr 1fr;gap:.07in .34in}
+.tick{display:flex;gap:8px;font-size:10.4px;line-height:1.42;color:var(--ink)}
+.tick i{flex:none;width:13px;height:13px;border-radius:50%;background:var(--mint);margin-top:1px;position:relative}
+.tick i::after{content:"";position:absolute;left:4px;top:1.5px;width:3.5px;height:7px;
+  border:solid #06321f;border-width:0 1.7px 1.7px 0;transform:rotate(43deg)}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:.26in}
+.step .n{font-family:"DM Serif Display",Georgia,serif;font-size:21px;color:var(--ocean);line-height:1}
+.step .t{font-size:10.2px;font-weight:700;margin:3px 0 3px;line-height:1.28}
+.step .d{font-size:9.1px;line-height:1.46;color:var(--ink-soft)}
+.cols{display:grid;grid-template-columns:1.15fr 1fr;gap:.34in}
+.cost{background:var(--wash);border-left:3px solid var(--teal);padding:.15in .19in;border-radius:0 6px 6px 0}
+.cost b{display:block;font-size:12px;color:var(--deepsea);margin-bottom:4px}
+.cost p{margin:0;font-size:9.4px;line-height:1.52;color:var(--ink-soft)}
+.nf{margin:0;padding:0;list-style:none}
+.nf li{font-size:9.4px;line-height:1.45;color:var(--ink-soft);padding-left:14px;position:relative;margin-bottom:5px}
+.nf li::before{content:"";position:absolute;left:0;top:6px;width:7px;height:1.6px;background:#C2CED7}
+.ready{display:grid;grid-template-columns:repeat(4,1fr);gap:.16in}
+.rc{border:1px solid var(--rule);border-top:3px solid var(--ocean);border-radius:0 0 6px 6px;
+  padding:.11in .13in;font-size:9.2px;line-height:1.42;color:var(--ink-soft)}
+
+/* ── footer ── */
+.cta{margin-top:auto;background:var(--midnight);color:#fff;padding:.2in .55in;
+  display:flex;align-items:center;justify-content:space-between;gap:16px}
+.cta .l{font-size:11.5px;font-weight:600;color:#D7E8EC}
+.cta .r{display:flex;align-items:center;gap:18px}
+.cta .ph{font-family:"DM Serif Display",Georgia,serif;font-size:22px;color:var(--mint);white-space:nowrap}
+.cta .ap{font-size:10.5px;font-weight:700;color:#fff;border:1.4px solid rgba(255,255,255,.42);
+  border-radius:999px;padding:5px 14px;white-space:nowrap}
+.legal{padding:.14in .55in .17in;font-size:6.9px;line-height:1.5;color:#8C9BA6;border-top:1px solid var(--rule)}
+.legal b{color:#5F6F7B}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="hd">
+    <div class="brandrow">
+      <span class="brand"><span class="mark"></span><span class="bn">Momentum Funding</span></span>
+      <span class="eyebrow">Small advances · fast decisions</span>
+    </div>
+    <h1 class="pname">Momentum Micro</h1>
+    <p class="headline">You need five thousand dollars. Everyone you call wants to talk about fifty.</p>
+    <p class="standfirst">A minimum deal size can rule you out before anyone looks at your business. This program is built around the amount you actually asked for, not the amount that makes somebody else’s minimum worth their while.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="sk">How much</div>
+      <div class="sv">$2,000</div>
+      <div class="ss">to $100,000</div>
+    </div><div class="stat">
+      <div class="sk">What decides it</div>
+      <div class="sv">Statements</div>
+      <div class="ss">your bank file, read against a set box — not a weekly credit committee</div>
+    </div><div class="stat">
+      <div class="sk">What we need</div>
+      <div class="sv">3</div>
+      <div class="ss">months of business bank statements</div>
+    </div>
+  </div>
+
+  <main class="body">
+    <section>
+      <h2 class="h">Is this you?</h2>
+      <div class="ticks">
+        <div class="tick"><i></i><span>You need somewhere between $2,000 and $100,000 — the real number, not a rounded-up one</span></div><div class="tick"><i></i><span>You have been trading at least twelve months</span></div><div class="tick"><i></i><span>Your revenue is steady rather than spectacular</span></div><div class="tick"><i></i><span>Somebody has already told you that you are too small to bother with</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h">How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <div class="t">Tell us the number</div>
+          <div class="d">One call. What you need it for, and what the business brings in.</div>
+        </div><div class="step">
+          <div class="n">2</div>
+          <div class="t">Send three months of statements</div>
+          <div class="d">Photographed, downloaded or connected straight from your bank. Whichever is easiest.</div>
+        </div><div class="step">
+          <div class="n">3</div>
+          <div class="t">Get a decision</div>
+          <div class="d">This program reads your statements against a set credit box. There is no committee and no weekly meeting to wait for.</div>
+        </div><div class="step">
+          <div class="n">4</div>
+          <div class="t">Money moves</div>
+          <div class="d">Once you sign, the funding company sends the money to your business account. We will tell you their timing when you have the offer in front of you.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="h">Have these ready and this takes one call</h2>
+      <div class="ready">
+        <div class="rc">Three months of business bank statements</div><div class="rc">Photo ID</div><div class="rc">A voided check — or just a screenshot of your bank portal</div><div class="rc">Your EIN</div>
+      </div>
+    </section>
+
+    <section class="cols">
+      <div>
+        <h2 class="h">What it costs you</h2>
+        <div class="cost">
+          <b>You pay us nothing. Ever.</b>
+          <p>We are paid by the funding company when your deal funds. There is no application fee, no fee of any kind to us, no retainer and no charge if you decide not to go ahead. Anyone in this industry who asks you for money up front to arrange funding is not doing you a favor.</p>
+        </div>
+      </div>
+      <div>
+        <h2 class="h">This probably isn&rsquo;t you if&hellip;</h2>
+        <ul class="nf">
+          <li>You have been open less than twelve months — look at Momentum Gig instead if you are self-employed</li><li>You need more than $100,000 — that is Momentum Working Capital</li><li>You are already behind on the advances you have — call us before you take another one. That is a different conversation and we would rather have it early</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <div class="cta">
+    <span class="l">One call tells you whether this is worth your time.</span>
+    <span class="r">
+      <span class="ph">(954) 737-5692</span>
+      <span class="ap">mfunding.net/apply</span>
+    </span>
+  </div>
+
+  <div class="legal"><b>Agentic Voice Inc. d/b/a Momentum Funding.</b> A merchant cash advance is the purchase of a portion of your future receivables. It is not a loan, and nothing here is an offer, an approval or a commitment to fund. Momentum Funding is a broker, not a funder — we are paid by the funding company, never by you, and we charge no upfront fees of any kind. Your amount, your payment, your total cost and your schedule are set by underwriting and given to you in writing before you sign anything. Any disclosure your state requires on commercial financing is provided with your offer, before you sign.</div>
+
+</div>
+</body>
+</html>
