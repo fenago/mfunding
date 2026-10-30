@@ -124,8 +124,11 @@ export function LendiniSpreadCalc() {
       <div className="fp-teach">
         <div className="fp-tlead">
           <b>Lendini does not pay a commission rate. You set one.</b> This is the second funder in the book that
-          works this way — Bitty is the other — and it pays the most of anything we have. Their own partner sheet
-          says it in five words: <i>&ldquo;15 Point maximum upsell.&rdquo;</i>
+          works this way — Bitty is the other — and it pays the most of anything we have. Their partner sheet
+          gives two bullets and no mechanic: <i>&ldquo;15 Point maximum upsell&rdquo;</i> and{" "}
+          <i>&ldquo;Buy Rates Starting at 1.25&rdquo;</i>. Reading those as a spread we choose is what upsell
+          normally means, and it is almost certainly right — but they never actually say it, so treat the output
+          as a model until Mia Stephenson confirms the mechanic.
           {calc === null ? (
             <>
               {" "}
@@ -186,7 +189,9 @@ export function LendiniSpreadCalc() {
           </select>
           <span className="fp-hint">
             Both are Funding Metrics. {brand.name} needs {brand.tib}
-            {brand.id === "qfc" ? " — the shorter history costs the merchant ten points more." : "."}
+            {brand.id === "qfc"
+              ? " — the shorter history costs the merchant ten points, and Quick Fix is the one with NO position limit."
+              : ", and takes 1st to 4th positions only. A 5th-position merchant is a decline."}
           </span>
         </div>
 
@@ -206,7 +211,10 @@ export function LendiniSpreadCalc() {
               </option>
             ))}
           </select>
-          <span className="fp-hint">Copy it off the approval. Their published floor is {brand.buyFrom.toFixed(2)}.</span>
+          <span className="fp-hint">
+            Copy it off the approval. {brand.buyFrom.toFixed(2)} is a published FLOOR, not a quoted rate — it can
+            come back worse and their sheet never says what moves it.
+          </span>
         </div>
 
         <div className="fp-field">
