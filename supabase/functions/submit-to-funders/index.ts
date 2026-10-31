@@ -100,6 +100,10 @@ interface Recipe {
   required_stips: string[];
   special_instructions: string | null;
   active: boolean;
+  /** When true this funder prices the deal off the industry classification WE
+   *  pick in their application, so a human must confirm it before we submit.
+   *  See the industry gate below. */
+  requires_industry_match: boolean;
 }
 
 type Method = "email" | "portal" | "email_and_portal";
@@ -647,6 +651,8 @@ Deno.serve(async (req) => {
   }
 
   // Load the recipes for the selected lenders (may be empty → generic fallback).
+  // `*` so a new recipe column (e.g. requires_industry_match) arrives here
+  // without a second place to remember to edit.
   const { data: profileRows } = await db
     .from("funder_submission_profiles").select("*").in("lender_id", lenderIds);
   const recipeByLender = new Map<string, Recipe>(
@@ -876,6 +882,40 @@ Deno.serve(async (req) => {
     docsByType.set(d.document_type, arr);
   }
 
+  // ── CONFIRMED INDUSTRY CLASSIFICATIONS FOR THIS DEAL ──────────────────────
+  //
+  // Bitty Advance's own New Applications page: "Selecting accurate Industry
+  // classification affects your approval. If you enter an inaccurate Industry
+  // classification, it can hurt your customer experience or incorrectly
+  // decline a deal that should be approved" — and "Industry can be the
+  // difference between 16% commission and an auto-decline." Their worked
+  // example: a business with "Excavation" in the name filed as "Construction -
+  // Residential Remodeler" rather than "Site prep contractor" gets "1.65
+  // paying 10% instead of 1.55 paying 16%."
+  //
+  // So for a funder whose recipe sets `requires_industry_match`, the pick is a
+  // priced term of the deal and a guess is worth six commission points. A
+  // human writes down the NAICS code and the exact dropdown label first, or we
+  // do not submit. The flag lives on the recipe, never on a lender id in here.
+  //
+  // ⚠️ AN UNREADABLE CHECK IS NOT A PASSED CHECK — same rule as the directives
+  // read above. If this query errors we must not render it as "nobody
+  // confirmed the industry", which would accuse a colleague of not doing work
+  // they may well have done. `industryUnreadable` carries the error through so
+  // the refusal says the record could not be READ.
+  type IndustryRow = {
+    deal_id: string; lender_id: string; naics_code: string;
+    naics_title: string; funder_category: string; confirmed_at: string | null;
+  };
+  const { data: industryRows, error: industryErr } = await db
+    .from("deal_industry_classification")
+    .select("deal_id, lender_id, naics_code, naics_title, funder_category, confirmed_at")
+    .eq("deal_id", dealId);
+  const industryUnreadable = industryErr?.message ?? null;
+  const industryByLender = new Map<string, IndustryRow>(
+    ((industryRows ?? []) as IndustryRow[]).map((r) => [r.lender_id, r]),
+  );
+
   // --- Optional pick-and-choose attachment set. A non-empty documentIds means
   // "attach exactly these app-side docs". HARD GATE (same as message_funder):
   // every requested id must belong to THIS deal's customer, or 403. The query
@@ -950,6 +990,14 @@ Deno.serve(async (req) => {
     directiveBlock: OpenDirective | null;
     /** Non-null when the directive check could not be RUN. Not an all-clear. */
     directivesUnreadable: string | null;
+    /**
+     * Set when this funder requires a confirmed industry classification and we
+     * either have none on file or could not READ the table — HARD BLOCK.
+     * `unreadable` says which of those two it is, because they call for
+     * opposite next steps: one is "go confirm the industry", the other is "the
+     * check did not run, fix that before trusting this screen".
+     */
+    industryBlock: { reason: string; unreadable: boolean } | null;
   }
 
   async function renderForLender(lenderId: string): Promise<Rendered> {
@@ -990,16 +1038,59 @@ Deno.serve(async (req) => {
     const allMissing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length) && !ghlPresentTypes.has(slug));
     const waivedMissing = allMissing.filter((slug) => waived.has(slug));
     const missing = allMissing.filter((slug) => !waived.has(slug));
-    if (missing.length > 0) {
+
+    // --- Industry gate: a funder who prices off the industry classification
+    // does not get a guess. There is no override here on purpose — the stips
+    // overrides exist because a missing document can honestly follow under
+    // separate cover, whereas the industry value is typed into THIS
+    // application and is either right or it costs six points.
+    //
+    // Resolved as its own reason so it cannot hide behind a missing stip, and
+    // a missing stip cannot hide behind it. The two are composed below.
+    let industryBlock: { reason: string; unreadable: boolean } | null = null;
+    if (recipe?.requires_industry_match) {
+      const row = industryByLender.get(lenderId);
+      if (industryUnreadable) {
+        // NOT "not confirmed". We do not know whether it is confirmed.
+        industryBlock = {
+          unreadable: true,
+          reason:
+            `Industry classification could not be READ for ${name}, so this check did not run ` +
+            `(${industryUnreadable}). This is not a finding that nobody confirmed it — it is a ` +
+            `finding that we cannot tell. ${name} prices the deal off the industry we select, ` +
+            `so the send is held until the record can be read.`,
+        };
+      } else if (!row) {
+        industryBlock = {
+          unreadable: false,
+          reason:
+            `${name} requires a confirmed industry classification before submission and none is ` +
+            `on file for this deal. Confirm the merchant's NAICS code and the exact industry ` +
+            `value you will select in ${name}'s application. Their own guidance: an inaccurate ` +
+            `classification "can hurt your customer experience or incorrectly decline a deal ` +
+            `that should be approved" — their example is 1.65 paying 10% instead of 1.55 paying 16%.`,
+        };
+      }
+    }
+
+    // Compose BOTH refusals. `blocked` stays undefined when neither fired —
+    // every consumer tests `R.blocked` for truthiness, and an empty array is
+    // truthy, so an always-present array would block every send.
+    const blockedReasons = [...missing, ...(industryBlock ? ["industry_match"] : [])];
+    const blockedLabels = [
+      ...missing.map(docLabel),
+      ...(industryBlock ? [industryBlock.reason] : []),
+    ];
+    if (blockedReasons.length > 0) {
       return {
         lenderId, name, method, recipe, isPortalOnly, to, cc,
         subject: "", bodyText: "", bodyHtml: "",
         docs: [], attachmentUrls: [], attachedNames: [], docLinkLines: [],
-        sentPayload: {}, blocked: missing, blockedLabels: missing.map(docLabel),
+        sentPayload: {}, blocked: blockedReasons, blockedLabels,
         // A blocked funder still shows its recipe note in the preview — that
         // note is often exactly what explains the block.
         internalNote: recipe?.special_instructions?.trim() || null,
-        directives, directiveBlock, directivesUnreadable,
+        directives, directiveBlock, directivesUnreadable, industryBlock,
       };
     }
 
@@ -1377,7 +1468,11 @@ Deno.serve(async (req) => {
       lenderId, name, method, recipe, isPortalOnly, to, cc,
       subject, bodyText, bodyHtml, docs, attachmentUrls, attachedNames,
       docLinkLines, sentPayload, docsWarning, internalNote,
-      directives, directiveBlock, directivesUnreadable,
+      // null by construction — reaching here means the gate did not fire. It
+      // is carried explicitly because `Rendered` is strict and silently
+      // dropping a property here is exactly how a previous change shipped a
+      // guard that compiled on one path and not the other.
+      directives, directiveBlock, directivesUnreadable, industryBlock: null,
     };
   }
 
@@ -1403,6 +1498,11 @@ Deno.serve(async (req) => {
         directives: R.directives,
         directiveBlock: R.directiveBlock,
         directivesUnreadable: R.directivesUnreadable,
+        // Same reasoning as the directive fields, and the same shape: the
+        // remedy ("confirm the NAICS code and the exact dropdown label")
+        // travels with the refusal, and it rides BOTH preview shapes so a
+        // funder that is short a stip AND short a classification reports both.
+        industryBlock: R.industryBlock,
       };
       if (R.blocked) {
         previews.push({
@@ -1423,7 +1523,9 @@ Deno.serve(async (req) => {
         ...directiveFields,
       });
     }
-    return json({ ok: true, preview: true, dealId, previews, directivesUnreadable });
+    // Both "the check did not run" signals ride at the top level too, so a
+    // caller that only reads the envelope still learns a guard was blind.
+    return json({ ok: true, preview: true, dealId, previews, directivesUnreadable, industryUnreadable });
   }
 
   // HARD GATE (send only): the signed application must be ON FILE (app-side) so
@@ -1471,7 +1573,13 @@ Deno.serve(async (req) => {
     // --- Render + gather via the SHARED pipeline (same code the preview ran). ---
     const R = await renderForLender(lenderId);
     if (R.blocked) {
-      results.push({ lenderId, name, method, status: "blocked", blocked: R.blocked, blockedLabels: R.blockedLabels });
+      results.push({
+        lenderId, name, method, status: "blocked",
+        blocked: R.blocked, blockedLabels: R.blockedLabels,
+        // The remedy, not just the refusal — a direct caller that never
+        // previewed still learns what to go and do.
+        industryBlock: R.industryBlock,
+      });
       continue;
     }
 
@@ -1710,6 +1818,10 @@ Great news — your file for ${biz} has passed our internal review ` +
     // folded into "nothing on file". The guard either ran or it did not, and a
     // send that happened without it must say so.
     directivesUnreadable,
+    // Same for the industry check. It fails CLOSED (nothing was sent to a
+    // funder requiring a match), but the reason it blocked is "unreadable",
+    // not "unconfirmed", and the two are not the same instruction to a human.
+    industryUnreadable,
     warning: directivesUnreadable
       ? `⚠ The funder-instruction check could not run (${directivesUnreadable}). These funders may have asked us to change where submissions go, and nothing verified it before sending.`
       : ghlError
