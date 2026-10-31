@@ -16,7 +16,7 @@ import {
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
 import RetiredDuplicateBadge from "../../../components/admin/RetiredDuplicateBadge";
-import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal, listActiveCloserOptions, reassignDealCloser, dealHasCommission, type CloserOption } from "../../../services/dealService";
+import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal, listActiveCloserOptions, reassignDealCloser, dealHasCommission, type CloserOption, type RefusedFunder } from "../../../services/dealService";
 import { useUserProfile } from "../../../context/UserProfileContext";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
@@ -66,6 +66,10 @@ export default function DealDetailPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "underwriting" | "submissions" | "documents" | "activity" | "notes">("overview");
   const [matchingLenders, setMatchingLenders] = useState<{ id: string; company_name: string; score: number; reasons: string[] }[]>([]);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
+  // Funders the SERVER turned away on the last attempt, and why. These used to
+  // vanish: the service returned only the submission rows, so a refused funder
+  // just wasn't in the array and the modal closed looking like a clean send.
+  const [submitRefusals, setSubmitRefusals] = useState<RefusedFunder[]>([]);
   const [submittingLenderId, setSubmittingLenderId] = useState<string | null>(null);
   const [submitNotes, setSubmitNotes] = useState("");
   const [documents, setDocuments] = useState<{ id: string; document_type: string; filename: string; status: string }[]>([]);
@@ -224,6 +228,8 @@ export default function DealDetailPage() {
 
   const handleSubmitToFunder = async () => {
     if (!id || !submittingLenderId) return;
+    setSubmitRefusals([]);
+    const lenderName = matchingLenders.find((l) => l.id === submittingLenderId)?.company_name ?? "This funder";
     try {
       await submitToFunder(id, submittingLenderId, submitNotes);
       // Tag the GHL contact submit:<funder> so the funder's GHL email workflow fires.
@@ -232,8 +238,17 @@ export default function DealDetailPage() {
       setSubmittingLenderId(null);
       setSubmitNotes("");
       fetchDeal();
-    } catch {
-      console.error("Failed to submit to funder");
+    } catch (e) {
+      // KEEP THE MODAL OPEN AND SAY WHY. A bare console.error here meant a
+      // deliberate refusal — a missing stip, an unconfirmed industry match —
+      // looked to the closer like a button that did nothing.
+      console.error("Failed to submit to funder:", e);
+      setSubmitRefusals([{
+        lenderId: submittingLenderId,
+        name: lenderName,
+        reason: e instanceof Error ? e.message : "The submission did not go out and we could not read why.",
+        unreadable: false,
+      }]);
     }
   };
 
@@ -243,17 +258,38 @@ export default function DealDetailPage() {
       (l) => !submissions.some((s) => s.lender_id === l.id && !["withdrawn", "declined", "offer_declined"].includes(s.status))
     );
     if (pending.length === 0) return;
+    setSubmitRefusals([]);
     try {
       const lenderIds = pending.map((l) => l.id);
-      await submitToMultipleFunders(id, lenderIds, submitNotes);
+      const { rows, refused } = await submitToMultipleFunders(id, lenderIds, submitNotes);
       // Tag the GHL contact submit:<funder> for each, firing their GHL email workflows.
-      await tagFundersForSubmission(id, lenderIds);
+      //
+      // ⚠ ONLY FOR THE FUNDERS THAT ACTUALLY WENT OUT. This tag fires a GHL
+      // workflow that emails the funder the package, so tagging the full
+      // requested list would have walked a server-refused funder straight out
+      // the other door — the one send path that does not run through the edge
+      // function's gates. A funder with no submission row was refused.
+      const sentIds = rows.map((r) => r.lender_id).filter((x): x is string => !!x);
+      if (sentIds.length > 0) await tagFundersForSubmission(id, sentIds);
+      if (refused.length > 0) {
+        // Keep the modal open on a partial send and name who was turned away.
+        setSubmitRefusals(refused);
+        setSubmittingLenderId(null);
+        fetchDeal();
+        return;
+      }
       setShowSubmitModal(false);
       setSubmittingLenderId(null);
       setSubmitNotes("");
       fetchDeal();
-    } catch {
-      console.error("Failed to submit to all funders");
+    } catch (e) {
+      console.error("Failed to submit to all funders:", e);
+      setSubmitRefusals([{
+        lenderId: "",
+        name: "This submission",
+        reason: e instanceof Error ? e.message : "The submission did not go out and we could not read why.",
+        unreadable: false,
+      }]);
     }
   };
 
@@ -1016,6 +1052,37 @@ export default function DealDetailPage() {
                   Submit to Funder
                 </h3>
 
+                {/* The server's refusals. Printed in full, by name — a funder
+                    that was turned away used to disappear out of the result
+                    array and the modal shut as if everything had gone. */}
+                {submitRefusals.length > 0 && (
+                  <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 p-3 dark:border-rose-800 dark:bg-rose-900/20">
+                    <p className="text-sm font-semibold text-rose-800 dark:text-rose-200">
+                      {submitRefusals.length === 1
+                        ? `${submitRefusals[0].name} was not submitted`
+                        : `${submitRefusals.length} funders were not submitted`}
+                      {" — everyone else went out."}
+                    </p>
+                    <ul className="mt-2 space-y-2">
+                      {submitRefusals.map((r, i) => (
+                        <li key={`${r.lenderId}-${i}`} className="text-xs text-rose-700 dark:text-rose-300">
+                          <span className="font-semibold">{r.name}</span>
+                          {r.unreadable && (
+                            <span className="ml-1 font-semibold">
+                              — the check could NOT RUN. This is not a finding that nobody confirmed it.
+                            </span>
+                          )}
+                          <span className="block mt-0.5">{r.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-xs text-rose-700 dark:text-rose-300">
+                      Nothing was sent to these funders, and their GHL submission workflow was not fired. Clear the
+                      reason above and submit again — the funder picker in the Playbook has the controls.
+                    </p>
+                  </div>
+                )}
+
                 {/* Matching lenders */}
                 <div className="space-y-2 mb-4">
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1081,6 +1148,7 @@ export default function DealDetailPage() {
                       setShowSubmitModal(false);
                       setSubmittingLenderId(null);
                       setSubmitNotes("");
+                      setSubmitRefusals([]);
                     }}
                     className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
                   >

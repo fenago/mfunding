@@ -1348,14 +1348,40 @@ export async function autoCreateCommissionForFundedDeal(deal: Deal): Promise<Com
   } as Omit<Commission, "id" | "created_at" | "updated_at">);
 }
 
+/**
+ * A funder the server REFUSED to submit to, and why.
+ *
+ * The edge function is the only chokepoint that can actually stop a send, and
+ * it reports its refusals per funder. They used to die here: this service read
+ * back the submission ROWS, and a refused funder simply has no row — so the
+ * caller got a shorter array and no idea anything had been turned away. That
+ * is the same failure as an empty read rendering as a zero. A refusal nobody
+ * can see is not a gate.
+ *
+ * `unreadable` distinguishes "we checked and it is not confirmed" from "the
+ * check could not be RUN". Those are different instructions to a human and
+ * must never be collapsed into one sentence.
+ */
+export interface RefusedFunder {
+  lenderId: string;
+  name: string;
+  reason: string;
+  unreadable: boolean;
+}
+
 export async function submitToFunder(
   dealId: string,
   lenderId: string,
   notes?: string
 ): Promise<DealSubmission> {
-  const rows = await submitToMultipleFunders(dealId, [lenderId], notes);
+  const { rows, refused } = await submitToMultipleFunders(dealId, [lenderId], notes);
   const row = rows.find((r) => r.lender_id === lenderId) ?? rows[0];
-  if (!row) throw new Error("Submission was not recorded");
+  if (!row) {
+    // Say WHY. "Submission was not recorded" sent a closer looking for a bug
+    // when the system had deliberately refused them and could name the reason.
+    const why = refused.find((r) => r.lenderId === lenderId) ?? refused[0];
+    throw new Error(why ? why.reason : "Submission was not recorded");
+  }
   return row as DealSubmission;
 }
 
@@ -1365,8 +1391,8 @@ export async function submitToMultipleFunders(
   dealId: string,
   lenderIds: string[],
   notes?: string,
-): Promise<DealSubmission[]> {
-  if (lenderIds.length === 0) return [];
+): Promise<{ rows: DealSubmission[]; refused: RefusedFunder[] }> {
+  if (lenderIds.length === 0) return { rows: [], refused: [] };
   // The edge function records each submission and EMAILS each funder's
   // submission_email with the deal package. It does NOT advance the deal — the
   // comment here used to claim it did, which is why nobody noticed that the
@@ -1388,6 +1414,33 @@ export async function submitToMultipleFunders(
     throw error;
   }
   if (data?.warning) console.warn("submit-to-funders:", data.warning);
+
+  // Collect the funders the SERVER refused, before we go near the rows. The
+  // function reports one result per funder; a refused one is `blocked` (a
+  // required stip or the industry match) or `blocked_directive` (its recipe
+  // still points at an inbox the funder retired). None of them produce a
+  // submission row, so reading rows alone makes a refusal look like it never
+  // happened. The caller needs the names to TELL somebody, and to avoid
+  // firing the GHL submit:<funder> tag for a funder that was turned away.
+  const results = (Array.isArray(data?.results) ? data.results : []) as Array<{
+    lenderId?: string;
+    name?: string;
+    status?: string;
+    blockedLabels?: string[];
+    industryBlock?: { reason: string; unreadable: boolean } | null;
+  }>;
+  const refused: RefusedFunder[] = results
+    .filter((r) => r.status === "blocked" || r.status === "blocked_directive")
+    .map((r) => ({
+      lenderId: r.lenderId ?? "",
+      name: r.name ?? "This funder",
+      reason:
+        r.industryBlock?.reason ||
+        (r.blockedLabels?.length ? `Not sent — still needs: ${r.blockedLabels.join("; ")}` : "") ||
+        "The server refused this funder and gave no reason we can read.",
+      unreadable: r.industryBlock?.unreadable === true,
+    }));
+
   // Return the resulting submission rows for the UI.
   //
   // ⚠ THE SUBMIT ALREADY SUCCEEDED by the time we get here. If this read-back
@@ -1407,7 +1460,7 @@ export async function submitToMultipleFunders(
         `(${readBackError.message}). Refresh before sending again: do NOT re-submit, the funders already have it.`,
     );
   }
-  return (submissionRows || []) as DealSubmission[];
+  return { rows: (submissionRows || []) as DealSubmission[], refused };
 }
 
 export async function updateSubmission(
