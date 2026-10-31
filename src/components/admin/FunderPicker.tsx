@@ -33,6 +33,7 @@ import { getMatchingLendersRead } from "../../services/lenderMatchingService";
 import { getFunderAvailability } from "../../services/funderAvailability";
 import { updateSubmission } from "../../services/dealService";
 import { uploadSignedApplication } from "../../services/signedApplication";
+import IndustryMatchGate, { type IndustryClassification } from "./funder/IndustryMatchGate";
 import { readDocsStatus, type GhlDocsStatus } from "@/lib/ghlDocs";
 import { dealFieldOf } from "@/lib/maskedDeal";
 import { invokeThrow } from "@/utils/invokeError";
@@ -114,6 +115,8 @@ interface FunderResult {
   warning?: string;
   blocked?: string[];
   blockedLabels?: string[];
+  /** The industry-match hard stop, when it fired. See IndustryMatchGate. */
+  industryBlock?: { reason: string; unreadable: boolean } | null;
   portal?: { url: string | null; steps: string[]; hint: string | null };
   submissionId?: string;
 }
@@ -148,6 +151,13 @@ interface PreviewFunder {
   directiveBlock?: FunderDirective | null;
   /** Non-null when the instruction check could not RUN. Never an all-clear. */
   directivesUnreadable?: string | null;
+  /**
+   * The industry-match hard stop. Non-null when this funder's recipe sets
+   * `requires_industry_match` and nothing satisfies it — and `unreadable` tells
+   * apart "nobody confirmed it" from "we could not READ whether anybody did".
+   * The second is not a failed check and must never be printed as one.
+   */
+  industryBlock?: { reason: string; unreadable: boolean } | null;
 }
 
 /**
@@ -450,6 +460,27 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // and appends a "to follow" line to that funder's email.
   const [stipOverrides, setStipOverrides] = useState<Record<string, string[]>>({});
   const [armedOverride, setArmedOverride] = useState<string | null>(null);
+  // --- The industry-match hard stop (mirrors the server rule client-side) ----
+  // Some funders price the deal off the industry WE pick in their application.
+  // Bitty's own page: "Industry can be the difference between 16% commission
+  // and an auto-decline." So a funder whose recipe sets
+  // `requires_industry_match` is UNSENDABLE until a human has written down the
+  // NAICS code and the exact dropdown label — and unlike a missing stip there
+  // is NO override, because a document can honestly follow under separate
+  // cover and a typed industry value cannot.
+  //
+  // Read in TWO pieces on purpose, so a failure is scoped to what it actually
+  // blinds us to: `industryRequired` (which funders ask for it) and
+  // `industryRows` (which are already confirmed). Lose the first and we cannot
+  // clear ANY funder; lose the second and we only cannot clear the flagged
+  // ones. Neither failure is ever rendered as a pass.
+  const [industryRequired, setIndustryRequired] = useState<Set<string>>(new Set());
+  const [industryRows, setIndustryRows] = useState<Record<string, IndustryClassification>>({});
+  const [industryFlagErr, setIndustryFlagErr] = useState<string | null>(null);
+  const [industryRowsErr, setIndustryRowsErr] = useState<string | null>(null);
+  // Which funder's gate form is open inline. The remedy travels with the
+  // refusal — nobody is sent to another page to type this.
+  const [industryGateFor, setIndustryGateFor] = useState<string | null>(null);
 
   // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
   // so a page reload never throws away paid tokens.
@@ -530,7 +561,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           }
         }
         const ids = m.map((x) => x.id);
-        const [profRes, lendRes, docRes, subRes] = await Promise.all([
+        const [profRes, lendRes, docRes, subRes, indFlagRes, indRowRes] = await Promise.all([
           // `active` and `portal_url` are read because the badge below depends on
           // BOTH: an inactive recipe is not a destination, and a recipe whose
           // method is "portal" with no portal_url has nowhere to send either.
@@ -538,6 +569,16 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           ids.length ? supabase.from("lenders").select("id, submission_email, submission_portal_url").in("id", ids) : Promise.resolve({ data: [] }),
           deal.customer_id ? supabase.from("customer_documents").select("id, document_type, filename").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
           supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason").eq("deal_id", deal.id),
+          // ⚠ NO `.eq("active", true)` here, deliberately — submit-to-funders
+          // loads recipes with a bare `select("*").in("lender_id", …)` and gates
+          // on the flag whatever `active` says. Filtering here would let an
+          // inactive-but-flagged recipe look clear in the UI and then refuse at
+          // send, which is the client and the server disagreeing about a hard
+          // stop. Kept as its OWN query rather than folded into profRes above so
+          // a failure blinds only this check instead of emptying every recipe
+          // and rendering the whole book as "no destination".
+          ids.length ? supabase.from("funder_submission_profiles").select("lender_id, requires_industry_match").in("lender_id", ids) : Promise.resolve({ data: [], error: null }),
+          supabase.from("deal_industry_classification").select("deal_id, lender_id, naics_code, naics_title, activity, funder_category, confirmed_by, confirmed_at").eq("deal_id", deal.id),
         ]);
         if (cancelled) return;
         setMatches(m);
@@ -622,6 +663,30 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           };
         }
         setExisting(emap);
+
+        // --- Industry-match gate state. Three outcomes each, never two: read
+        // and populated / read and genuinely empty / NOT READ. The last one
+        // blocks and says it blocked blind; it is never silently a pass. ---
+        const flagRows = indFlagRes.data as { lender_id: string; requires_industry_match: boolean | null }[] | null;
+        setIndustryFlagErr(
+          indFlagRes.error
+            ? indFlagRes.error.message
+            : flagRows == null
+              ? "The industry-gate read came back empty."
+              : null,
+        );
+        setIndustryRequired(new Set((flagRows ?? []).filter((r) => r.requires_industry_match).map((r) => r.lender_id)));
+        const indRows = indRowRes.data as IndustryClassification[] | null;
+        setIndustryRowsErr(
+          indRowRes.error
+            ? indRowRes.error.message
+            : indRows == null
+              ? "The confirmed-classification read came back empty."
+              : null,
+        );
+        const imap: Record<string, IndustryClassification> = {};
+        for (const r of indRows ?? []) imap[r.lender_id] = r;
+        setIndustryRows(imap);
       } catch (e) {
         if (!cancelled) {
           const why = e instanceof Error ? e.message : "Failed to load funders";
@@ -633,6 +698,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           // claim than the sentence this whole change replaced. Caught by
           // docs-absence-fix on review; it was live in the first version.
           setMatchesErr(why);
+          // AND the industry gate. The branch above hides the rows entirely so
+          // nothing can be sent from here — but `industryFlagErr` left null is
+          // a latent "the hard stop passed", and a guard that defaults to open
+          // on a throw is not a guard.
+          setIndustryFlagErr(why);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -655,6 +725,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     })();
     return () => { cancelled = true; };
   }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A funder that becomes industry-blocked must leave the selection, not just
+  // grey out. The checkbox loads AFTER the rows on a slow read, and the AI
+  // "strong fits" pre-check and the stip-override auto-select both write to
+  // `selected` directly — so the set is pruned whenever the gate state moves.
+  useEffect(() => {
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => !industryBlocks(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [industryRequired, industryRows, industryFlagErr, industryRowsErr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-disarm a pending override after 5s (matches the modal send's arm timeout).
   useEffect(() => {
@@ -736,6 +817,31 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const effectiveMissingStipsOf = (lenderId: string): string[] =>
     missingStipsOf(lenderId).filter((s) => !overriddenStipsOf(lenderId).includes(s));
 
+  // Where this funder stands on the industry hard stop. FOUR states, and the
+  // last two are not the same sentence: "nobody confirmed it" accuses a
+  // colleague of not doing work, "we couldn't read it" admits we don't know.
+  // `stipOverrides` deliberately has no bearing on any of this — the owner
+  // called this a hard stop and there is no waiver for it.
+  type IndustryState =
+    | { kind: "not_required" }
+    | { kind: "ok"; row: IndustryClassification }
+    | { kind: "missing" }
+    | { kind: "unreadable"; why: string };
+  const industryStateOf = (lenderId: string): IndustryState => {
+    // Can't read WHO requires it → can't clear anyone.
+    if (industryFlagErr) return { kind: "unreadable", why: industryFlagErr };
+    if (!industryRequired.has(lenderId)) return { kind: "not_required" };
+    // Can't read what's confirmed → can't clear the funders who require it.
+    if (industryRowsErr) return { kind: "unreadable", why: industryRowsErr };
+    const row = industryRows[lenderId];
+    return row ? { kind: "ok", row } : { kind: "missing" };
+  };
+  /** TRUE when this funder cannot be sent to until the gate is satisfied. */
+  const industryBlocks = (lenderId: string): boolean => {
+    const k = industryStateOf(lenderId).kind;
+    return k === "missing" || k === "unreadable";
+  };
+
   // An existing active (non-failed) submission means "already went out".
   const isAlreadyOut = (lenderId: string) => {
     const e = existing[lenderId];
@@ -777,7 +883,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     if (armedOverride === lenderId) {
       setStipOverrides((prev) => ({ ...prev, [lenderId]: Array.from(new Set([...(prev[lenderId] ?? []), ...slugs])) }));
       setArmedOverride(null);
-      setSelected((prev) => new Set(prev).add(lenderId));
+      // A doc waiver does NOT clear the industry hard stop — waiving a stip
+      // must never auto-select a funder the other gate is still refusing.
+      if (!industryBlocks(lenderId)) setSelected((prev) => new Set(prev).add(lenderId));
     } else {
       setArmedOverride(lenderId);
     }
@@ -799,10 +907,23 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     return out;
   }
 
-  async function submit(ids: string[], resubmit = false, overridesArg?: Record<string, { subject?: string; body?: string }>) {
-    if (ids.length === 0) return;
+  async function submit(requestedIds: string[], resubmit = false, overridesArg?: Record<string, { subject?: string; body?: string }>) {
+    if (requestedIds.length === 0) return;
+    // THE HARD STOP, at the one choke point every send path runs through —
+    // "Submit to N selected", the preview's armed Send, ↻ resend and retry all
+    // land here. A greyed-out checkbox is a rendering, not a guard: this is
+    // what makes an industry-blocked funder genuinely unsendable.
+    const refused = requestedIds.filter((id) => industryBlocks(id));
+    const ids = requestedIds.filter((id) => !industryBlocks(id));
     setSubmitting(true);
-    setError(null);
+    // Never a silent drop — a funder we quietly left out is indistinguishable
+    // from one we sent to, and this panel's whole job is telling those apart.
+    setError(
+      refused.length === 0
+        ? null
+        : `Not sent to ${refused.map(nameOf).join(", ")} — the industry match has to be confirmed first, and there is no override for it.`,
+    );
+    if (ids.length === 0) { setSubmitting(false); return; }
     try {
       const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
         // documentIds = the picked "Package contents". Empty → engine falls back
@@ -859,7 +980,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // Ask the engine to render (not send) every selected funder, then open the
   // editable preview. Same render/gather path as the real send — the truth.
   async function openPreview() {
-    const ids = [...selected];
+    // Same hard stop as submit() — an industry-blocked funder is not previewed
+    // either, because a rendered email for a funder we cannot send to reads as
+    // a package about to go out.
+    const ids = [...selected].filter((id) => !industryBlocks(id));
     if (ids.length === 0) return;
     setPreviewLoading(true);
     setPreviewError(null);
@@ -908,9 +1032,26 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     return out;
   }
 
-  const previewSendable = previews.filter((p) => !p.blocked && !p.isPortalOnly);
-  const previewPortalOnly = previews.filter((p) => !p.blocked && p.isPortalOnly);
-  const previewSendCount = previews.filter((p) => !p.blocked).length;
+  // A previewed funder is sendable only if NEITHER side refuses it. The server
+  // puts "industry_match" in `blocked`, so the first test already covers it —
+  // the second is belt-and-braces, and keeps the count honest if a stale
+  // preview is still on screen when the gate state changes underneath it.
+  const previewOk = (p: PreviewFunder) => !p.blocked && !p.industryBlock && !industryBlocks(p.lenderId);
+  const previewSendable = previews.filter((p) => previewOk(p) && !p.isPortalOnly);
+  const previewPortalOnly = previews.filter((p) => previewOk(p) && p.isPortalOnly);
+  const previewSendCount = previews.filter(previewOk).length;
+
+  /**
+   * The doc stips a blocked row is missing, with the industry refusal removed.
+   * `blockedLabels` carries the industry entry's FULL reason sentence (the
+   * server composes the two lists index-for-index against `blocked`), so a
+   * naive join renders a paragraph inside "missing: …".
+   */
+  const docBlockLabels = (p: { blocked?: string[]; blockedLabels?: string[] }): string[] => {
+    const slugs = p.blocked ?? [];
+    const labels = p.blockedLabels ?? slugs;
+    return slugs.map((s, i) => ({ s, label: labels[i] ?? s })).filter((x) => x.s !== "industry_match").map((x) => x.label);
+  };
 
   function isPreviewEdited(lenderId: string): boolean {
     const e = edits[lenderId], o = originals[lenderId];
@@ -925,7 +1066,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
 
   // Fire the real submit for every non-blocked previewed funder, carrying edits.
   async function sendFromPreview() {
-    const ids = previews.filter((p) => !p.blocked).map((p) => p.lenderId);
+    const ids = previews.filter(previewOk).map((p) => p.lenderId);
     if (ids.length === 0) return;
     await submit(ids, false, buildOverrides());
     setPreviewOpen(false);
@@ -936,7 +1077,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // has a destination, isn't missing stips, and hasn't already gone out.
   function isSelectable(lenderId: string): boolean {
     if (!matches.some((m) => m.id === lenderId)) return false;
-    return methodOf(lenderId) !== "none" && effectiveMissingStipsOf(lenderId).length === 0 && !isAlreadyOut(lenderId);
+    return methodOf(lenderId) !== "none"
+      && effectiveMissingStipsOf(lenderId).length === 0
+      && !isAlreadyOut(lenderId)
+      && !industryBlocks(lenderId);
   }
 
   async function recommend() {
@@ -1122,7 +1266,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     const effectiveMissing = missing.filter((s) => !overridden.includes(s));
     const alreadyOut = isAlreadyOut(m.id);
     const noDest = method === "none";
-    const disabled = noDest || effectiveMissing.length > 0 || alreadyOut;
+    const industry = industryStateOf(m.id);
+    const industryBlocked = industry.kind === "missing" || industry.kind === "unreadable";
+    const disabled = noDest || effectiveMissing.length > 0 || alreadyOut || industryBlocked;
     const badge = methodBadge(method);
     const checked = selected.has(m.id);
     const e = existing[m.id];
@@ -1221,6 +1367,85 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           )}
         </span>
       </label>
+
+      {/* The industry hard stop, with its remedy attached. Rendered OUTSIDE the
+          label above (the gate has its own inputs, and inside a <label> every
+          click would toggle the funder's checkbox). */}
+      {/* When the cause is the GLOBAL flag read, the banner at the top already
+          carries it — one line per row here, not twenty-seven copies of the
+          same box. The box is for the scoped failure, which affects only the
+          funders that require the check. */}
+      {!alreadyOut && industry.kind === "unreadable" && industryFlagErr && (
+        <p className="ml-6 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+          ⚠ Held — the industry-match check couldn&apos;t run (see the top of this panel). That is not a finding
+          that nobody confirmed it.
+        </p>
+      )}
+      {!alreadyOut && industry.kind === "unreadable" && !industryFlagErr && (
+        <div className="ml-6 rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
+          <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
+            ⚠ The industry-match check could not run — this is NOT &ldquo;nobody confirmed it&rdquo;
+          </p>
+          <p className="mt-0.5 text-[11px] text-rose-700 dark:text-rose-300">
+            {industry.why}. {m.company_name} prices the deal off the industry we select, so the send is held until
+            the record can be read. Somebody may well have confirmed it already — nothing here says they
+            didn&apos;t.
+          </p>
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="mt-1.5 rounded border border-rose-400 dark:border-rose-700 px-2 py-0.5 text-[11px] font-medium text-rose-800 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/40"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+      {!alreadyOut && industry.kind === "missing" && industryGateFor !== m.id && (
+        <div className="ml-6 rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
+          <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
+            ⛔ {m.company_name} will not take this file until the industry match is confirmed
+          </p>
+          <p className="mt-0.5 text-[11px] text-rose-700 dark:text-rose-300">
+            They price the deal off the industry classification we select in their application, so it is a hard
+            stop — <span className="font-semibold">there is no override for this one</span>, and a doc waiver does
+            not clear it.
+          </p>
+          <button
+            type="button"
+            onClick={() => setIndustryGateFor(m.id)}
+            className="mt-1.5 rounded bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+          >
+            Confirm the industry match for {m.company_name}
+          </button>
+        </div>
+      )}
+      {!alreadyOut && industryGateFor === m.id && (
+        <div className="ml-6">
+          <IndustryMatchGate
+            dealId={deal.id}
+            lenderId={m.id}
+            funderName={m.company_name}
+            existing={industryRows[m.id] ?? null}
+            onSaved={(row) => { setIndustryRows((prev) => ({ ...prev, [m.id]: row })); setIndustryGateFor(null); }}
+            onClose={() => setIndustryGateFor(null)}
+          />
+        </div>
+      )}
+      {industry.kind === "ok" && industryGateFor !== m.id && (
+        <p className="ml-6 text-[11px] text-emerald-700 dark:text-emerald-400">
+          ✓ industry confirmed — NAICS {industry.row.naics_code} ({industry.row.naics_title}) ·{" "}
+          <span className="font-semibold">{industry.row.funder_category}</span> in {m.company_name}&apos;s dropdown
+          {!alreadyOut && (
+            <button
+              type="button"
+              onClick={() => setIndustryGateFor(m.id)}
+              className="ml-1.5 text-gray-400 hover:text-gray-600 underline"
+            >
+              change
+            </button>
+          )}
+        </p>
+      )}
 
       {/* Inline offer capture — only on rows already sent to the funder, so the
           closer logs the reply without leaving Step 6. */}
@@ -1378,6 +1603,29 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           can&apos;t be trusted to show &ldquo;already submitted&rdquo;, so sending is blocked — this is an unread
           check, <span className="font-bold">not</span> an empty one.
           <div className="mt-0.5 font-mono text-[11px] opacity-80">{existingErr}</div>
+        </div>
+      )}
+
+      {/* The industry gate's own read failed, which blinds us for EVERY funder
+          here — we cannot even tell which of them require the check. Said once
+          at the top because the cause is global, and repeated per row because
+          that is where the send is refused. */}
+      {industryFlagErr && (
+        <div className="rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+          <span className="font-bold">
+            Couldn&apos;t read which funders require a confirmed industry match.
+          </span>{" "}
+          Some funders price the deal off the industry we select in their application, and this read is the only
+          thing that knows which. It is an <span className="font-bold">unread</span> check, not a passed one — so
+          sending is held for every funder below.
+          <div className="mt-0.5 font-mono text-[11px] opacity-80">{industryFlagErr}</div>
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="mt-1.5 rounded border border-rose-400 dark:border-rose-700 px-2 py-0.5 text-[11px] font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40"
+          >
+            Try again
+          </button>
         </div>
       )}
 
@@ -1808,8 +2056,16 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                   </div>
                   {r.error && <p className="text-[11px] text-red-500 mt-0.5">{r.error}</p>}
                   {r.warning && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">⚠ {r.warning}</p>}
-                  {r.status === "blocked" && (
-                    <p className="text-[11px] text-amber-600 mt-0.5">missing: {(r.blockedLabels ?? r.blocked ?? []).join(", ")}</p>
+                  {r.status === "blocked" && r.industryBlock && (
+                    <p className="text-[11px] mt-0.5 font-semibold text-rose-600 dark:text-rose-400">
+                      {r.industryBlock.unreadable
+                        ? "⚠ the industry-match check could not run — not “nobody confirmed it”: "
+                        : "⛔ industry match not confirmed (no override): "}
+                      <span className="font-normal">{r.industryBlock.reason}</span>
+                    </p>
+                  )}
+                  {r.status === "blocked" && docBlockLabels(r).length > 0 && (
+                    <p className="text-[11px] text-amber-600 mt-0.5">missing: {docBlockLabels(r).join(", ")}</p>
                   )}
                   {r.status === "portal_pending" && r.portal && (
                     <div className="mt-1 ml-1 pl-3 border-l-2 border-purple-200 dark:border-purple-800 space-y-1">
@@ -1892,20 +2148,74 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
 
                     {/* Blocked funder — no email, show the reason instead. */}
                     {p.blocked ? (
-                      <div className="px-3 py-3 text-[12px] text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5">
-                        <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                        <span>
-                          Blocked — missing: {(p.blockedLabels ?? p.blocked).join(", ")}. Nothing will be sent to this funder.
-                          {ghlDocsError && (
-                            <>
-                              {" "}
-                              <span className="font-bold underline decoration-2">
-                                We could not read VibeReach ({ghlDocsError}), so this "missing" was worked out without seeing
-                                anything the merchant uploaded there — check before you chase him for it.
-                              </span>
-                            </>
-                          )}
-                        </span>
+                      <div className="px-3 py-3 space-y-2">
+                        {/* The industry refusal is its own box, ABOVE the doc
+                            list: it is a different kind of refusal (no override,
+                            and the remedy is typing not chasing), and the two
+                            must not hide behind each other. */}
+                        {p.industryBlock && (
+                          <div className="rounded-md border-2 border-rose-500 bg-rose-50 dark:bg-rose-900/30 px-2.5 py-2">
+                            <p className="text-[12px] font-bold text-rose-800 dark:text-rose-200">
+                              {p.industryBlock.unreadable
+                                ? "⚠ The industry-match check could not run — this is NOT “nobody confirmed it”"
+                                : `⛔ ${p.name} will not take this file until the industry match is confirmed`}
+                            </p>
+                            {/* The server's own sentence — it knows which of the
+                                two things happened; this panel quotes it. */}
+                            <p className="mt-0.5 text-[11px] text-rose-700 dark:text-rose-300">{p.industryBlock.reason}</p>
+                            {!p.industryBlock.unreadable && (
+                              <p className="mt-1 text-[11px] font-semibold text-rose-800 dark:text-rose-200">
+                                There is no override for this one.
+                              </p>
+                            )}
+                            {/* Remedy attached to the refusal — fix it here. */}
+                            {industryGateFor === p.lenderId ? (
+                              <div className="mt-2">
+                                <IndustryMatchGate
+                                  dealId={deal.id}
+                                  lenderId={p.lenderId}
+                                  funderName={p.name}
+                                  existing={industryRows[p.lenderId] ?? null}
+                                  onSaved={(row) => {
+                                    setIndustryRows((prev) => ({ ...prev, [p.lenderId]: row }));
+                                    setIndustryGateFor(null);
+                                    // The previews on screen were rendered by the
+                                    // server BEFORE this row existed, so they still
+                                    // say blocked. Re-render them rather than let a
+                                    // stale refusal stand next to a fixed deal.
+                                    void openPreview();
+                                  }}
+                                  onClose={() => setIndustryGateFor(null)}
+                                />
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setIndustryGateFor(p.lenderId)}
+                                className="mt-1.5 rounded bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+                              >
+                                {p.industryBlock.unreadable ? "Record the industry match anyway" : `Confirm the industry match for ${p.name}`}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {docBlockLabels(p).length > 0 && (
+                          <div className="text-[12px] text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5">
+                            <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                            <span>
+                              Blocked — missing: {docBlockLabels(p).join(", ")}. Nothing will be sent to this funder.
+                              {ghlDocsError && (
+                                <>
+                                  {" "}
+                                  <span className="font-bold underline decoration-2">
+                                    We could not read VibeReach ({ghlDocsError}), so this "missing" was worked out without seeing
+                                    anything the merchant uploaded there — check before you chase him for it.
+                                  </span>
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     ) : p.isPortalOnly ? (
                       /* Portal-only funder — no email is sent. */
