@@ -14,7 +14,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Alert, type CheckItem, Checklist, IndustryFinder, Quote, Rows, Sec } from "./playbook";
 import { BittySpreadCalc } from "./BittySpreadCalc";
-import { BITTY_PREFERRED as PREFERRED, BITTY_PROHIBITED as PROHIBITED, BITTY_STANDARD as STANDARD } from "./bittyIndustries";
+import {
+  BITTY_INDUSTRY_NOTICE as NOTICE,
+  BITTY_PREFERRED as PREFERRED,
+  BITTY_PROHIBITED as PROHIBITED,
+  BITTY_STANDARD as STANDARD,
+} from "./bittyIndustries";
 
 const TIERS = [
   { n: "Premier", cls: "t1", factor: "1.39", term: "69 wks", comm: "12%", fico: "675+", rev: "$15K/mo" },
@@ -64,6 +69,23 @@ const CHECK: CheckItem[] = [
       <>
         <b>Prohibited means do not submit at all</b>, at any price. All {PROHIBITED.length}:{" "}
         {PROHIBITED.join(" · ")}. Everything else is preferred or standard — section 5 has the lookup.
+      </>
+    ),
+  },
+  {
+    id: "b-naics",
+    group: "Qualify on the call — before you collect anything",
+    label: "NAICS code pinned, and the dropdown value you will select written down",
+    hard: true,
+    why: (
+      <>
+        <b>A hard stop — the system refuses the submission until this is recorded, and there is no override.</b>{" "}
+        Bitty’s decision is automatic, so the industry you pick <i>is</i> the underwriting. Their own form:{" "}
+        “{NOTICE.quotes[1]}” Work out what the merchant actually <i>does</i>, not what the business is
+        called, look the code up at{" "}
+        <a href={NOTICE.lookup} target="_blank" rel="noreferrer">naics.com/code-search</a> — the lookup Bitty
+        names — then read the dropdown and record the exact string you will click. Section 5 has their two
+        worked examples and the reason our list is not their dropdown.
       </>
     ),
   },
@@ -509,6 +531,38 @@ export function BittyPlaybook() {
           book={{ preferred: PREFERRED, standard: STANDARD, prohibited: PROHIBITED }}
           note="Start typing to check an industry against Bitty's published list before you promise the merchant anything."
         />
+        <Alert tone="stop" title="Getting this wrong costs the commission — so the submission is blocked until it is recorded">
+          <p>
+            Bitty prints this above the Industry dropdown on their own application. Their words, not ours —{" "}
+            {NOTICE.source}:
+          </p>
+          <Quote text={NOTICE.quotes[0]} cite={NOTICE.source} />
+          <Quote text={NOTICE.quotes[1]} cite={NOTICE.source} />
+          <p>Their two worked examples, verbatim:</p>
+          <ul>
+            {NOTICE.examples.map((e) => (
+              <li key={e}>“{e}”</li>
+            ))}
+          </ul>
+          <p>
+            <b>The dropdown is not the list above.</b> Both strings in that second example — “Construction -
+            Commercial” and “Construction - Residential Remodeler” — appear nowhere in the{" "}
+            {PREFERRED.length + STANDARD.length + PROHIBITED.length} industries we transcribed from their October
+            2026 guide; the guide’s nearest neighbours are “Construction - Gen. Remodeler” and
+            “Construction - Site Prep / Excav.”. So the finder above tells you the <i>tier</i> and the
+            kill-list. It does not tell you the exact string to click. At submit time the portal’s own dropdown
+            is the authority — read it, and record what you picked.
+          </p>
+          <p>
+            <b>And their 16% is not a number we hold.</b> Our record of the October 2026 guide caps us at 12%, and
+            8% on the Access tier. We have never submitted a Bitty file, so neither figure has been tested against a
+            funded deal. Quote neither to a merchant or a sub-ISO until somebody at Bitty confirms it in writing.
+          </p>
+          <p>
+            The deal cannot be submitted to Bitty until the NAICS code, what the merchant actually does, and the
+            dropdown value are on the record against this deal. Set it from the funder picker on the deal.
+          </p>
+        </Alert>
         <div className="fp-foot">
           <b>Their guide miscounts its own lists — these are complete.</b> The badge over the preferred column says
           “59 industries” but only <b>{PREFERRED.length}</b> are printed on the page; the standard badge says “53”

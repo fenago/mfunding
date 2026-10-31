@@ -51,3 +51,46 @@ export const BITTY_PROHIBITED = [
   "Guns", "Health Supplements", "Money Service Businesses", "Not-for-profit", "Pawn Shops",
   "Psychic Services", "Religious / Grantmaking / Civic", "Sexual Content",
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The notice Bitty prints above the Industry dropdown on their own application
+//
+// Captured from Bitty's broker portal, New Applications page — screenshot
+// supplied by the owner on 2026-10-30. Quoted verbatim and attributed, never
+// paraphrased: what they threaten here is specific, and it is theirs to say.
+//
+// TWO THINGS IN IT DO NOT MATCH WHAT WE ALREADY HOLD. Neither is resolved.
+//
+//   1. THE DROPDOWN IS NOT THE GUIDE'S LIST. Their worked examples name
+//      "Construction - Commercial" and "Construction - Residential Remodeler".
+//      Neither string appears in BITTY_PREFERRED or BITTY_STANDARD above, which
+//      we transcribed from the October 2026 underwriting guide — the guide's
+//      nearest neighbours are "Construction - Gen. Remodeler" and
+//      "Construction - Site Prep / Excav.". So the application's dropdown and
+//      the guide's industry book are NOT the same list. At submit time the
+//      DROPDOWN is the authority. Our three lists tell you the tier and the
+//      kill-list; they do not tell you the exact string to click.
+//
+//   2. THE COMMISSION NUMBER IS NOT OURS. This page says 16%. Our record of the
+//      October 2026 guide caps us at 12%, and 8% on the Access tier. We have
+//      never submitted a Bitty file, so neither figure has been tested against
+//      a funded deal. Do not quote either one to a merchant or a sub-ISO until
+//      somebody at Bitty confirms it in writing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const BITTY_INDUSTRY_NOTICE = {
+  /** Where these words came from. Name the source with the claim, always. */
+  source: "Bitty broker portal → New Applications → Industry — screenshot, 2026-10-30",
+  /** Bitty's words, exactly as their form prints them. */
+  quotes: [
+    "Selecting accurate Industry classification affects your approval. If you enter an inaccurate Industry classification, it can hurt your customer experience or incorrectly decline a deal that should be approved.",
+    "Industry can be the difference between 16% commission and an auto-decline.",
+  ],
+  /** The lookup Bitty themselves name on the form. */
+  lookup: "https://www.naics.com/code-search/",
+  /** Bitty's own two worked examples, verbatim. */
+  examples: [
+    "You rush and select “Construction - Commercial” instead of “Plumbing/HVAC”: Deal gets auto-declined instead of approved.",
+    "You have deal with “Excavation” in the name and select “Construction - Residential Remodeler” instead of “Site prep contractor”: Deal gets 1.65 paying 10% instead of 1.55 paying 16%.",
+  ],
+} as const;

@@ -23,7 +23,7 @@
  * nobody here has opened it — it is shown, and labelled, rather than hidden,
  * because a closer who cannot find a login assumes none exists.
  */
-import { BITTY_PROHIBITED } from "@/components/admin/funder/bittyIndustries";
+import { BITTY_INDUSTRY_NOTICE, BITTY_PROHIBITED } from "@/components/admin/funder/bittyIndustries";
 
 export type PortalRef = {
   url: string;
@@ -292,6 +292,21 @@ const MICRO: ProductLine = {
     { id: "m-own", group: "Collect", label: "Owner name, DOB, SSN, home address, ownership %", hard: true },
     { id: "m-cell", group: "Collect", label: "Owner's mobile is correct and they will answer a text after signing", why: "Bitty auto-texts an ID verification link after signing. Do not chase a photo ID; confirm the cell." },
     {
+      id: "m-naics",
+      group: "Before you submit",
+      funder: "primary",
+      label: "NAICS code pinned, and the Bitty industry value chosen to match it",
+      hard: true,
+      why:
+        "A HARD STOP — the submission is refused until it is recorded, and there is no override. Bitty's own application says it plainly: \u201C" +
+        BITTY_INDUSTRY_NOTICE.quotes[1] +
+        "\u201D (" + BITTY_INDUSTRY_NOTICE.source + "). Their decision is automatic, so the industry you pick IS the underwriting. Their worked example: \u201C" +
+        BITTY_INDUSTRY_NOTICE.examples[1] +
+        "\u201D Work out what the merchant actually DOES, not what the business is called, look the code up at " +
+        BITTY_INDUSTRY_NOTICE.lookup +
+        " \u2014 the lookup Bitty names \u2014 and then pick the dropdown value that matches it. Note that their dropdown is NOT the list in their guide: both strings in that example are missing from the fourteen/standard/preferred lists we transcribed, so read the dropdown itself and record exactly what you will click. The 16% in their notice is also not a number we hold anywhere else; our record of the October 2026 guide caps us at 12%. Neither has been tested on a funded deal \u2014 quote neither.",
+    },
+    {
       id: "m-price",
       group: "Before you submit",
       label: "You have priced the file in the Bitty calculator above",
@@ -305,6 +320,8 @@ const MICRO: ProductLine = {
     "Ask both funders their maximum position count.",
     "Ask Bitty which states they will not fund — ours is the only Micro route into Texas and North Dakota.",
     "Confirm the broker-portal login works on first use and stamp the date on the credential.",
+    "Ask Bitty for the industry dropdown as the application actually renders it \u2014 their guide's list and their form's list are not the same, and the form is what underwrites.",
+    "Ask Bitty which commission figure governs: their application page says 16%, our record of the October 2026 guide caps us at 12%.",
   ],
 };
 
