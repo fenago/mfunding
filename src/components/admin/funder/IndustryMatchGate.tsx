@@ -12,6 +12,14 @@
 // file we already paid to originate. The owner's call, 2026-10-30: "this has to
 // be a hard stop, a hard check in the process."
 //
+// ⚠ THE PERCENTAGES ABOVE ARE BACKGROUND FOR YOU, NOT COPY FOR THE SCREEN.
+// Bitty's page says 16%; our record of their October 2026 guide caps us at 12%
+// (8% on Access); no Bitty file has ever been submitted, so neither has been
+// tested against a funded deal. This component renders the notice's FIRST
+// sentence — approval impact, no number — on purpose. Do not promote a figure
+// into rendered copy: a closer repeats what is on their screen to merchants
+// and sub-ISOs. See funderCategoryLists.ts `stakesQuote`.
+//
 // There is deliberately NO override. The per-funder stip override exists
 // because a missing document can honestly follow under separate cover; an
 // industry value is typed into THIS application and is either right or it is
@@ -22,6 +30,7 @@
 // list we hold (if any) is resolved through ./funderCategoryLists.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
@@ -266,7 +275,13 @@ export default function IndustryMatchGate({
                 ))}
               </div>
             )}
-            <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{list.dropdownCaveat}</p>
+            <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+              {list.dropdownCaveat}{" "}
+              <Link to={list.backgroundHref} className="text-ocean-blue hover:underline">
+                {list.backgroundLabel}
+              </Link>{" "}
+              carries the full notice and their worked examples.
+            </p>
 
             {/* Name a list, print the list — the kill-list travels with the
                 control, never "see the playbook tab for which ones". */}

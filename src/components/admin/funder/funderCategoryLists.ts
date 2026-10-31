@@ -42,8 +42,11 @@ export interface FunderCategoryList {
   /** The funder's own words on what a wrong pick costs — verbatim. */
   stakesQuote: string;
   stakesSource: string;
-  /** Why the suggestions below are a guide and not their dropdown. */
+  /** Why the suggestions below are a guide and not their dropdown. ONE line. */
   dropdownCaveat: string;
+  /** Where the full background lives, so the gate doesn't re-teach it. */
+  backgroundHref: string;
+  backgroundLabel: string;
   preferred: readonly string[];
   standard: readonly string[];
   prohibited: readonly string[];
@@ -65,14 +68,22 @@ const LISTS: readonly FunderCategoryList[] = [
     sourceLabel: "our transcription of the Bitty Underwriting Guide, October 2026",
     lookupUrl: BITTY_INDUSTRY_NOTICE.lookup,
     lookupAttribution: "the lookup Bitty names on their own application",
-    stakesQuote: BITTY_INDUSTRY_NOTICE.quotes[1],
+    // quotes[0], NOT quotes[1] — deliberately. The second sentence names a
+    // commission percentage, and that number is contested: Bitty's page says
+    // 16%, our record of their October 2026 guide caps us at 12% (8% on
+    // Access), and no Bitty file has ever been submitted, so neither figure has
+    // been tested against a funded deal. A percentage on this screen is a
+    // percentage a closer may repeat to a merchant or a sub-ISO. quotes[0] says
+    // what is at stake — approval, and an incorrect decline — without a number.
+    // Team-lead ruling, 2026-10-30; the conflict is an open question for the
+    // owner. Both sentences are on the Bitty playbook tab in full.
+    stakesQuote: BITTY_INDUSTRY_NOTICE.quotes[0],
     stakesSource: BITTY_INDUSTRY_NOTICE.source,
     dropdownCaveat:
-      "These are suggestions from our transcription of Bitty's October 2026 underwriting guide — " +
-      "they are NOT Bitty's application dropdown, and the dropdown is what underwrites. Bitty's own " +
-      "worked example names “Construction - Commercial” and “Construction - Residential Remodeler”, " +
-      "and neither string appears in the guide's list. Read their dropdown and record exactly what " +
-      "you will click, even when it is not offered below.",
+      "Suggestions come from their underwriting guide, which is NOT their application's dropdown — " +
+      "the dropdown underwrites, so record exactly what you will click even when it isn't offered here.",
+    backgroundHref: "/admin/cheat-sheet",
+    backgroundLabel: "Funder cheat sheet → Bitty tab, section 5",
     preferred: BITTY_PREFERRED,
     standard: BITTY_STANDARD,
     prohibited: BITTY_PROHIBITED,

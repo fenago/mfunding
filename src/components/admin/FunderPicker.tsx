@@ -463,7 +463,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // --- The industry-match hard stop (mirrors the server rule client-side) ----
   // Some funders price the deal off the industry WE pick in their application.
   // Bitty's own page: "Industry can be the difference between 16% commission
-  // and an auto-decline." So a funder whose recipe sets
+  // and an auto-decline." That 16% is CONTESTED — our record of their October
+  // 2026 guide caps us at 12% — and untested, so it stays in this comment and
+  // never reaches rendered copy. So a funder whose recipe sets
   // `requires_industry_match` is UNSENDABLE until a human has written down the
   // NAICS code and the exact dropdown label — and unlike a missing stip there
   // is NO override, because a document can honestly follow under separate
