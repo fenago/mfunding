@@ -23,9 +23,10 @@ export const SETTINGS_KEY = "cold_email";
 /** Opportunity Source label setters filter the MCA pipeline by. */
 export const OPP_SOURCE = "Cold Email – Micro";
 
-/** Instantly's {{industry}} renders mid-sentence ("a lot of {{industry}} owners"),
- *  so a blank is visible to the merchant. Always send something. */
-export const INDUSTRY_FALLBACK = "small business";
+/** Instantly's {{industry}} renders mid-sentence ("businesses in {{industry}}"),
+ *  so a blank is visible to the merchant. Always send something. Compliance ruling
+ *  2026-11-16: the fallback is "your industry" (was "small business"). */
+export const INDUSTRY_FALLBACK = "your industry";
 
 export const TAG_REPLIED = "cold-email-replied";
 export const TAG_EMAIL_INVALID = "email-invalid";
@@ -323,6 +324,72 @@ export function nameParts(first: string, last: string, email: string): { first: 
 /** A setter task's due date: soon, on the business clock is the setter's job. */
 export function dueIn(minutes: number, now = Date.now()): string {
   return new Date(now + minutes * 60_000).toISOString();
+}
+
+// ── Enrollment SUPPRESSION (any campaign, re-checked at enroll time) ─────────
+// Compliance ruling 2026-11-16, written for the 90-day re-touch but enforced for
+// EVERY enrollment: never (re-)enroll anyone who replied in any way, unsubscribed,
+// bounced, or whose COMPANY triggered Instantly's stop-for-company. Checked when
+// the enroll call arrives — a list built yesterday is not evidence about today.
+
+/** Events that are NOT engagement and never suppress. Everything else that
+ *  reaches the ledger — replies, auto-replies, every lead_* status label, custom
+ *  labels, unsubscribes, bounces, and anything Instantly invents later — DOES.
+ *  An allow-list of the harmless, so an unknown event fails toward suppression. */
+const NON_SUPPRESSING_EVENTS = new Set([
+  "email_sent", "email_opened", "link_clicked", "email_link_clicked",
+  "campaign_completed", "account_error",
+]);
+
+export function suppressesAddress(eventType: string | null | undefined): boolean {
+  if (!eventType) return false; // unreadable receipt: no event type → no address either
+  return !NON_SUPPRESSING_EVENTS.has(eventType);
+}
+
+/** Stop-for-company: Instantly stops a company's other leads when ONE of them
+ *  replies. Mirror that: a reply-class event or an unsubscribe by anyone at the
+ *  company suppresses the whole company. A bounce is about one mailbox only. */
+export function suppressesCompany(eventType: string | null | undefined): boolean {
+  if (!suppressesAddress(eventType)) return false;
+  return eventType !== "email_bounced";
+}
+
+/** Consumer mailbox providers: a shared domain here says nothing about a shared
+ *  COMPANY, so domain-level stop-for-company must skip them. */
+const FREE_MAIL = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "rocketmail.com", "aol.com",
+  "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com",
+  "comcast.net", "att.net", "sbcglobal.net", "bellsouth.net", "verizon.net", "cox.net",
+  "charter.net", "earthlink.net", "protonmail.com", "proton.me", "gmx.com", "mail.com",
+  "zoho.com", "yandex.com", "aim.com",
+]);
+
+export function emailDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at < 0 ? "" : email.slice(at + 1).trim().toLowerCase();
+}
+
+/** Domain usable as a COMPANY identity (non-empty and not a consumer provider). */
+export function companyDomain(email: string): string | null {
+  const d = emailDomain(email);
+  return d && !FREE_MAIL.has(d) ? d : null;
+}
+
+/** Company name → comparable key: lower-case, punctuation and legal suffixes
+ *  stripped ("Joe's Pizza, LLC" ≡ "joes pizza"). Null when nothing meaningful is left. */
+export function normCompany(name: string | null | undefined): string | null {
+  let s = String(name ?? "").toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  s = s.replace(/\b(llc|l l c|inc|incorporated|corp|corporation|co|company|ltd|limited|pllc|pc|lp|llp|dba)\b/g, " ")
+    .replace(/\s+/g, " ").trim();
+  return s.length >= 3 ? s : null;
+}
+
+/** GHL contact is email-DND (global DND or the Email channel). */
+export function ghlEmailDnd(contact: Record<string, unknown> | null | undefined): boolean {
+  if (!contact) return false;
+  if (contact.dnd === true) return true;
+  const ds = (contact.dndSettings ?? {}) as Record<string, { status?: string } | undefined>;
+  return ds.Email?.status === "active";
 }
 
 /** Constant-time compare for the shared secret. */

@@ -7,8 +7,15 @@
 //      recordVerification / bounce detection for anyone already a merchant.
 //   2. lead_records verification columns (phase-1 list agent) — the purchased-list
 //      row the GHL contact came from. See LEAD_RECORDS_* below.
-//   3. instantly_event_log             — a prior email_bounced / unsubscribe event for
-//      this address is a SUPPRESSION regardless of what any verdict column says.
+//   3. instantly_event_log             — SUPPRESSION, regardless of any verdict column
+//      (compliance ruling 2026-11-16, any campaign, re-checked at enroll time):
+//        * this ADDRESS replied in any way / was labelled / unsubscribed / bounced
+//          (suppressesAddress: everything except sent/opened/clicked/completed);
+//        * this COMPANY triggered stop-for-company — a reply-class event or an
+//          unsubscribe by anyone at the same business domain (consumer mail
+//          providers excluded) or the same normalised company name.
+//   GHL email DND is the fourth suppression; it costs a GHL call so the enroll
+//   function checks it itself (see instantly-enroll).
 //
 // A READ THAT FAILED IS NOT A READ THAT FOUND NOTHING (readers-must-distinguish-
 // unreadable): every lookup returns `unreadable` reasons, and the enroll side treats
@@ -16,7 +23,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { EmailHealth, VerifyResult } from "./instantly.ts";
-import { SETTINGS_KEY, worstHealth } from "./coldEmail.ts";
+import { SETTINGS_KEY, companyDomain, normCompany, suppressesAddress, suppressesCompany, worstHealth } from "./coldEmail.ts";
 
 export interface ColdEmailSettings {
   micro_bitty_campaign_id: string | null;
@@ -70,7 +77,7 @@ export interface VerdictRead {
   notes: string[];
 }
 
-export async function readVerdict(db: SupabaseClient, email: string, ghlContactId: string): Promise<VerdictRead> {
+export async function readVerdict(db: SupabaseClient, email: string, ghlContactId: string, companyName = ""): Promise<VerdictRead> {
   const out: VerdictRead = { health: null, sources: [], suppressed: false, suppressionReason: null, customerIds: [], unreadable: [], notes: [] };
   const verdicts: Array<string | null> = [];
 
@@ -104,18 +111,47 @@ export async function readVerdict(db: SupabaseClient, email: string, ghlContactI
     }
   }
 
-  // 3. prior suppression events on the return side
+  // 3. engagement / stop-for-company history on the return side
   {
-    const { data, error } = await db.from("instantly_event_log")
-      .select("action, event_type, received_at")
-      .eq("lead_email", email)
-      .in("action", ["bounce", "unsubscribe"])
-      .limit(1);
-    if (error) out.unreadable.push(`instantly_event_log: ${error.message}`);
-    else if (data && data.length) {
-      out.suppressed = true;
-      out.suppressionReason = `prior ${data[0].event_type} event (${data[0].received_at})`;
-      if (data[0].action === "bounce") verdicts.push("bounced");
+    type Ev = { event_type: string | null; received_at: string; lead_email: string | null };
+    const take = (rows: Ev[] | null, rule: (t: string | null) => boolean) => (rows ?? []).filter((r) => rule(r.event_type));
+    const cols = "event_type, received_at, lead_email";
+
+    const own = await db.from("instantly_event_log").select(cols).eq("lead_email", email).order("received_at", { ascending: false }).limit(50);
+    if (own.error) out.unreadable.push(`instantly_event_log(address): ${own.error.message}`);
+    else {
+      const hits = take(own.data as Ev[], suppressesAddress);
+      if (hits.some((h) => h.event_type === "email_bounced")) verdicts.push("bounced");
+      if (hits.length) {
+        out.suppressed = true;
+        out.suppressionReason = `address had ${hits[0].event_type} (${hits[0].received_at})`;
+      }
+    }
+
+    const domain = companyDomain(email);
+    if (!out.suppressed && domain) {
+      const r = await db.from("instantly_event_log").select(cols).eq("lead_domain", domain).neq("lead_email", email).limit(50);
+      if (r.error) out.unreadable.push(`instantly_event_log(domain): ${r.error.message}`);
+      else {
+        const hits = take(r.data as Ev[], suppressesCompany);
+        if (hits.length) {
+          out.suppressed = true;
+          out.suppressionReason = `stop-for-company: ${hits[0].lead_email} at ${domain} had ${hits[0].event_type} (${hits[0].received_at})`;
+        }
+      }
+    }
+
+    const company = normCompany(companyName);
+    if (!out.suppressed && company) {
+      const r = await db.from("instantly_event_log").select(cols).eq("company_norm", company).neq("lead_email", email).limit(50);
+      if (r.error) out.unreadable.push(`instantly_event_log(company): ${r.error.message}`);
+      else {
+        const hits = take(r.data as Ev[], suppressesCompany);
+        if (hits.length) {
+          out.suppressed = true;
+          out.suppressionReason = `stop-for-company: "${companyName}" — ${hits[0].lead_email} had ${hits[0].event_type} (${hits[0].received_at})`;
+        }
+      }
     }
   }
 

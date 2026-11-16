@@ -13,7 +13,7 @@
 //     first_name   {{contact.first_name}}
 //     last_name    {{contact.last_name}}
 //     company_name {{contact.company_name}}
-//     industry     {{contact.<industry field>}}   (blank → "small business")
+//     industry     {{contact.<industry field>}}   (blank → "your industry")
 //   The standard top-level fields (contact_id, email, first_name, ...) are read as
 //   a fallback, so a workflow that sends no Custom Data still works.
 //
@@ -22,7 +22,16 @@
 //   2. campaign id configured?         → refused_no_campaign (platform_settings.cold_email
 //                                         .micro_bitty_campaign_id is NULL until launch)
 //   3. already enrolled (ledger)?      → already_enrolled, no Instantly call
-//   4. suppressed (DND / prior bounce / prior unsubscribe)?  → refused_suppressed
+//   4. SUPPRESSED → refused_suppressed. Compliance ruling 2026-11-16, enforced for
+//      EVERY campaign (pilot and 90-day re-touch alike) and re-checked HERE, at
+//      enroll time, not only when a list was built:
+//        * the address replied in any way, was labelled, unsubscribed or bounced
+//          (instantly_event_log — our own event-hook ledger);
+//        * its COMPANY triggered stop-for-company (same business domain or same
+//          normalised company name had a reply-class event or an unsubscribe);
+//        * the GHL contact is email-DND (one GET per enroll);
+//        * a merchant with this email is do_not_contact.
+//      Any of those reads FAILING refuses too — "couldn't check" is not "clear".
 //   5. verdict on file: verified → enroll; invalid → tag GHL email-invalid;
 //      bounced → refuse; catch_all/risky → refuse; none → verify on the fly via
 //      _shared/instantly.ts verifyEmail (the ONE definition), in the BACKGROUND
@@ -38,10 +47,10 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, serviceClient, addContactTags, type GhlConfig, BUILD_COMMIT } from "../_shared/ghl.ts";
+import { corsHeaders, serviceClient, addContactTags, getContact, type GhlConfig, BUILD_COMMIT } from "../_shared/ghl.ts";
 import { getInstantlyKey, verifyEmail } from "../_shared/instantly.ts";
 import {
-  TAG_EMAIL_INVALID, buildInstantlyLead, decideEnrollment, isPlausibleEmail,
+  TAG_EMAIL_INVALID, buildInstantlyLead, decideEnrollment, ghlEmailDnd, isPlausibleEmail,
   parseEnrollPayload, timingSafeEqualStr, type EnrollInput,
 } from "../_shared/coldEmail.ts";
 import { loadSettings, readVerdict, storeVerdict } from "../_shared/coldEmailStore.ts";
@@ -207,8 +216,18 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── verdict ──
-  const v = await readVerdict(db, inp.email, inp.contactId);
+  // ── verdict + suppression ──
+  const v = await readVerdict(db, inp.email, inp.contactId, inp.companyName);
+  if (!v.suppressed) {
+    // GHL email DND — the one suppression that lives only in GHL.
+    if (!cfg) v.unreadable.push("GHL not configured — email DND uncheckable");
+    else if (!inp.contactId) v.unreadable.push("no contact_id in payload — GHL email DND uncheckable");
+    else {
+      const g = await getContact(cfg, inp.contactId);
+      if (!g.ok) v.unreadable.push(`GHL contact read failed: ${g.error ?? `HTTP ${g.status}`}`);
+      else if (ghlEmailDnd(g.data?.contact)) { v.suppressed = true; v.suppressionReason = "GHL contact is email-DND"; }
+    }
+  }
   if (v.unreadable.length) {
     // An unreadable store is NOT "no verdict" — refuse rather than enroll blind.
     await insertLog(db, { ...withCampaign, decision: "error", error: `verdict unreadable: ${v.unreadable.join("; ")}` });

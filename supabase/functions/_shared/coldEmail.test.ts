@@ -134,3 +134,45 @@ Deno.test("click: both the documented and the subscribable spelling route to a c
   assertEquals(classifyEvent(parseInstantlyEvent({ event_type: "link_clicked", lead_email: "a@b.co" })).action, "click");
   assertEquals(classifyEvent(parseInstantlyEvent({ event_type: "email_link_clicked", lead_email: "a@b.co" })).action, "click");
 });
+
+import { companyDomain, ghlEmailDnd, normCompany, suppressesAddress, suppressesCompany } from "./coldEmail.ts";
+
+Deno.test("compliance: the {{industry}} fallback is 'your industry'", () => {
+  assertEquals(INDUSTRY_FALLBACK, "your industry");
+  assertEquals(parseEnrollPayload({}).industry, "your industry");
+});
+
+Deno.test("suppression: ANY reply/label/unsub/bounce suppresses the address; sends/opens/clicks do not", () => {
+  for (const t of ["reply_received", "auto_reply_received", "lead_interested", "lead_not_interested", "lead_neutral",
+    "lead_meeting_booked", "lead_out_of_office", "lead_wrong_person", "lead_unsubscribed", "email_bounced", "Some Custom Label"]) {
+    assert(suppressesAddress(t), t);
+  }
+  for (const t of ["email_sent", "email_opened", "link_clicked", "email_link_clicked", "campaign_completed", "account_error"]) {
+    assert(!suppressesAddress(t), t);
+  }
+  assert(!suppressesAddress(null));
+});
+
+Deno.test("stop-for-company: replies and unsubscribes spread to the company, a bounce does not", () => {
+  assert(suppressesCompany("reply_received"));
+  assert(suppressesCompany("lead_unsubscribed"));
+  assert(!suppressesCompany("email_bounced"));
+  assert(!suppressesCompany("email_link_clicked"));
+});
+
+Deno.test("company identity: business domains count, consumer mail does not; names normalise", () => {
+  assertEquals(companyDomain("Owner@JoesPizza.com"), "joespizza.com");
+  assertEquals(companyDomain("joe@gmail.com"), null);
+  assertEquals(companyDomain("joe@yahoo.com"), null);
+  assertEquals(normCompany("Joe's Pizza, LLC"), normCompany("joes pizza"));
+  assertEquals(normCompany("A & B Trucking Inc."), "a and b trucking");
+  assertEquals(normCompany("LLC"), null);
+  assertEquals(normCompany(""), null);
+});
+
+Deno.test("GHL email DND: global dnd or the Email channel active", () => {
+  assert(ghlEmailDnd({ dnd: true }));
+  assert(ghlEmailDnd({ dndSettings: { Email: { status: "active" } } }));
+  assert(!ghlEmailDnd({ dndSettings: { Email: { status: "inactive" }, SMS: { status: "active" } } }));
+  assert(!ghlEmailDnd(null));
+});

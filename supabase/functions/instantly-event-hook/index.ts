@@ -44,7 +44,7 @@ import {
   searchContacts, createOpportunity, type GhlConfig, BUILD_COMMIT,
 } from "../_shared/ghl.ts";
 import {
-  OPP_SOURCE, TAG_REPLIED, TAG_UNSUBSCRIBED, classifyEvent, dueIn, eventKey, nameParts,
+  OPP_SOURCE, TAG_REPLIED, TAG_UNSUBSCRIBED, classifyEvent, dueIn, eventKey, nameParts, normCompany,
   ownReplyText, parseInstantlyEvent, timingSafeEqualStr, type InstantlyEvent,
 } from "../_shared/coldEmail.ts";
 import { loadSettings, markBounced, type ColdEmailSettings } from "../_shared/coldEmailStore.ts";
@@ -353,6 +353,7 @@ Deno.serve(async (req) => {
   const { data: rcpt, error: rErr } = await db.from("instantly_event_log").insert({
     event_key: key, event_type: ev.eventType || null, lead_email: ev.leadEmail || null,
     instantly_campaign_id: ev.campaignId || null,
+    company_norm: normCompany(ev.companyName),   // stop-for-company key read by instantly-enroll
     payload: body ?? { _raw: raw.slice(0, 20000) },
   }).select("id").single();
   if (rErr) {
