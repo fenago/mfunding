@@ -21,6 +21,13 @@
 //   1. secret (fail closed)            → 401
 //   2. campaign id configured?         → refused_no_campaign (platform_settings.cold_email
 //                                         .micro_bitty_campaign_id is NULL until launch)
+//   2b. PILOT ONLY: the contact must be a member of the micro-bitty segment
+//      (campaign_segment_members, phase-1 contract) → else refused_not_in_segment.
+//      Matched by lower(email), then ghl_contact_id. The member row decides the
+//      ADDRESS enrolled and the {{industry}} value (industry_merge; NULL → empty, so
+//      the template's {{industry | your industry}} fallback renders). On success the
+//      member gets enrolled_at + instantly_campaign_id. enrolled_at already set →
+//      already_enrolled.
 //   3. already enrolled (ledger)?      → already_enrolled, no Instantly call
 //   4. SUPPRESSED → refused_suppressed. Compliance ruling 2026-11-16, enforced for
 //      EVERY campaign (pilot and 90-day re-touch alike) and re-checked HERE, at
@@ -53,7 +60,10 @@ import {
   TAG_EMAIL_INVALID, buildInstantlyLead, decideEnrollment, ghlEmailDnd, isPlausibleEmail,
   parseEnrollPayload, timingSafeEqualStr, type EnrollInput,
 } from "../_shared/coldEmail.ts";
-import { loadSettings, readVerdict, storeVerdict } from "../_shared/coldEmailStore.ts";
+import {
+  PILOT_SEGMENT_SLUG, findSegmentMember, loadSettings, readVerdict, stampEnrolled, storeVerdict,
+  type SegmentMember,
+} from "../_shared/coldEmailStore.ts";
 
 const INSTANTLY_API_BASE = "https://api.instantly.ai/api/v2";
 
@@ -107,6 +117,7 @@ async function addLead(apiKey: string, body: Record<string, unknown>) {
 async function act(
   db: SupabaseClient, cfg: GhlConfig | null, logId: string, inp: EnrollInput, campaignId: string,
   health: string | null, decision: ReturnType<typeof decideEnrollment>, source: string,
+  member: SegmentMember | null,
 ): Promise<Record<string, unknown>> {
   if (decision === "refuse_invalid") {
     let tagged = false; let tagError: string | null = null;
@@ -145,9 +156,15 @@ async function act(
   }
   const leadId = typeof r.data.id === "string" ? r.data.id : null;
   const decisionFinal = leadId ? "enrolled" : "already_enrolled";
+  // Stamp the segment member (phase-1 contract). Instantly HAS the lead now, so a
+  // failure here is recorded loudly but does not unwind the enrollment.
+  let stampError: string | null = null;
+  if (member) stampError = await stampEnrolled(db, member.id, campaignId);
   const u = await updateLog(db, logId, {
     decision: decisionFinal, verification_health: health, verification_source: source,
-    instantly_lead_id: leadId, detail: { instantly_response_keys: Object.keys(r.data).slice(0, 20) },
+    instantly_lead_id: leadId,
+    detail: { instantly_response_keys: Object.keys(r.data).slice(0, 20), segment_member_id: member?.id ?? null },
+    error: stampError ? `enrolled, but segment stamp failed: ${stampError}` : null,
   });
   if (u.code === "23505") {
     // A concurrent call already holds the 'enrolled' row for this (email, campaign).
@@ -197,6 +214,32 @@ Deno.serve(async (req) => {
   }
   const withCampaign = { ...base, instantly_campaign_id: campaignId };
 
+  // ── pilot: segment membership (the member row decides address + industry) ──
+  let member: SegmentMember | null = null;
+  if (!inp.test) {
+    const m = await findSegmentMember(db, PILOT_SEGMENT_SLUG, inp.email, inp.contactId);
+    if (m.error) {
+      await insertLog(db, { ...withCampaign, decision: "error", error: m.error });
+      return json({ ok: false, decision: "error", error: m.error });
+    }
+    if (!m.member) {
+      await insertLog(db, { ...withCampaign, decision: "refused_not_in_segment", error: `not a ${PILOT_SEGMENT_SLUG} segment member` });
+      return json({ ok: false, decision: "refused_not_in_segment" });
+    }
+    member = m.member;
+    if (member.enrolled_at) {
+      await insertLog(db, { ...withCampaign, decision: "already_enrolled", detail: { segment_member_id: member.id, enrolled_at: member.enrolled_at } });
+      return json({ ok: true, decision: "already_enrolled" });
+    }
+    const memberEmail = member.email.toLowerCase();
+    if (inp.email && inp.email !== memberEmail) withCampaign.email = memberEmail;
+    inp.email = memberEmail;
+    inp.industry = member.industry_merge ?? "";
+    inp.industryWasFallback = !member.industry_merge;
+    withCampaign.industry_fallback = inp.industryWasFallback;
+    if (!inp.contactId && member.ghl_contact_id) inp.contactId = member.ghl_contact_id;
+  }
+
   if (!inp.email || !isPlausibleEmail(inp.email)) {
     await insertLog(db, { ...withCampaign, decision: "refused_no_email", detail: { raw_email: inp.email } });
     return json({ ok: false, decision: "refused_no_email" });
@@ -217,7 +260,7 @@ Deno.serve(async (req) => {
   }
 
   // ── verdict + suppression ──
-  const v = await readVerdict(db, inp.email, inp.contactId, inp.companyName);
+  const v = await readVerdict(db, inp.email, inp.contactId, inp.companyName, { leadRecordId: member?.lead_record_id ?? null });
   if (!v.suppressed) {
     // GHL email DND — the one suppression that lives only in GHL.
     if (!cfg) v.unreadable.push("GHL not configured — email DND uncheckable");
@@ -242,7 +285,7 @@ Deno.serve(async (req) => {
   if (!log.id) return json({ ok: false, decision: "error", error: `ledger insert failed: ${log.error}` });
 
   if (decision !== "verify_first") {
-    const result = await act(db, cfg, log.id, inp, campaignId, v.health, decision, source);
+    const result = await act(db, cfg, log.id, inp, campaignId, v.health, decision, source, member);
     return json({ ok: true, log_id: log.id, ...result });
   }
 
@@ -251,11 +294,17 @@ Deno.serve(async (req) => {
     try {
       const key = await getInstantlyKey(db);
       const r = await verifyEmail(key, inp.email);
-      const storeErrors = await storeVerdict(db, inp.email, r);
+      if (r.unavailable || r.rateLimited) {
+        // Not a verdict (no credits / rate limit): an ERROR, never "unverifiable".
+        await updateLog(db, log.id!, { decision: "error", verification_health: null,
+          verification_source: r.unavailable ? "instantly verify UNAVAILABLE" : "instantly verify RATE-LIMITED", error: r.error ?? null });
+        return;
+      }
+      const storeErrors = await storeVerdict(db, inp.email, r, v.leadRecordIds);
       if (storeErrors.length) console.error("[instantly-enroll] storeVerdict", storeErrors);
       const d2 = decideEnrollment(r.health, { suppressed: false, afterVerification: true });
       await act(db, cfg, log.id!, inp, campaignId, r.health, d2,
-        `instantly verify (raw=${r.raw ?? "none"}${r.rateLimited ? ", RATE-LIMITED" : ""}${r.error ? `, ${r.error}` : ""})`);
+        `instantly verify (raw=${r.raw ?? "none"}${r.error ? `, ${r.error}` : ""})`, member);
     } catch (e) {
       await updateLog(db, log.id!, { decision: "error", error: e instanceof Error ? e.message : String(e) });
     }

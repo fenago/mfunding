@@ -110,7 +110,10 @@ Deno.serve(async (req) => {
     health: result.health,
     catch_all: result.catchAll,
     instantly_status: result.raw,
-    persisted: !!customerId,
+    // A refusal (no credits / rate limit) is not a verdict and is never persisted.
+    persisted: !!customerId && !result.rateLimited && !result.unavailable,
+    ...(result.unavailable ? { unavailable: true } : {}),
+    ...(result.rateLimited ? { rate_limited: true } : {}),
     ...(result.error ? { note: result.error } : {}),
   });
 });

@@ -6,7 +6,8 @@
 //   1. customers.email_status          — EmailHealth vocabulary, set by
 //      recordVerification / bounce detection for anyone already a merchant.
 //   2. lead_records verification columns (phase-1 list agent) — the purchased-list
-//      row the GHL contact came from. See LEAD_RECORDS_* below.
+//      row the GHL contact came from (email_status / email_verify_error — phase-1
+//      contract, see below).
 //   3. instantly_event_log             — SUPPRESSION, regardless of any verdict column
 //      (compliance ruling 2026-11-16, any campaign, re-checked at enroll time):
 //        * this ADDRESS replied in any way / was labelled / unsubscribed / bounced
@@ -51,20 +52,58 @@ export async function loadSettings(db: SupabaseClient): Promise<{ settings: Cold
   };
 }
 
-// ── lead_records verification columns (phase-1 list agent) ─────────────────
-// Kept as named constants so repointing the adapter is a one-line change. If the
-// columns are not there yet the query errors with 42703; that is reported as
-// "source absent", which is NOT the same as unreadable (the table simply has no
-// verdict to offer) — and is logged so it is visible.
-export const LEAD_RECORDS_STATUS_COL = "email_verify_status";
-export const LEAD_RECORDS_CHECKED_COL = "email_verified_at";
+// ── lead_records verification storage (phase-1 contract, migration
+// 20261116a_micro_bitty_segment): email_status (EmailHealth vocabulary) +
+// email_verified_at + email_verify_error. NULL status = never verified.
+// email_verify_error NOT NULL = the lookup failed → NOT a verdict → refuse.
+// Verdicts are WRITTEN only through public.lead_record_record_verification().
 
-/** "That column does not exist (yet)". A SELECT surfaces Postgres' 42703; an
- *  UPDATE is refused earlier by PostgREST's schema cache as PGRST204 — both mean
- *  the source is absent, not unreadable. (Found live: the first bounce test logged
- *  PGRST204 as an error after correctly marking the customer.) */
+/** "That column does not exist". A SELECT surfaces Postgres' 42703; an UPDATE is
+ *  refused by PostgREST's schema cache as PGRST204. */
 export function isMissingColumn(error: { code?: string } | null): boolean {
   return !!error && (error.code === "42703" || error.code === "PGRST204");
+}
+
+/** The segment the pilot campaign enrolls from. */
+export const PILOT_SEGMENT_SLUG = "micro-bitty";
+
+export interface SegmentMember {
+  id: string;
+  lead_record_id: string;
+  email: string;
+  ghl_contact_id: string | null;
+  industry_merge: string | null;
+  enrolled_at: string | null;
+  instantly_campaign_id: string | null;
+}
+
+/** Find the segment member this GHL contact / email is. Email first (the verdict
+ *  is about an address), then the GHL contact id. */
+export async function findSegmentMember(
+  db: SupabaseClient, slug: string, email: string, contactId: string,
+): Promise<{ member: SegmentMember | null; error: string | null }> {
+  const cols = "id, lead_record_id, email, ghl_contact_id, industry_merge, enrolled_at, instantly_campaign_id";
+  if (email) {
+    const { data, error } = await db.from("campaign_segment_members").select(cols)
+      .eq("campaign_slug", slug).eq("email", email.toLowerCase()).limit(1);
+    if (error) return { member: null, error: `campaign_segment_members: ${error.message}` };
+    if (data && data.length) return { member: data[0] as SegmentMember, error: null };
+  }
+  if (contactId) {
+    const { data, error } = await db.from("campaign_segment_members").select(cols)
+      .eq("campaign_slug", slug).eq("ghl_contact_id", contactId).limit(2);
+    if (error) return { member: null, error: `campaign_segment_members: ${error.message}` };
+    if (data && data.length === 1) return { member: data[0] as SegmentMember, error: null };
+    if (data && data.length > 1) return { member: null, error: `GHL contact ${contactId} matches ${data.length} segment members — refusing to guess` };
+  }
+  return { member: null, error: null };
+}
+
+export async function stampEnrolled(db: SupabaseClient, memberId: string, campaignId: string): Promise<string | null> {
+  const { error } = await db.from("campaign_segment_members")
+    .update({ enrolled_at: new Date().toISOString(), instantly_campaign_id: campaignId })
+    .eq("id", memberId);
+  return error ? error.message : null;
 }
 
 export interface VerdictRead {
@@ -73,12 +112,16 @@ export interface VerdictRead {
   suppressed: boolean;
   suppressionReason: string | null;
   customerIds: string[];
+  leadRecordIds: string[];    // lead_records rows for this address (verified or not)
   unreadable: string[];       // stores we could not read
   notes: string[];
 }
 
-export async function readVerdict(db: SupabaseClient, email: string, ghlContactId: string, companyName = ""): Promise<VerdictRead> {
-  const out: VerdictRead = { health: null, sources: [], suppressed: false, suppressionReason: null, customerIds: [], unreadable: [], notes: [] };
+export async function readVerdict(
+  db: SupabaseClient, email: string, ghlContactId: string, companyName = "",
+  opts: { leadRecordId?: string | null } = {},
+): Promise<VerdictRead> {
+  const out: VerdictRead = { health: null, sources: [], suppressed: false, suppressionReason: null, customerIds: [], leadRecordIds: [], unreadable: [], notes: [] };
   const verdicts: Array<string | null> = [];
 
   // 1. customers
@@ -96,17 +139,37 @@ export async function readVerdict(db: SupabaseClient, email: string, ghlContactI
     }
   }
 
-  // 2. lead_records (by email, and by the GHL contact the row was pushed as)
+  // 2. lead_records — by lower(email), plus the pinned segment row when given.
   {
-    const sel = `id, ${LEAD_RECORDS_STATUS_COL}`;
-    const { data, error } = await db.from("lead_records").select(sel).ilike("email", email).limit(20);
-    if (error) {
-      if (isMissingColumn(error as { code?: string })) out.notes.push(`lead_records.${LEAD_RECORDS_STATUS_COL} not present yet — source skipped`);
-      else out.unreadable.push(`lead_records: ${error.message}`);
-    } else {
-      for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
-        const v = r[LEAD_RECORDS_STATUS_COL] as string | null;
-        if (v) { verdicts.push(normaliseLeadVerdict(v)); out.sources.push(`lead_records.${LEAD_RECORDS_STATUS_COL}=${v}`); }
+    type LR = { id: string; email: string | null; email_status: string | null; email_verify_error: string | null };
+    const cols = "id, email, email_status, email_verify_error";
+    const byEmail = await db.from("lead_records").select(cols).ilike("email", email).limit(20);
+    let rows: LR[] = (byEmail.data ?? []) as LR[];
+    let error = byEmail.error;
+    // Two queries rather than a PostgREST .or(): an address can contain characters
+    // (",", "()") that would break the or-filter grammar.
+    if (!error && opts.leadRecordId && !rows.some((r) => r.id === opts.leadRecordId)) {
+      const pinned = await db.from("lead_records").select(cols).eq("id", opts.leadRecordId).limit(1);
+      error = pinned.error;
+      rows = rows.concat((pinned.data ?? []) as LR[]);
+    }
+    if (error) out.unreadable.push(`lead_records: ${error.message}`);
+    else {
+      for (const r of rows) {
+        // A verdict is about ONE address: the pinned row must still carry it.
+        if (opts.leadRecordId && r.id === opts.leadRecordId && String(r.email ?? "").toLowerCase() !== email) {
+          out.unreadable.push(`lead_records ${r.id} email changed since the segment was built — its verdict is not about ${email}`);
+          continue;
+        }
+        if (r.email_verify_error) {
+          out.unreadable.push(`lead_records ${r.id}: last lookup failed (${r.email_verify_error}) — not a verdict`);
+          continue;
+        }
+        if (r.email_status) {
+          verdicts.push(r.email_status);
+          out.sources.push(`lead_records.email_status=${r.email_status}`);
+          out.leadRecordIds.push(r.id);
+        } else out.leadRecordIds.push(r.id); // known row, never verified
       }
     }
   }
@@ -155,7 +218,7 @@ export async function readVerdict(db: SupabaseClient, email: string, ghlContactI
     }
   }
 
-  void ghlContactId; // reserved: lead_records.ghl_contact_id join once phase 1 confirms it is populated
+  void ghlContactId; // membership (and its ghl_contact_id) is resolved by findSegmentMember
   out.health = worstHealth(verdicts);
   return out;
 }
@@ -172,11 +235,14 @@ export function normaliseLeadVerdict(v: string): EmailHealth {
   return "unknown";
 }
 
-/** Store an on-the-fly verdict wherever this address lives. Never downgrades a
- *  proven bounce (recordVerification's rule, enforced here in SQL). */
-export async function storeVerdict(db: SupabaseClient, email: string, r: VerifyResult): Promise<string[]> {
+/** Store an on-the-fly verdict wherever this address lives. Refusals (no
+ *  credits / rate limit) and unresolved lookups are NOT verdicts and are never
+ *  written — overwriting a real verdict with "unknown" would erase evidence.
+ *  lead_records goes ONLY through lead_record_record_verification (phase-1
+ *  contract), which itself never downgrades a proven bounce. */
+export async function storeVerdict(db: SupabaseClient, email: string, r: VerifyResult, leadRecordIds: string[]): Promise<string[]> {
   const errors: string[] = [];
-  if (r.health === "unknown") return errors; // "we couldn't tell" is not a verdict
+  if (r.rateLimited || r.unavailable || r.health === "unknown") return errors;
   const now = new Date().toISOString();
   {
     const { error } = await db.from("customers").update({
@@ -187,16 +253,20 @@ export async function storeVerdict(db: SupabaseClient, email: string, r: VerifyR
     }).ilike("email", email).or("email_status.is.null,email_status.neq.bounced");
     if (error) errors.push(`customers: ${error.message}`);
   }
-  {
-    const { error } = await db.from("lead_records").update({
-      [LEAD_RECORDS_STATUS_COL]: r.health, [LEAD_RECORDS_CHECKED_COL]: now,
-    }).ilike("email", email);
-    if (error && !isMissingColumn(error as { code?: string })) errors.push(`lead_records: ${error.message}`);
+  for (const id of [...new Set(leadRecordIds)]) {
+    const { data, error } = await db.rpc("lead_record_record_verification", {
+      p_lead_record_id: id, p_email: email, p_health: r.health, p_raw: r.raw, p_catch_all: r.catchAll, p_error: null,
+    });
+    if (error) errors.push(`lead_record_record_verification(${id}): ${error.message}`);
+    else if (data !== "written" && data !== "kept_bounce") errors.push(`lead_record_record_verification(${id}) → ${data}`);
   }
   return errors;
 }
 
-/** A real send hard-bounced: proof, so it overrides every prediction. */
+/** A real send hard-bounced: proof, so it overrides every prediction.
+ *  lead_record_record_verification deliberately rejects "bounced" (it records
+ *  VERIFICATIONS); a bounce is delivery evidence, so it is written directly —
+ *  the same way customers.email_status gets it. */
 export async function markBounced(db: SupabaseClient, email: string, reason: string): Promise<{ customers: number; leadRecords: number | null; errors: string[] }> {
   const errors: string[] = [];
   const now = new Date().toISOString();
@@ -210,10 +280,10 @@ export async function markBounced(db: SupabaseClient, email: string, reason: str
   }
   {
     const { data, error } = await db.from("lead_records").update({
-      [LEAD_RECORDS_STATUS_COL]: "bounced", [LEAD_RECORDS_CHECKED_COL]: now,
+      email_status: "bounced", email_checked_at: now, email_bounce_reason: reason, email_verify_error: null,
     }).ilike("email", email).select("id");
     if (error) {
-      if (isMissingColumn(error as { code?: string })) leadRecords = null; // column not there yet
+      if (isMissingColumn(error as { code?: string })) leadRecords = null;
       else errors.push(`lead_records: ${error.message}`);
     } else leadRecords = (data ?? []).length;
   }

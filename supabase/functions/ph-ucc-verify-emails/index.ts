@@ -125,6 +125,7 @@ Deno.serve(async (req) => {
   const started = Date.now();
   const counts = { good: 0, bad: 0, unverified: 0 };
   let checked = 0, promoted = 0, rateLimited = false;
+  let unavailable: string | null = null;
   const perLead: Record<string, unknown>[] = [];
   const backlogRemaining = () => rows.length - checked;
 
@@ -149,14 +150,23 @@ Deno.serve(async (req) => {
     let firstHealth: EmailHealth | null = null;
     let firstEmail: string | null = null;
     let hitRateLimit = false;
+    let hitUnavailable: string | null = null;
 
     for (const email of toCheck) {
       const result = await verifyEmail(apiKey, email, VERIFY_OPTS);
       if (result.rateLimited) { hitRateLimit = true; break; }   // NOT a verdict → abort this lead, persist nothing
+      // Instantly REFUSED (no credits / bad key): also not a verdict, and every later
+      // lead would get the same refusal — stop the run, persist nothing.
+      if (result.unavailable) { hitUnavailable = result.error ?? "verification unavailable"; break; }
       if (firstHealth === null) { firstHealth = result.health; firstEmail = email; }
       if (result.health === "verified") { chosenEmail = email; chosenHealth = "verified"; break; }
     }
 
+    if (hitUnavailable) {
+      unavailable = hitUnavailable;
+      console.error("[ph-ucc-verify-emails] VERIFICATION UNAVAILABLE — stopping run", hitUnavailable);
+      break;
+    }
     if (hitRateLimit) {
       rateLimited = true;
       console.warn("[ph-ucc-verify-emails] RATE-LIMITED — stopping run", JSON.stringify({ after_checked: checked, remaining: backlogRemaining() }));
@@ -192,6 +202,7 @@ Deno.serve(async (req) => {
     unverified: counts.unverified,
     promoted,
     rate_limited: rateLimited,
+    ...(unavailable ? { unavailable } : {}),
     remaining_in_batch: rateLimited ? backlogRemaining() : 0,
     credits_spent_est: Number((checked * 0.25).toFixed(2)),
     elapsed_ms: Date.now() - started,

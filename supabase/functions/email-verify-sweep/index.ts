@@ -110,6 +110,7 @@ Deno.serve(async (req) => {
   const counts = { good: 0, bad: 0, unverified: 0 };
   let checked = 0;
   let rateLimited = false;
+  let unavailable: string | null = null;
   const invalids: Array<{ customer_id: string; email: string; raw: string | null }> = [];
 
   for (const r of rows) {
@@ -120,6 +121,13 @@ Deno.serve(async (req) => {
 
     // A rate-limit is NOT a verdict: stop the whole run, persist nothing for this address
     // (leaving it in the queue), and let a later run pick it up.
+    if (result.unavailable) {
+      // Instantly refused (e.g. no credits). Not a verdict, and every later address
+      // would get the same answer — stop and say so, persist nothing.
+      unavailable = result.error ?? "verification unavailable";
+      console.error("[email-verify-sweep] VERIFICATION UNAVAILABLE — stopping run", unavailable);
+      break;
+    }
     if (result.rateLimited) {
       rateLimited = true;
       console.warn("[email-verify-sweep] RATE-LIMITED — stopping run", JSON.stringify({
@@ -151,6 +159,7 @@ Deno.serve(async (req) => {
     bad: counts.bad,
     unverified: counts.unverified,
     rate_limited: rateLimited,
+    ...(unavailable ? { unavailable } : {}),
     remaining: typeof remaining === "number" ? remaining : null,
     credits_spent: Number((checked * 0.25).toFixed(2)),
     newly_invalid: invalids,

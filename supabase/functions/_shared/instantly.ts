@@ -43,6 +43,35 @@ export interface VerifyResult {
    * health stays "unknown"; a batch driver should stop and retry the whole address later.
    * A rate-limit must NEVER be recorded as a verdict (see the sweep). */
   rateLimited?: boolean;
+  /** Instantly REFUSED to verify — no credits ("No credits available"), a bad or
+   * unauthorized key (401/402/non-rate-limit 403). Like rateLimited this is NOT a
+   * verdict: health stays "unknown", nothing may be persisted, and a batch driver
+   * must STOP (every later address would get the same refusal). Distinct from
+   * rateLimited because waiting does not fix it — a human has to (buy credits).
+   * Found 2026-11-16: with zero credits every intake verification silently
+   * resolved to "unknown" because all 403s were classified as rate limits. */
+  unavailable?: boolean;
+}
+
+/** Classify a non-2xx from the verification endpoint. Pure — unit-tested.
+ *  429 is always a rate limit. 403 is a rate limit ONLY when the body says so;
+ *  "No credits available" and every other 403, plus 401/402, mean the service is
+ *  unavailable to us. */
+export function classifyVerifyFailure(status: number, message: string): "rate_limited" | "unavailable" | null {
+  if (status === 429) return "rate_limited";
+  if (status === 401 || status === 402) return "unavailable";
+  if (status === 403) {
+    const m = message.toLowerCase();
+    if (/credit/.test(m)) return "unavailable";
+    if (/rate|too many|throttl|limit exceeded/.test(m)) return "rate_limited";
+    return "unavailable";
+  }
+  return null;
+}
+
+/** True when a result is an actual verdict that may be stored. */
+export function isVerdict(r: VerifyResult): boolean {
+  return !r.rateLimited && !r.unavailable && r.health !== "unknown";
 }
 
 /** Load the Instantly API key from the vault. */
@@ -105,25 +134,32 @@ export async function verifyEmail(
   const delayMs = opts?.delayMs ?? 5000;
   const enc = encodeURIComponent(email);
 
-  // A 403/429 from Instantly means we are RATE-LIMITED — it is NOT a verdict on the
-  // mailbox. Bail immediately (don't burn the poll loop) and flag it so the caller can
-  // retry the whole address later. It must never look like "invalid".
-  const isRateLimit = (status: number) => status === 403 || status === 429;
+  // A 429 (or a 403 that SAYS rate limit) means we are RATE-LIMITED; any other 403,
+  // and 401/402, means Instantly REFUSED (no credits, bad key) — see
+  // classifyVerifyFailure. Neither is a verdict on the mailbox. Bail immediately
+  // (don't burn the poll loop) and flag which it is. It must never look like "invalid".
+  const refusal = (status: number, data: Record<string, unknown>, rawSoFar: string | null, ca: boolean): VerifyResult | null => {
+    const kind = classifyVerifyFailure(status, String(data.message ?? data.error ?? ""));
+    if (kind === "rate_limited") {
+      return { health: "unknown", raw: rawSoFar, catchAll: ca, rateLimited: true, error: `rate-limited (HTTP ${status})` };
+    }
+    if (kind === "unavailable") {
+      return { health: "unknown", raw: rawSoFar, catchAll: ca, unavailable: true,
+        error: `verification unavailable (HTTP ${status}: ${String(data.message ?? data.error ?? "refused")})` };
+    }
+    return null;
+  };
 
   try {
     const post = await call(apiKey, "POST", "/email-verification", { email });
-    if (isRateLimit(post.status)) {
-      return { health: "unknown", raw: null, catchAll: false, rateLimited: true, error: `rate-limited (HTTP ${post.status})` };
-    }
+    { const r = refusal(post.status, post.data, null, false); if (r) return r; }
     let raw = String(post.data.verification_status ?? "");
     let catchAll = post.data.catch_all === true;
 
     for (let i = 0; i < attempts && (raw === "" || raw === "pending"); i++) {
       await new Promise((r) => setTimeout(r, delayMs));
       const get = await call(apiKey, "GET", `/email-verification/${enc}`);
-      if (isRateLimit(get.status)) {
-        return { health: "unknown", raw: raw || null, catchAll, rateLimited: true, error: `rate-limited (HTTP ${get.status})` };
-      }
+      { const r = refusal(get.status, get.data, raw || null, catchAll); if (r) return r; }
       raw = String(get.data.verification_status ?? raw);
       catchAll = get.data.catch_all === true;
     }
@@ -154,6 +190,12 @@ export async function recordVerification(
   email: string,
   result: VerifyResult,
 ): Promise<void> {
+  // A refusal (no credits / rate limit) is NOT a verdict — persisting "unknown" with a
+  // fresh email_verified_at would make an unverified address look checked.
+  if (result.rateLimited || result.unavailable) {
+    console.warn("[instantly] recordVerification skipped — not a verdict:", result.error);
+    return;
+  }
   const { data: current } = await db
     .from("customers").select("email_status").eq("id", customerId).maybeSingle();
   if (current?.email_status === "bounced") return; // proof outranks prediction
