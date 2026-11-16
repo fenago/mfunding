@@ -1,6 +1,8 @@
 // plaid-mint-link — a closer needs a textable "connect your bank" link for a merchant
-// who isn't logged into the portal. This mints a single-purpose, expiring token bound
-// to exactly one customer and returns the public URL (my.mfunding.net/connect-bank/<t>).
+// who isn't logged into the portal. This returns that merchant's single-purpose,
+// expiring link (my.mfunding.net/connect-bank/<t>) — reusing their live one when
+// they have one, minting when they don't. The mint/reuse/expiry rules live in
+// _shared/bankLink.ts, shared with ph-send-packet and the application senders.
 //
 // The token is validated server-side by plaid-create-link-token / plaid-exchange (via
 // resolvePlaidCaller) — it is NEVER readable over the API and grants nothing but the
@@ -17,16 +19,12 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
-
-const PORTAL_BASE = "https://my.mfunding.net";
-const TTL_DAYS = 30;
+// Minting, reuse and expiry live in ONE place — this function used to carry its
+// own copy of them, and ph-send-packet carried a second.
+import { ensureBankLink } from "../_shared/bankLink.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-}
-
-function mintToken(): string {
-  return (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
 }
 
 Deno.serve(async (req) => {
@@ -55,15 +53,16 @@ Deno.serve(async (req) => {
   }
   if (!customerId) return json({ error: "customerId or dealId is required" }, 400);
 
-  const tok = mintToken();
-  const expiresAt = new Date(Date.now() + TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const { error: insErr } = await db.from("merchant_bank_link_tokens").insert({
-    token: tok, customer_id: customerId, deal_id: dealId, created_by: caller.id, expires_at: expiresAt,
-  });
-  if (insErr) {
-    console.error("[plaid-mint-link] insert failed", insErr.message);
-    return json({ error: "Could not create the bank-connection link." }, 500);
+  // Reuse the merchant's live link rather than minting a second one: a merchant
+  // holding three different URLs uploads against whichever they happen to find.
+  const link = await ensureBankLink(db, { customerId, dealId, createdBy: caller.id });
+  if (!link.ok) {
+    console.error("[plaid-mint-link] ensureBankLink failed", link.error);
+    return json({ error: link.error ?? "Could not create the bank-connection link." }, 500);
   }
 
-  return json({ ok: true, url: `${PORTAL_BASE}/connect-bank/${tok}`, token: tok, expires_at: expiresAt });
+  return json({
+    ok: true, url: link.url, token: link.token, expires_at: link.expiresAt,
+    reused: link.reused, extended: link.extended,
+  });
 });

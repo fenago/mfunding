@@ -110,16 +110,58 @@ const REDACT_KEYS = new Set([
   "apikey", "api_key", "authorization", "token", "password",
 ]);
 
+/**
+ * Contact custom fields whose VALUE is a bearer credential for one merchant's
+ * file and must never be logged, keyed by field id because that is the only
+ * thing identifying them in a `{ customFields: [{ id, value }] }` body.
+ *
+ *  · CyIUJIIzkeJwlTOuqamb — contact.bank_statement_link. Holds the BARE TOKEN
+ *    (see bankLink.ts for why), so there is no "/connect-bank/" in the string
+ *    for maskBankLinkTokens() to latch onto. Only the field id gives it away.
+ *  · OUlkd6rcVZ4ZrYTuPob4 — contact.ph_connect_bank_url. Holds a full URL, so
+ *    the content mask below already covers it; listed anyway so the rule does
+ *    not depend on which shape a field happens to hold today.
+ */
+export const BANK_STATEMENT_LINK_FIELD_ID = "CyIUJIIzkeJwlTOuqamb";
+const REDACT_CUSTOM_FIELD_IDS = new Set([
+  BANK_STATEMENT_LINK_FIELD_ID,
+  "OUlkd6rcVZ4ZrYTuPob4",
+]);
+
+/**
+ * Strip the token out of any /connect-bank/<token> URL inside a string.
+ *
+ * This one is redacted by CONTENT, not by key name, and it has to be: the bank
+ * link reaches GHL as `{ customFields: [{ id, value }] }`, so the key the value
+ * sits under is literally "value" and REDACT_KEYS can never match it. A failed
+ * custom-field PUT therefore used to log the live URL verbatim — and that URL is
+ * a bearer credential: it uploads documents to that merchant's file, starts a
+ * Plaid connect against it, and reads back their business name, deal number and
+ * document list. The URL shape is kept (it's what you need to debug); the token
+ * is not.
+ */
+export function maskBankLinkTokens(text: string): string {
+  return text.replace(/(\/connect-bank\/)[A-Za-z0-9_-]{12,}/g, "$1[redacted-token]");
+}
+
 /** Deep-copy a request body with secrets/PII replaced by "[redacted]" and long
  * HTML bodies truncated, so a failed call can be logged safely. */
 export function redactForLog(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined) return value;
-  if (typeof value === "string") return value.length > 500 ? `${value.slice(0, 500)}…[+${value.length - 500} chars]` : value;
+  if (typeof value === "string") {
+    const safe = maskBankLinkTokens(value);
+    return safe.length > 500 ? `${safe.slice(0, 500)}…[+${safe.length - 500} chars]` : safe;
+  }
   if (typeof value !== "object") return value;
   if (depth > 4) return "[deep]";
   if (Array.isArray(value)) return value.slice(0, 60).map((v) => redactForLog(v, depth + 1));
+  const obj = value as Record<string, unknown>;
+  // A custom-field entry redacts by its SIBLING id: `{ id, value }` names the
+  // secret in `id` and carries it in `value`, a key REDACT_KEYS can never match.
+  const credentialField = typeof obj.id === "string" && REDACT_CUSTOM_FIELD_IDS.has(obj.id);
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (credentialField && k === "value") { out[k] = "[redacted]"; continue; }
     out[k] = REDACT_KEYS.has(k.toLowerCase().replace(/[^a-z_]/g, "")) ? "[redacted]" : redactForLog(v, depth + 1);
   }
   return out;

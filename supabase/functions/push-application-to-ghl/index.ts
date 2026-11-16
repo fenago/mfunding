@@ -31,6 +31,10 @@ import {
   DOC_PREFILL, type SendMode, enrollWithRetry, verifyDocumentSent,
 } from "../_shared/application-fields.ts";
 import { applyAppAutofillRow } from "../_shared/appAutofill.ts";
+// The merchant's no-login bank link (/connect-bank/<token>) + the GHL contact
+// field the application document prints it from. ONE definition, shared with
+// plaid-mint-link / ph-send-packet / the shared 04B sender.
+import { requireBankLinkOnContact, bankLinkTrailNote } from "../_shared/bankLink.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
 //  · MCA 04  — SELF-FILL: was SUPPOSED to send the original fillable application
@@ -702,6 +706,42 @@ Deno.serve(async (req) => {
     if (!res.ok) return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);
   }
 
+  // ── BANK-STATEMENT LINK, BEFORE ANY ENROLLMENT. ──
+  // The application document's closing section tells the merchant how to send
+  // bank statements and prints {{contact.bank_statement_link}}. GHL renders an
+  // empty custom field as NOTHING, so an unpopulated field means the merchant
+  // reads "here is your personal link" followed by blank space — the same
+  // partial-document failure that makes 04C convert at 11% against 04B's 38%.
+  // All three doc paths print it, so this runs before all three: mint-or-reuse
+  // the token, write it on the contact, read the contact back to prove it's
+  // there, and REFUSE the send if it isn't. Nothing is enrolled on a failure —
+  // an un-sent application can be re-fired, a signed one cannot be un-signed.
+  const bankLink = await requireBankLinkOnContact(cfg, db, {
+    contactId,
+    customerId: customer.id as string,
+    dealId,
+    createdBy: caller.id,
+  });
+  if (!bankLink.ok) {
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "application:pushed-to-ghl",
+        content: `BLOCKED the application send: the merchant's bank-statement link could not be ` +
+          `confirmed on their GHL contact, and the document prints that link. ${bankLink.error ?? ""}`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+    return json({
+      error: bankLink.error ??
+        "The merchant's bank-statement link could not be prepared, and the application prints it — nothing was sent.",
+      bank_link_failed: true,
+      contactId,
+    }, bankLink.status);
+  }
+
   // Enroll the contact into MCA 04 directly (the deterministic doc-send trigger)
   // when EITHER:
   //  · resend — the deal is already at Application Sent, so the caller's stage
@@ -879,7 +919,8 @@ Deno.serve(async (req) => {
           : ` NOT YET CONFIRMED: no document from GHL within 15s — expected "${expectedName}". Check GHL → Documents & Contracts.`)
         + (mintedDespiteBadEmail
           ? ` NOTE: email known bad (${mintedDespiteBadEmail}) — the document was minted anyway so the closer can TEXT the signing link.`
-          : ``),
+          : ``)
+        + ` ${bankLinkTrailNote(bankLink)}`,
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
@@ -900,5 +941,10 @@ Deno.serve(async (req) => {
     // so the closer can text it — the free win, and the payoff of mintAnyway.
     signing_url: signingUrl,
     minted_despite_bad_email: !!mintedDespiteBadEmail,
+    // The merchant's no-login bank link, confirmed on the contact BEFORE the
+    // document was enrolled — this is what {{contact.bank_statement_link}} renders.
+    bank_link_url: bankLink.url,
+    bank_link_expires_at: bankLink.expiresAt,
+    bank_link_reused: bankLink.reused,
   });
 });

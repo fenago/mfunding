@@ -17,6 +17,7 @@ import {
 } from "./ghl.ts";
 import type { GhlConfig, GhlCustomField } from "./ghl.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireBankLinkOnContact, bankLinkTrailNote } from "./bankLink.ts";
 
 // ── GHL workflow ids (MFunding location t7NmVR4WCy927j4Zon4b) ─────────────────
 // These are WORKFLOW ids (UUIDs), the enrollment mechanism. NOTE: the 04B DOCUMENT
@@ -525,6 +526,10 @@ export interface SendPrefillResult {
   contactId: string;
   signing_url: string | null;
   business: string | null;
+  /** The merchant's no-login bank-statement link, confirmed on the GHL contact
+   *  before the document was enrolled (the document prints it). */
+  bank_link_url: string | null;
+  bank_link_expires_at: string | null;
   email_undeliverable?: boolean;
   error?: string;
 }
@@ -553,6 +558,8 @@ export async function sendPrefillApplication(
     missing_fields: [] as string[],
     signing_url: null as string | null,
     business: null as string | null,
+    bank_link_url: null as string | null,
+    bank_link_expires_at: null as string | null,
   };
 
   // ── Fetch the contact and read its custom-field VALUES (keyed by field id). ──
@@ -639,6 +646,21 @@ export async function sendPrefillApplication(
     return { ...base, business, ok: false, status: 502, verification: "unconfirmed", sent_to: sentTo, missing_fields: missing, error: `GHL custom-field update failed: ${upd.error}` };
   }
 
+  // ── BANK-STATEMENT LINK, BEFORE ENROLLMENT. ──
+  // The document's closing section prints {{contact.bank_statement_link}}. GHL
+  // renders an empty custom field as nothing, so if this field isn't populated the
+  // merchant reads "here is your personal link" followed by blank space. Populate
+  // it, PROVE it landed, and refuse the send if we can't — an un-sent application
+  // is recoverable, a signed one with the upload instruction missing is not.
+  const bankLink = await requireBankLinkOnContact(cfg, db, { contactId });
+  if (!bankLink.ok) {
+    return {
+      ...base, business, ok: false, status: bankLink.status, verification: "unconfirmed",
+      sent_to: sentTo, fields_pushed: fields.length, missing_fields: missing,
+      error: bankLink.error ?? "The merchant's bank-statement link could not be prepared; nothing was sent.",
+    };
+  }
+
   // ── ENROLL into 04B PREFILL. Clear crossing paths + re-clear 04B so a repeat
   // click re-fires cleanly instead of no-op'ing (the resend/re-enroll pattern). ──
   const sendStartedMs = Date.now() - 5_000;
@@ -670,9 +692,11 @@ export async function sendPrefillApplication(
     };
   }
 
-  // Best-effort audit note against a matching customer row.
+  // Best-effort audit note. requireBankLinkOnContact already resolved the merchant
+  // (across their whole contact set, not just this one id), so use that answer
+  // rather than re-guessing off a single pointer.
   try {
-    const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId).maybeSingle();
+    const cust = bankLink.customerId ? { id: bankLink.customerId } : null;
     if (cust?.id) {
       await db.from("activity_log").insert({
         entity_type: "customer",
@@ -682,7 +706,8 @@ export async function sendPrefillApplication(
         content: `Setter sent the 04B PREFILL application to ${sentTo} (pushed ${fields.length} merge fields). ` +
           (verification === "confirmed"
             ? `VERIFIED: GHL created "${template}".`
-            : `NOT YET CONFIRMED within 15s — expected "${EXPECTED_04B_TEMPLATE}". Check GHL → Documents & Contracts.`),
+            : `NOT YET CONFIRMED within 15s — expected "${EXPECTED_04B_TEMPLATE}". Check GHL → Documents & Contracts.`) +
+          ` ${bankLinkTrailNote(bankLink)}`,
       });
     }
   } catch { /* best-effort */ }
@@ -690,5 +715,6 @@ export async function sendPrefillApplication(
   return {
     ...base, business, ok: true, status: 200, verification, template, sent_to: sentTo,
     fields_pushed: fields.length, missing_fields: missing, signing_url: signingUrl,
+    bank_link_url: bankLink.url, bank_link_expires_at: bankLink.expiresAt,
   };
 }

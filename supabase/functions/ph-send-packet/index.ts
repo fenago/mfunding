@@ -1,8 +1,9 @@
 // ph-send-packet — the PH setter's one-click "send the packet" action.
 //
 // A PH setter has a UCC-sourced merchant on the line. This mints the merchant's
-// connect-your-bank link (the SAME single-purpose, expiring Plaid token
-// plaid-mint-link uses — same merchant_bank_link_tokens table, 30-day expiry),
+// connect-your-bank link (the SAME single-purpose, expiring token every other
+// path uses — _shared/bankLink.ts, merchant_bank_link_tokens, reused when the
+// merchant already has a live one),
 // writes that URL onto the GHL contact's `ph_connect_bank_url` custom field, and
 // enrolls the contact into the PH packet workflow so GHL fires the SMS/email that
 // carries the link. Everything is logged to the deal/customer activity trail.
@@ -28,21 +29,17 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch,
-  upsertContact, getContact, updateContactCustomFields,
+  upsertContact,
   type GhlConfig,
 } from "../_shared/ghl.ts";
-
-const PORTAL_BASE = "https://my.mfunding.net";
-const TTL_DAYS = 30;
+// Minting, reuse, expiry and the write+read-back verify are ONE definition in
+// _shared/bankLink.ts — this function used to carry its own copy of all four.
+import { ensureBankLink, writeBankLinkToContact } from "../_shared/bankLink.ts";
 // Fallbacks if ph_settings is missing a value (the settings row is the source of truth).
 const DEFAULT_CONNECT_FIELD_ID = "OUlkd6rcVZ4ZrYTuPob4"; // contact.ph_connect_bank_url
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-}
-
-function mintToken(): string {
-  return (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
 }
 
 function jwtRole(token: string): string | null {
@@ -166,36 +163,34 @@ Deno.serve(async (req) => {
   const connectFieldId = (settings.connect_field_id as string | undefined) || DEFAULT_CONNECT_FIELD_ID;
   const packetWorkflowId = (settings.packet_workflow_id as string | null | undefined) ?? null;
 
-  // ── (b) Mint the connect-bank token ──
-  const tok = mintToken();
-  const expiresAt = new Date(Date.now() + TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const { error: insErr } = await db.from("merchant_bank_link_tokens").insert({
-    token: tok, customer_id: customerId, deal_id: dealId, created_by: callerId, expires_at: expiresAt,
-  });
-  if (insErr) {
-    console.error("[ph-send-packet] token insert failed", insErr.message);
-    return json({ error: "Could not create the bank-connection link." }, 500);
+  // ── (b) Mint (or reuse) the connect-bank token ──
+  const link = await ensureBankLink(db, { customerId, dealId, createdBy: callerId });
+  if (!link.ok || !link.url || !link.token) {
+    console.error("[ph-send-packet] ensureBankLink failed", link.error);
+    return json({ error: link.error ?? "Could not create the bank-connection link." }, 500);
   }
-  const connectUrl = `${PORTAL_BASE}/connect-bank/${tok}`;
+  const tok = link.token;
+  const expiresAt = link.expiresAt;
+  const connectUrl = link.url;
 
   // ── (c) Write the URL onto the GHL contact custom field + READ-BACK VERIFY ──
-  const put = await updateContactCustomFields(cfg, contactId, [{ id: connectFieldId, value: connectUrl }]);
-  if (!put.ok) {
-    console.error("[ph-send-packet] custom field write failed", put.error);
+  // Write failure is fatal (nothing to send); an unconfirmed read-back stays
+  // non-fatal HERE and is reported — unchanged behaviour for the PH packet.
+  // ph_connect_bank_url holds the FULL URL — deliberately a different shape from
+  // the application's bank_statement_link, which holds the bare token (the GHL
+  // document redirect forces that; see the shape note in _shared/bankLink.ts).
+  const write = await writeBankLinkToContact(cfg, contactId, {
+    value: connectUrl, shape: "url", fieldId: connectFieldId,
+  });
+  if (!write.written) {
     return json({
-      error: `Wrote the token but GHL rejected the custom-field write: ${put.error ?? "unknown"}`,
+      error: `Wrote the token but GHL rejected the custom-field write: ${write.error ?? "unknown"}`,
       token: tok, url: connectUrl, expires_at: expiresAt, contact_id: contactId,
     }, 502);
   }
-  // Read the contact back and confirm the field actually holds our URL.
-  let fieldVerified = false;
-  try {
-    const got = await getContact(cfg, contactId);
-    const cf = ((got.data?.contact as Record<string, unknown> | undefined)?.customFields ?? []) as
-      { id: string; value: unknown }[];
-    fieldVerified = cf.some((f) => f.id === connectFieldId && String(f.value ?? "") === connectUrl);
-  } catch (e) {
-    console.warn("[ph-send-packet] read-back verify failed (non-fatal):", e instanceof Error ? e.message : String(e));
+  const fieldVerified = write.verified;
+  if (!fieldVerified) {
+    console.warn("[ph-send-packet] connect-bank field not confirmed on the contact:", write.error);
   }
 
   // ── (d) Enroll into the PH packet workflow (loud partial if unset) ──
