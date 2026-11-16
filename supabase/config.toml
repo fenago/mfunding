@@ -27,6 +27,12 @@ verify_jwt = false   # GHL live-transfer webhook / Zapier — auth enforced in-c
 [functions.ghl-event-hook]
 verify_jwt = false   # GHL workflow webhook actions (call completed / merchant replied) — GHL cannot send a Supabase JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= / x-ghl-secret)
 
+[functions.instantly-enroll]
+verify_jwt = false   # GHL workflow Custom Webhook (tag camp-micro-bitty added) — GHL cannot send a Supabase JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= = get_ghl_config().webhook_secret)
+
+[functions.instantly-event-hook]
+verify_jwt = false   # Instantly webhooks (reply/interested/click/unsub/bounce) — no Supabase JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= = get_ghl_config().webhook_secret)
+
 [functions.wavv-disposition-sync]
 verify_jwt = false   # GHL "disposition tag added" workflow webhook + cron — GHL cannot send a Supabase JWT; auth enforced in-code via fail-closed shared-secret gate (?secret=), else requires admin/super JWT
 
