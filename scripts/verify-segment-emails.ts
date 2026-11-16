@@ -12,6 +12,8 @@
 //     --slug micro-bitty --limit 1500 --concurrency 8
 //
 // Pilot mix (micro-bitty): ~47% UCC preferred-tier, ~13% UCC standard, ~40% trigger.
+// WAVV soft-nos are never in the pilot; within each stratum, rows with a company-name
+// industry (industry_merge NOT NULL) come first — the UCC SIC column is scrambled.
 
 import { verifyEmail, type VerifyResult } from "../supabase/functions/_shared/instantly.ts";
 
@@ -60,8 +62,9 @@ const pick = (where: string, n: number) => `
   (select m.lead_record_id id, m.email, m.source, m.bitty_tier
      from campaign_segment_members m join lead_records lr on lr.id = m.lead_record_id
     where m.campaign_slug = ${lit(SLUG)} and m.enrolled_at is null and lr.email_status is null
+      and not m.wavv_soft_no
       and lower(lr.email) = m.email and ${where}
-    order by md5(m.lead_record_id::text) limit ${n})`;
+    order by (m.industry_merge is null), md5(m.lead_record_id::text) limit ${n})`;
 const rows = await sql<{ id: string; email: string; source: string; bitty_tier: string | null }>(
   `${pick("m.source = 'ucc' and m.bitty_tier = 'preferred'", nUccPref)} union all
    ${pick("m.source = 'ucc' and m.bitty_tier = 'standard'", nUccStd)} union all
