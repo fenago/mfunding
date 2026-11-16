@@ -282,6 +282,13 @@ export const routes: RouteObject[] = [
         element: <ConnectBankPage />,
       },
       {
+        // Token-less landing: GHL's post-signing redirect is a STATIC URL (it
+        // cannot interpolate a merge tag), so it lands here. ConnectBankPage
+        // shows the "thanks for signing" + email-only state without a token.
+        path: "/connect-bank",
+        element: <ConnectBankPage />,
+      },
+      {
         path: "/calculators/how-much-can-i-get",
         element: <MCAFundingCalculatorPage />,
       },

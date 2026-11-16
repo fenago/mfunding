@@ -69,8 +69,20 @@ interface QueueItem {
   error?: string;
 }
 
+/**
+ * Client-side mirror of isBankLinkToken() in
+ * supabase/functions/_shared/bankLink.ts — keep the two in step. A path segment
+ * that fails it (no segment at all, or an un-interpolated GHL merge tag like
+ * `{{contact.bank_statement_link}}`) is NOT a token: sending it to Plaid or the
+ * upload function only earns a 403, so the page never offers those buttons for it.
+ */
+const BANK_LINK_TOKEN_SHAPE = /^[A-Za-z0-9_-]{24,200}$/;
+
 export default function ConnectBankPage() {
-  const { token } = useParams<{ token: string }>();
+  const { token: rawToken } = useParams<{ token?: string }>();
+  // /connect-bank (no token) is where GHL's post-signing redirect lands: GHL
+  // cannot interpolate a merge tag into that redirect, so it is a static URL.
+  const token = rawToken && BANK_LINK_TOKEN_SHAPE.test(rawToken) ? rawToken : undefined;
   const [institution, setInstitution] = useState<string | null>(null);
 
   useEffect(() => {
@@ -206,8 +218,16 @@ export default function ConnectBankPage() {
               </p>
             )}
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-              Pick <strong>any one</strong> of the three ways below. The funders review your
-              statements — that is what decides your offer.
+              {token ? (
+                <>
+                  Pick <strong>any one</strong> of the three ways below. The funders review your
+                  statements — that is what decides your offer.
+                </>
+              ) : (
+                <>
+                  The funders review your statements — that is what decides your offer.
+                </>
+              )}
             </p>
           </div>
 
@@ -215,18 +235,21 @@ export default function ConnectBankPage() {
           <OnFileChips onFile={status?.onFile ?? null} statusError={statusError} hasToken={!!token} />
 
           {!token ? (
-            /* Missing/garbled link — lanes 1 and 2 need the token, lane 3 does not. */
-            <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-6">
+            /* No usable token in the URL — the static post-signing redirect, or a
+               garbled link. Lanes 1 and 2 need the token and would 403, so they are
+               hidden; the email lane needs nothing. */
+            <div className="rounded-2xl border border-mint-green/40 bg-mint-green/10 dark:bg-mint-green/10 p-6">
               <div className="flex items-start gap-3">
-                <LockClosedIcon className="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                <CheckCircleIcon className="w-6 h-6 text-mint-green flex-shrink-0" />
                 <div>
-                  <h2 className="font-bold text-amber-900 dark:text-amber-200">
-                    This link looks incomplete
-                  </h2>
-                  <p className="mt-1.5 text-sm text-amber-800 dark:text-amber-200">
-                    Please open the full, most recent link your funding specialist sent you — or
-                    reply to them for a fresh one. <strong>You can still email your statements</strong>{" "}
-                    using the instructions at the bottom of this page.
+                  <h2 className="font-bold text-gray-900 dark:text-white">Thanks for signing</h2>
+                  <p className="mt-1.5 text-sm text-gray-700 dark:text-gray-200">
+                    Your <strong>personal secure link</strong> — to connect your bank or upload
+                    your statements — is in the document you just signed, and in the signed copy
+                    we email you. Open it from there.
+                  </p>
+                  <p className="mt-1.5 text-sm text-gray-700 dark:text-gray-200">
+                    Or simply <strong>email your statements</strong> using the details below.
                   </p>
                 </div>
               </div>
@@ -444,7 +467,7 @@ export default function ConnectBankPage() {
             </div>
 
             <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              Option 3 — Email them to us
+              {token ? "Option 3 — Email them to us" : "Email them to us"}
             </h2>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
               Attach <strong>the last 3–4 months</strong> and send them to:
@@ -488,8 +511,8 @@ export default function ConnectBankPage() {
                   </button>
                 </dd>
                 {!bizName && (
-                  <p className="mt-1 text-[11px] text-gray-400">
-                    Add your business name to the subject so we can match it to your file.
+                  <p className={`mt-1 ${token ? "text-[11px] text-gray-400" : "text-xs font-semibold text-gray-700 dark:text-gray-200"}`}>
+                    Include your business name in the subject so we can match it to your file.
                   </p>
                 )}
               </div>
@@ -503,7 +526,9 @@ export default function ConnectBankPage() {
               Open my email app
             </a>
             <p className="mt-3 text-[11px] text-gray-400 text-center">
-              Emailed files are matched by hand, so they take a little longer than Options 1 and 2.
+              {token
+                ? "Emailed files are matched by hand, so they take a little longer than Options 1 and 2."
+                : "Emailed files are matched by hand, so include your business name."}
             </p>
           </section>
 
