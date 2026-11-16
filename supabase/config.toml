@@ -351,6 +351,15 @@ verify_jwt = false
 [functions.plaid-mint-link]
 verify_jwt = true
 
+# merchant-upload-doc: the upload + read-back lane of the logged-OUT document page
+# at /connect-bank/:token. verify_jwt = false for the same reason as the two Plaid
+# link functions — the merchant has no login — and auth is enforced in-code by the
+# SAME resolvePlaidCaller (valid, non-expired link token naming one customer).
+# A logged-out browser cannot write storage.objects or customer_documents directly:
+# neither has an `anon` policy. The service role does it behind the token.
+[functions.merchant-upload-doc]
+verify_jwt = false
+
 # ph-send-packet: PH setter "send the packet" — mints the connect-bank link, writes it
 # onto the GHL contact's ph_connect_bank_url field, enrolls the PH packet workflow.
 # verify_jwt = true; three in-code auth paths (?secret cron / service bearer / staff JWT).
