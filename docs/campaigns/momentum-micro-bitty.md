@@ -14,7 +14,7 @@ Nothing has been activated, no leads added, no test sends made.
 1. **Mailing address.** Every footer (now led by the legal entity line "Agentic Voice Inc. d/b/a Momentum Funding (MFunding.net)") holds the literal placeholder `[MAILING ADDRESS — owner to supply]`. CAN-SPAM requires a valid physical postal address. Owner supplies it, then it gets patched into all 7 bodies.
 2. **Opt-out link.** The Instantly API does not document the token its editor uses for the clickable unsubscribe link, so I did not guess one. What is live now: (a) `insert_unsubscribe_header = true`, which adds the List-Unsubscribe header (one-click unsubscribe in Gmail/Yahoo), and (b) a footer line: *Not interested? Reply "stop" and you won't hear from us again.* A reply-based opt-out is only compliant if somebody honors it within 10 business days, so either (i) in the Instantly editor, click **Insert unsubscribe link** in each step's footer (one click per step, 7 total), or (ii) set up a process that marks "stop" replies as unsubscribed. Option (i) is recommended.
 3. **Sender-name variable.** Each email is signed `{{sendingAccountFirstName}}` because the 30 mailboxes use 6 different personas (Ernesto Lee, Carlos Marquez, Stephanie Decker, plus 15 different names on the 3 newer domains). If every email were signed "Ernesto", 25 of the 30 senders would look mismatched. The variable name comes from Instantly's sending-account variables but is **not confirmed in their API docs**. Before launch, open **Preview** in the editor with a sending account selected and confirm the name renders. If it doesn't, replace it with the variable shown in the editor's Variables menu.
-4. **`{{industry}}` must always be populated.** Pilot email 3 uses it ("for businesses in {{industry}}"). The re-touch no longer does. Either the enrollment function sends a value for every lead, or the step is changed to `{{industry | your industry}}`. A blank renders as "businesses in ."
+4. **`{{industry}}` must always be populated.** Pilot email 3 uses it as `{{industry | your industry}}`, so a blank falls back to "your industry". Enrollment fills it as well. The re-touch no longer uses it.
 5. **Email 3 link** points to `https://mfunding.net/programs/momentum-micro.html`. It will be swapped for the GHL funnel page when that page ships.
 6. **Plan budget (see "Volume math").** At 100 new leads per day, the plan's 1,000-contact monthly cap runs out in 10 send days.
 
@@ -80,7 +80,7 @@ Momentum Funding
 
 **Step 3 (Day 7)**. Same thread.
 ```
-{{firstName}}, we arrange working capital advances for businesses in {{industry}}. Here's a one-page overview: https://mfunding.net/programs/momentum-micro.html
+{{firstName}}, we arrange working capital advances for businesses in {{industry | your industry}}. Here's a one-page overview: https://mfunding.net/programs/momentum-micro.html
 
 Reply "yes" and I'll call you.
 
@@ -114,7 +114,8 @@ Revision 2 (compliance review, applied to the live drafts):
 2. Step 1: removed the market claim "Most funders won't look at a request under $50,000." The offer is now stated as arranged "through our funding partners, typically ... subject to underwriting".
 3. Step 2: "all it takes / credit doesn't have to be perfect / the funder pays us, never you" became "To see what you may qualify for, we typically ask for ... There are no upfront fees to apply. We're paid by the funder, not by you."
 4. Step 3: the "a lot of {{industry}} owners who need a smaller amount" sentence became "we arrange working capital advances for businesses in {{industry}}."
-5. Footer on all steps of both campaigns: legal entity line "Agentic Voice Inc. d/b/a Momentum Funding (MFunding.net) · Momentum Funding arranges funding from third-party funders. · [MAILING ADDRESS — owner to supply]", followed by the stop line.
+5. Step 3: `{{industry}}` became `{{industry | your industry}}` (fallback). Re-touch step 1: the amount now reads "typically from $2,000 to $100,000 and subject to underwriting", matching the pilot.
+6. Footer on all steps of both campaigns: legal entity line "Agentic Voice Inc. d/b/a Momentum Funding (MFunding.net) · Momentum Funding arranges funding from third-party funders. · [MAILING ADDRESS — owner to supply]", followed by the stop line.
 
 ### Compliance status
 - The words "loan", "approved", "pre-approved", "guaranteed" and "no credit check" do not appear anywhere. The copy makes no rate or speed claims. The market claim in step 1 and the "credit doesn't have to be perfect" line have been removed.
@@ -128,7 +129,7 @@ Hi {{firstName}},
 
 I'm following up on my note from a few months ago about working capital for {{companyName}}.
 
-If there's a slow season coming, or something to stock up on before a busy one, a working capital advance from $2,000 to $100,000 may be an option. Is it worth a 10-minute call?
+If there's a slow season coming, or something to stock up on before a busy one, a working capital advance, typically from $2,000 to $100,000 and subject to underwriting, may be an option. Is it worth a 10-minute call?
 
 {{sendingAccountFirstName}}
 Momentum Funding
