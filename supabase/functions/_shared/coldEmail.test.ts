@@ -147,12 +147,15 @@ Deno.test("unknown industry is sent EMPTY so the template's {{industry | your in
 });
 
 Deno.test("suppression: ANY reply/label/unsub/bounce suppresses the address; sends/opens/clicks do not", () => {
-  for (const t of ["reply_received", "auto_reply_received", "lead_interested", "lead_not_interested", "lead_neutral",
-    "lead_meeting_booked", "lead_out_of_office", "lead_wrong_person", "lead_unsubscribed", "email_bounced", "Some Custom Label"]) {
+  for (const t of ["reply_received", "lead_interested", "lead_not_interested", "lead_neutral", "lead_meeting_booked",
+    "lead_wrong_person", "custom_label_any_negative", "lead_unsubscribed", "email_bounced", "Some Custom Label"]) {
     assert(suppressesAddress(t), t);
   }
-  for (const t of ["email_sent", "email_opened", "link_clicked", "email_link_clicked", "campaign_completed", "account_error"]) {
+  // owner policy: an auto-reply / out-of-office alone is not a human reply
+  for (const t of ["auto_reply_received", "lead_out_of_office",
+    "email_sent", "email_opened", "link_clicked", "email_link_clicked", "campaign_completed", "account_error"]) {
     assert(!suppressesAddress(t), t);
+    assert(!suppressesCompany(t), t);
   }
   assert(!suppressesAddress(null));
 });
@@ -179,4 +182,11 @@ Deno.test("GHL email DND: global dnd or the Email channel active", () => {
   assert(ghlEmailDnd({ dndSettings: { Email: { status: "active" } } }));
   assert(!ghlEmailDnd({ dndSettings: { Email: { status: "inactive" }, SMS: { status: "active" } } }));
   assert(!ghlEmailDnd(null));
+});
+
+Deno.test("negative labels + OOO are recorded (not parked); unknown labels still park", () => {
+  for (const t of ["lead_not_interested", "lead_wrong_person", "lead_out_of_office", "custom_label_any_negative"]) {
+    assertEquals(classifyEvent(parseInstantlyEvent({ event_type: t, lead_email: "a@b.co" })).action, "record", t);
+  }
+  assertEquals(classifyEvent(parseInstantlyEvent({ event_type: "My Custom Label", lead_email: "a@b.co" })).action, "park");
 });

@@ -173,7 +173,10 @@ export const REGISTERED_EVENTS = [
   "email_link_clicked",
   "lead_unsubscribed",
   "email_bounced",
-  "custom_label_any_positive",
+  // negative signals, recorded for enrollment suppression (owner 2026-11-16)
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_out_of_office",
 ] as const;
 
 export type EventAction =
@@ -181,6 +184,7 @@ export type EventAction =
   | "click"          // link_clicked → call task
   | "unsubscribe"    // lead_unsubscribed (or an opt-out reply) → GHL email DND
   | "bounce"         // email_bounced → mark unsendable
+  | "record"         // a known signal kept for suppression; no side effects
   | "park";          // unknown / unreadable → kept for a human, no side effects
 
 export interface InstantlyEvent {
@@ -293,6 +297,9 @@ export function classifyEvent(ev: InstantlyEvent): { action: EventAction; reason
     case "email_bounced":
       return { action: "bounce", reason: "email bounced" };
     default:
+      if (RECORD_ONLY_EVENTS.has(ev.eventType)) {
+        return { action: "record", reason: `${ev.eventType} recorded (suppression signal only)` };
+      }
       return { action: "park", reason: `unhandled event_type "${ev.eventType}" — parked for review` };
   }
 }
@@ -341,6 +348,18 @@ export function dueIn(minutes: number, now = Date.now()): string {
 const NON_SUPPRESSING_EVENTS = new Set([
   "email_sent", "email_opened", "link_clicked", "email_link_clicked",
   "campaign_completed", "account_error",
+  // Owner policy 2026-11-16: an auto-reply / out-of-office alone is NOT a human
+  // reply and must not suppress. (A human reply in the same thread arrives as its
+  // own reply_received and suppresses on its own.)
+  "auto_reply_received", "lead_out_of_office",
+]);
+
+/** Signals we subscribe to only so they reach the ledger (negative labels, OOO).
+ *  They are RECORDED (status processed, no side effects) — not parked, because
+ *  they are expected, not unknown. Suppression reads them from the ledger. */
+export const RECORD_ONLY_EVENTS = new Set([
+  "lead_not_interested", "lead_wrong_person", "lead_out_of_office",
+  "custom_label_any_negative", "auto_reply_received",
 ]);
 
 export function suppressesAddress(eventType: string | null | undefined): boolean {

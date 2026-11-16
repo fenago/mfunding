@@ -368,6 +368,7 @@ Deno.serve(async (req) => {
   try {
     const { settings, error: sErr } = await loadSettings(db);
     if (cls.action === "park") res = { status: "parked", outcome: {}, error: cls.reason };
+    else if (cls.action === "record") res = { status: "processed", outcome: { recorded: true } };
     else if (cls.action === "bounce") res = await handleBounce(db, ev);
     else if (!cfg) res = { status: "error", outcome: {}, error: "GHL not configured" };
     else if (!settings) res = { status: "error", outcome: {}, error: sErr };
