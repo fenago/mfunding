@@ -469,7 +469,13 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
   }, [items]);
 
   const multiSection = sections.length > 1;
-  const [shut, setShut] = useState<Record<string, boolean>>({});
+  // Every per-funder block starts CLOSED. A two-funder checklist that opens
+  // both at once is the flat interleaved list this split exists to replace —
+  // the reader names the funder first, then reads only that funder's checks.
+  // This only ever renders where `multiSection` is true, i.e. where items
+  // carry a `section`; the single-funder playbooks show no header at all and
+  // are untouched.
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
 
   const done = items.reduce((n, it) => n + (ticks[it.id] ? 1 : 0), 0);
   const pct = items.length === 0 ? 0 : Math.round((done / items.length) * 100);
@@ -493,7 +499,7 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
       {sections.map(({ sec, rows: secRows, groups }) => {
         const secDone = secRows.reduce((n, it) => n + (ticks[it.id] ? 1 : 0), 0);
         const secHard = secRows.filter((it) => it.hard && !ticks[it.id]).length;
-        const open = !shut[sec];
+        const open = opened[sec] === true;
         return (
       <div key={sec || "__all"} className="fp-cksec">
         {multiSection ? (
@@ -501,7 +507,7 @@ export function Checklist({ storageKey, items }: { storageKey: string; items: Ch
             type="button"
             className={`fp-cksechead${open ? "" : " shut"}`}
             aria-expanded={open}
-            onClick={() => setShut((p) => ({ ...p, [sec]: !!open }))}
+            onClick={() => setOpened((p) => ({ ...p, [sec]: !open }))}
           >
             <span className="fp-cksname">{sec || "Every file on this line"}</span>
             <span className="fp-cksmeta">

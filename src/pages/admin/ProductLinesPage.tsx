@@ -27,23 +27,24 @@ import { TermLocCalc } from "@/components/admin/funder/TermLocCalc";
 import { SosLookup } from "@/components/admin/products/SosLookup";
 import { LINES, type FunderSlot, type ProductLine } from "@/components/admin/products/lines";
 import { PortalLogin, type CredState, type PortalCredRow } from "@/components/admin/products/PortalLogin";
+import { PosterHandout } from "@/components/admin/products/PosterHandout";
 
 function Slot({
   slot,
   creds,
   allEmpty,
   last,
-  startOpen,
 }: {
   slot: FunderSlot;
   creds: CredState;
   allEmpty: boolean;
   /** Rendered as a last resort rather than a ranked funder. */
   last?: boolean;
-  /** A funder card is tall. The primary opens; the rest wait to be asked. */
-  startOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(Boolean(startOpen));
+  // Every card starts shut, the primary included. A closed card still carries
+  // what it pays and how the file goes out (see `fp-pshut` below), so nothing
+  // a scan needs is behind the click.
+  const [open, setOpen] = useState(false);
 
   // What a closed card still has to say. Collapsing a card must not hide
   // whether we can submit to this funder or what it pays — those are the two
@@ -194,17 +195,21 @@ function Row({ k, v, missing }: { k: string; v: string; missing?: boolean }) {
 
 /**
  * Which sections start open, and a memory of what this person last had open.
- * Defaults chosen for the thing the page is actually used for — a live call:
- * who it is for and the checklist, with the funder detail, the calculator and
- * the open questions a click away.
+ *
+ * NOTHING starts open. Owner's rule for this page: every accordion is closed
+ * on arrival, so the tab opens as a list of headings and the reader picks.
+ * The remembered state still applies on a RETURN visit — it only ever holds
+ * what this person opened themselves — and the storage key is versioned so
+ * that the sections an earlier default opened for them do not survive as a
+ * "preference" they never expressed.
  */
 function useSections(lineId: string, hasCalc: boolean) {
-  const key = `mf.productline.${lineId}.open.v2`;
+  const key = `mf.productline.${lineId}.open.v3`;
   const base: Record<string, boolean> = {
-    who: true,
+    who: false,
     funders: false,
     calc: false,
-    checklist: true,
+    checklist: false,
     questions: false,
   };
 
@@ -302,6 +307,7 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
             {line.secondary ? <span className="fp-idchip">{line.secondary.name}</span> : null}
           </div>
         </div>
+        <PosterHandout lineId={line.id} lineName={line.name} />
       </div>
 
       <div className="fp-allbar">
@@ -333,7 +339,7 @@ function LineView({ line, creds }: { line: ProductLine; creds: CredState }) {
         open={open.funders}
         onToggle={() => toggle("funders")}
       >
-        <Slot slot={line.primary} creds={creds} allEmpty={allEmpty} startOpen />
+        <Slot slot={line.primary} creds={creds} allEmpty={allEmpty} />
         {line.secondary ? (
           <Slot slot={line.secondary} creds={creds} allEmpty={allEmpty} />
         ) : (
@@ -543,4 +549,26 @@ const EXTRA_CSS = `
 .fcs .fp-soswarn{display:inline-block;margin-left:7px;padding:1px 6px;border-radius:4px;background:var(--c-bg);color:var(--c);font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
 .fcs .fp-sosmeta{margin-top:6px;font-size:11.5px;color:var(--ink-soft);line-height:1.5}
 .fcs .fp-sosmeta b{color:var(--c)}
+
+/* ── merchant handout ── sits in the line header, outside every accordion ── */
+.fcs .fp-post{flex:0 1 310px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.fcs .fp-post.held{border-style:dashed;border-color:color-mix(in srgb,var(--c) 45%,transparent);background:var(--c-bg)}
+.fcs .fp-postlab{display:block;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .fp-post.held .fp-postlab{color:var(--c)}
+.fcs .fp-postrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:7px}
+/* --ground, not #fff: the accent lightens in dark mode, where white on it
+   stops being readable. The page background inverts with the theme, so the
+   label stays legible on both. */
+.fcs .fp-postpdf{display:inline-block;padding:5px 13px;border-radius:7px;background:var(--accent);color:var(--ground);
+  font-size:13px;font-weight:800;text-decoration:none}
+.fcs .fp-postpdf:hover{filter:brightness(1.07)}
+.fcs .fp-postalt{font-size:12px;font-weight:700;color:var(--accent-ink);text-decoration:none;
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+.fcs .fp-postalt:hover{border-bottom-color:var(--accent)}
+.fcs .fp-postchips{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.fcs .fp-postchip{padding:1px 7px;border-radius:5px;background:var(--chip);color:var(--chip-ink);
+  font-size:10.5px;font-weight:700;line-height:1.7}
+.fcs .fp-postwhy{margin-top:6px;font-size:12px;color:var(--ink-soft);line-height:1.5}
+.fcs .fp-post.held .fp-postwhy{color:var(--ink)}
+.fcs .fp-postpath{margin-top:7px;font-size:11px;color:var(--ink-faint);line-height:1.5}
 `;
