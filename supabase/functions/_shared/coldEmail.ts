@@ -158,15 +158,19 @@ export function buildInstantlyLead(campaignId: string, inp: EnrollInput): Record
 
 // ── Return side: the Instantly webhook event ────────────────────────────────
 
-/** Event names confirmed against developer.instantly.ai/guides/webhook-events
- *  (2026-11-16). Anything else — including workspace CUSTOM LABELS, which Instantly
+/** Subscription names from the LIVE API (GET /api/v2/webhooks/event-types,
+ *  2026-11-16). NOTE the docs page (guides/webhook-events) lists the click as
+ *  `link_clicked`, but POST /webhooks rejects that and only accepts
+ *  `email_link_clicked` — so the classifier accepts BOTH spellings for the delivered
+ *  payload. Anything else — including workspace CUSTOM LABELS, which Instantly
  *  sends as the event_type verbatim — is parked, never dropped. */
 export const REGISTERED_EVENTS = [
   "reply_received",
   "lead_interested",
-  "link_clicked",
+  "email_link_clicked",
   "lead_unsubscribed",
   "email_bounced",
+  "custom_label_any_positive",
 ] as const;
 
 export type EventAction =
@@ -279,6 +283,7 @@ export function classifyEvent(ev: InstantlyEvent): { action: EventAction; reason
     case "lead_interested":
       return { action: "reply", reason: "lead labelled interested" };
     case "link_clicked":
+    case "email_link_clicked":
       return { action: "click", reason: "tracked link clicked" };
     case "lead_unsubscribed":
       return { action: "unsubscribe", reason: "lead unsubscribed" };

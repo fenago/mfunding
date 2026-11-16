@@ -129,3 +129,8 @@ Deno.test("a missing column is 'source absent' on SELECT (42703) AND on UPDATE (
   assert(!isMissingColumn({ code: "42501" }));
   assert(!isMissingColumn(null));
 });
+
+Deno.test("click: both the documented and the subscribable spelling route to a call task", () => {
+  assertEquals(classifyEvent(parseInstantlyEvent({ event_type: "link_clicked", lead_email: "a@b.co" })).action, "click");
+  assertEquals(classifyEvent(parseInstantlyEvent({ event_type: "email_link_clicked", lead_email: "a@b.co" })).action, "click");
+});
