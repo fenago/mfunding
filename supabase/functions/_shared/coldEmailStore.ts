@@ -52,6 +52,14 @@ export async function loadSettings(db: SupabaseClient): Promise<{ settings: Cold
 export const LEAD_RECORDS_STATUS_COL = "email_verify_status";
 export const LEAD_RECORDS_CHECKED_COL = "email_verified_at";
 
+/** "That column does not exist (yet)". A SELECT surfaces Postgres' 42703; an
+ *  UPDATE is refused earlier by PostgREST's schema cache as PGRST204 — both mean
+ *  the source is absent, not unreadable. (Found live: the first bounce test logged
+ *  PGRST204 as an error after correctly marking the customer.) */
+export function isMissingColumn(error: { code?: string } | null): boolean {
+  return !!error && (error.code === "42703" || error.code === "PGRST204");
+}
+
 export interface VerdictRead {
   health: EmailHealth | null;
   sources: string[];          // which stores contributed a verdict
@@ -86,7 +94,7 @@ export async function readVerdict(db: SupabaseClient, email: string, ghlContactI
     const sel = `id, ${LEAD_RECORDS_STATUS_COL}`;
     const { data, error } = await db.from("lead_records").select(sel).ilike("email", email).limit(20);
     if (error) {
-      if ((error as { code?: string }).code === "42703") out.notes.push(`lead_records.${LEAD_RECORDS_STATUS_COL} not present yet — source skipped`);
+      if (isMissingColumn(error as { code?: string })) out.notes.push(`lead_records.${LEAD_RECORDS_STATUS_COL} not present yet — source skipped`);
       else out.unreadable.push(`lead_records: ${error.message}`);
     } else {
       for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
@@ -147,7 +155,7 @@ export async function storeVerdict(db: SupabaseClient, email: string, r: VerifyR
     const { error } = await db.from("lead_records").update({
       [LEAD_RECORDS_STATUS_COL]: r.health, [LEAD_RECORDS_CHECKED_COL]: now,
     }).ilike("email", email);
-    if (error && (error as { code?: string }).code !== "42703") errors.push(`lead_records: ${error.message}`);
+    if (error && !isMissingColumn(error as { code?: string })) errors.push(`lead_records: ${error.message}`);
   }
   return errors;
 }
@@ -169,7 +177,7 @@ export async function markBounced(db: SupabaseClient, email: string, reason: str
       [LEAD_RECORDS_STATUS_COL]: "bounced", [LEAD_RECORDS_CHECKED_COL]: now,
     }).ilike("email", email).select("id");
     if (error) {
-      if ((error as { code?: string }).code === "42703") leadRecords = null; // column not there yet
+      if (isMissingColumn(error as { code?: string })) leadRecords = null; // column not there yet
       else errors.push(`lead_records: ${error.message}`);
     } else leadRecords = (data ?? []).length;
   }

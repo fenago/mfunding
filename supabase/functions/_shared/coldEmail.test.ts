@@ -121,3 +121,11 @@ Deno.test("secret compare", () => {
   assert(!timingSafeEqualStr("abc", "abd"));
   assert(!timingSafeEqualStr("abc", "abcd"));
 });
+
+import { isMissingColumn } from "./coldEmailStore.ts";
+Deno.test("a missing column is 'source absent' on SELECT (42703) AND on UPDATE (PGRST204)", () => {
+  assert(isMissingColumn({ code: "42703" }));
+  assert(isMissingColumn({ code: "PGRST204" }));
+  assert(!isMissingColumn({ code: "42501" }));
+  assert(!isMissingColumn(null));
+});
