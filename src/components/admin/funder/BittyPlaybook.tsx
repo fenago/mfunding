@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { Alert, type CheckItem, Checklist, IndustryFinder, Quote, Rows, Sec } from "./playbook";
 import { BittySpreadCalc } from "./BittySpreadCalc";
+import { ColdEmailReplies } from "./ColdEmailReplies";
 import {
   BITTY_INDUSTRY_NOTICE as NOTICE,
   BITTY_PREFERRED as PREFERRED,
@@ -245,6 +246,9 @@ export function BittyPlaybook() {
             <span className="fp-idchip">12 mo TIB</span>
             <span className="fp-idchip">500 FICO floor</span>
             <span className="fp-idchip">Paid day of funding</span>
+            <a className="fp-idchip" href="#cold-email-replies">
+              Merchant replied to the email? → section 8
+            </a>
           </div>
         </div>
       </div>
@@ -618,6 +622,13 @@ export function BittyPlaybook() {
           ]}
         />
       </Sec>
+
+      {/* ── 8. cold-email & funnel replies (Momentum Micro campaign) ── */}
+      <div id="cold-email-replies">
+        <Sec n={8} title="Cold-email & funnel replies" sub="Momentum Micro · setters · call within 5 minutes">
+          <ColdEmailReplies />
+        </Sec>
+      </div>
 
       <div className="fp-foot">
         <b>Sources.</b> Bitty Underwriting Guide, October 2026, v10 (2 pp) · Bitty Referral Agreement v6 Full,
