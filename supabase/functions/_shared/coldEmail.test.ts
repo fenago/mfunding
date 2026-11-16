@@ -137,9 +137,13 @@ Deno.test("click: both the documented and the subscribable spelling route to a c
 
 import { companyDomain, ghlEmailDnd, normCompany, suppressesAddress, suppressesCompany } from "./coldEmail.ts";
 
-Deno.test("compliance: the {{industry}} fallback is 'your industry'", () => {
-  assertEquals(INDUSTRY_FALLBACK, "your industry");
-  assertEquals(parseEnrollPayload({}).industry, "your industry");
+Deno.test("unknown industry is sent EMPTY so the template's {{industry | your industry}} fallback renders", () => {
+  assertEquals(INDUSTRY_FALLBACK, "");
+  assertEquals(parseEnrollPayload({}).industry, "");
+  assertEquals(parseEnrollPayload({ customData: { industry: "{{contact.industry}}" } }).industry, "");
+  const b = buildInstantlyLead("c", parseEnrollPayload({ customData: { email: "a@b.co" } }));
+  assert("industry" in (b.custom_variables as Record<string, unknown>));
+  assertEquals((b.custom_variables as Record<string, string>).industry, "");
 });
 
 Deno.test("suppression: ANY reply/label/unsub/bounce suppresses the address; sends/opens/clicks do not", () => {

@@ -13,7 +13,7 @@
 //     first_name   {{contact.first_name}}
 //     last_name    {{contact.last_name}}
 //     company_name {{contact.company_name}}
-//     industry     {{contact.<industry field>}}   (blank → "your industry")
+//     industry     {{contact.<industry field>}}   (blank → sent EMPTY; the template's {{industry | your industry}} fills it)
 //   The standard top-level fields (contact_id, email, first_name, ...) are read as
 //   a fallback, so a workflow that sends no Custom Data still works.
 //

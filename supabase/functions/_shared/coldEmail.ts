@@ -23,10 +23,12 @@ export const SETTINGS_KEY = "cold_email";
 /** Opportunity Source label setters filter the MCA pipeline by. */
 export const OPP_SOURCE = "Cold Email – Micro";
 
-/** Instantly's {{industry}} renders mid-sentence ("businesses in {{industry}}"),
- *  so a blank is visible to the merchant. Always send something. Compliance ruling
- *  2026-11-16: the fallback is "your industry" (was "small business"). */
-export const INDUSTRY_FALLBACK = "your industry";
+/** The campaign template carries its OWN fallback: `{{industry | your industry}}`.
+ *  So when the industry is unknown we send an EMPTY value and let the template
+ *  fill it. Sending a word here would override the template's fallback — the old
+ *  "small business" rendered "businesses in small business". The key is still
+ *  always sent (custom_variables.industry), just empty. */
+export const INDUSTRY_FALLBACK = "";
 
 export const TAG_REPLIED = "cold-email-replied";
 export const TAG_EMAIL_INVALID = "email-invalid";
